@@ -28,7 +28,7 @@
 import assert from 'node:assert/strict';
 import test, { afterEach, mock } from 'node:test';
 import { init } from '@module-federation/runtime';
-import { devPreviewHoldRemainingMs, isDevPreviewPending, registerDevRemote, registerLocalApp, setDescriptorInvalidator } from './appLoader';
+import { devPreviewHoldRemainingMs, isDevPreviewPending, isRemoteLoaded, isRemotePending, loadAppModule, registerAndMapApps, registerDevRemote, registerLocalApp, setDescriptorInvalidator, setRemoteLoaderForTests } from './appLoader';
 import type { AppDescriptor } from '../components/workspace/types';
 
 // In the browser the rsbuild MF plugin creates the host instance; stand one
@@ -58,6 +58,64 @@ function stubClock(ms: number): void {
 afterEach(() => {
 	mock.restoreAll();
 	setDescriptorInvalidator(null);
+	setRemoteLoaderForTests(null);
+});
+
+/** A module loader whose loads stay open until the test settles them, one handle per module id. */
+function heldLoader(): Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }> {
+	const held = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
+	setRemoteLoaderForTests((id) => new Promise((resolve, reject) => { held.set(id, { resolve, reject }); }));
+	return held;
+}
+
+test('a module load that ends first (the waitlist screen\'s telemetry entry) never clears the pending mark of the app load still in flight', async () => {
+	stubPage('', false);
+	const held = heldLoader();
+	const [entry] = registerAndMapApps([{ id: 'org.race', moduleId: 'race_mod', name: 'Race', dev: true, entry: 'http://localhost:9/remoteEntry.js' }]);
+	const appLoad = entry.load();
+	assert.equal(isRemotePending('race_mod'), true, 'the app load marks the container');
+	const telemetry = loadAppModule('org.race', 'telemetry');
+	assert.equal(isRemotePending('race_mod'), true);
+	// the telemetry entry is missing in this build of the app: its load ends first
+	held.get('race_mod/telemetry')!.reject(new Error('no telemetry entry'));
+	assert.equal(await telemetry, null);
+	assert.equal(isRemotePending('race_mod'), true, 'the app load is still in flight: the container stays committed');
+	assert.equal(isRemoteLoaded('race_mod'), false);
+	held.get('race_mod/AppDescriptor')!.resolve({ default: { id: 'org.race' } });
+	await appLoad;
+	assert.equal(isRemotePending('race_mod'), false, 'no load in flight once both ended');
+	assert.equal(isRemoteLoaded('race_mod'), true);
+});
+
+test('the other order: the app load ends first and the module load keeps the mark until it ends', async () => {
+	stubPage('', false);
+	const held = heldLoader();
+	const [entry] = registerAndMapApps([{ id: 'org.race2', moduleId: 'race_mod2', name: 'Race 2', dev: true, entry: 'http://localhost:9/remoteEntry.js' }]);
+	const telemetry = loadAppModule('org.race2', 'telemetry');
+	const appLoad = entry.load();
+	held.get('race_mod2/AppDescriptor')!.resolve({ default: { id: 'org.race2' } });
+	await appLoad;
+	assert.equal(isRemotePending('race_mod2'), true, 'the module load is still in flight');
+	held.get('race_mod2/telemetry')!.resolve({ default: () => undefined });
+	assert.notEqual(await telemetry, null);
+	assert.equal(isRemotePending('race_mod2'), false);
+});
+
+test('a loader that throws before returning a promise leaves no pending mark (app load and module load)', async () => {
+	stubPage('', false);
+	setRemoteLoaderForTests(() => { throw new Error('no federation instance'); });
+	const [entry] = registerAndMapApps([{ id: 'org.sync', moduleId: 'sync_mod', name: 'Sync', dev: true, entry: 'http://localhost:9/remoteEntry.js' }]);
+	assert.throws(() => entry.load(), /no federation instance/);
+	assert.equal(isRemotePending('sync_mod'), false, 'the app load released its mark');
+	assert.equal(await loadAppModule('org.sync', 'telemetry'), null);
+	assert.equal(isRemotePending('sync_mod'), false, 'the module load released its mark');
+});
+
+test('a module load of an unknown app resolves null and marks nothing', async () => {
+	stubPage('', false);
+	heldLoader();
+	assert.equal(await loadAppModule('org.unknown', 'telemetry'), null);
+	assert.equal(isRemotePending('org.unknown'), false);
 });
 
 test('an embedded dev preview holds its locked app while the registration is pending', () => {

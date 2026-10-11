@@ -50,7 +50,7 @@ import { CheckoutFlow } from './CheckoutFlow';
 import { ApiKeyLogin } from './ApiKeyLogin';
 import LoadingScreen from './LoadingScreen';
 import { SS_PENDING_APP_ID, getHomeAppId } from '../../constants';
-import { registerAndMapApps, resolveServerEntry, getRegisteredEntry, invalidateAppDescriptor, getLocalAppEntries, setLocalAppsListener, isDevRemote, repointRemote } from '../../util/appLoader';
+import { registerAndMapApps, loadAppModule, resolveServerEntry, getRegisteredEntry, invalidateAppDescriptor, getLocalAppEntries, setLocalAppsListener, isDevRemote, repointRemote } from '../../util/appLoader';
 import { getAppVersionOverrides, setAppVersionOverride, versionedEntryUrl } from '../../util/versionOverride';
 import type { ServerAppEntry } from '../../util/appLoader';
 import { waitForEmbeddedSession } from '../../util/devMode';
@@ -501,6 +501,18 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 		}
 	}, [identity, apps]);
 
+	// The waitlist screen renders no app, so nothing would forward the telemetry
+	// facts the connection manager holds (auth:complete for a waitlisted sign-up,
+	// the one most likely to end with the tab closed). The home remote's
+	// `telemetry` entry initialises its analytics and forwards them; an older
+	// home build without the entry resolves null and nothing happens.
+	useEffect(() => {
+		if (renderPhase !== 'waitlisted') return;
+		void loadAppModule<{ default?: () => void }>(defaultAppId, 'telemetry').then((mod) => {
+			try { mod?.default?.(); } catch { /* telemetry never breaks the screen */ }
+		});
+	}, [renderPhase, defaultAppId]);
+
 	// Refresh identity on account update
 	useEffect(() => {
 		return cm.on('shell:accountUpdate', (result: ConnectResult) => {
@@ -528,7 +540,7 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 
 	// Sign-in request from marketplace
 	useEffect(() => {
-		return cm.on('shell:loginRequest', ({ appId, register }: { appId?: string; register?: boolean }) => {
+		return cm.on('shell:loginRequest', ({ appId, register, auto }: { appId?: string; register?: boolean; auto?: boolean }) => {
 			if (appId) {
 				cm.setPendingAppId(appId);
 				loginTargetRef.current = appId;
@@ -541,8 +553,11 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 					if (mountedRef.current) setShowEmbeddedSignIn(true);
 					return;
 				}
-				// "Get Started" CTAs pass register:true → Zitadel sign-up form.
-				cm.startOAuth(register);
+				// "Get Started" CTAs pass register:true; it is reported on auth:start (every
+				// flow lands on the IdP login page, which offers Register). The auth:start
+				// fact and the round-trip stamp are raised inside startOAuth, behind its
+				// one-shot guard, for this and every other entry.
+				cm.startOAuth(register, { appId, auto });
 			} else {
 				if (mountedRef.current) setShowApiKeyLogin(true);
 			}

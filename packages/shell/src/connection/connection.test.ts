@@ -37,6 +37,7 @@ import { ApiKeyAuthProvider } from '../auth/ApiKeyAuthProvider';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { CONNECT_TIMEOUT_MS, LS_TOKEN } from '../constants';
 import { resetDevGateForTests } from '../util/devGate';
+import { TelemetryChannel, TELEMETRY_STORAGE_KEY } from '../util/telemetryChannel';
 
 type EmittedEvent = { event: string; payload: unknown };
 
@@ -124,6 +125,8 @@ function createTestManager(lastFailure?: ConnectionStatus['lastFailure']) {
 	manager.getPendingAppId = () => '';
 	manager.pendingEvents = new Map();
 	manager.connectionGeneration = 0;
+	// Object.create skips field initialisers: give the manager the telemetry channel its class field holds.
+	(manager as unknown as { telemetry: TelemetryChannel }).telemetry = new TelemetryChannel({ storage: null });
 	return { manager, emitted, savedTokens };
 }
 
@@ -339,6 +342,70 @@ test('handleStoredTokenFailure keeps the network latch when the probe answers 20
 	} finally {
 		if (originalFetch) Object.defineProperty(globalThis, 'fetch', originalFetch);
 		else delete (globalThis as { fetch?: typeof fetch }).fetch;
+	}
+});
+
+test('a credential the server rejected drops held telemetry facts and the round-trip stamp with it', () => {
+	const mirror = new Map<string, string>();
+	const storage = { getItem: (k: string) => mirror.get(k) ?? null, setItem: (k: string, v: string) => { mirror.set(k, v); }, removeItem: (k: string) => { mirror.delete(k); } };
+	const session = new Map<string, string>([['rr:auth:start_ts', '123']]);
+	const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+	Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: { getItem: (k: string) => session.get(k) ?? null, setItem: (k: string, v: string) => { session.set(k, v); }, removeItem: (k: string) => { session.delete(k); } } });
+	try {
+		const { manager } = createTestManager();
+		const internals = manager as unknown as { telemetry: TelemetryChannel; listeners: Map<string, Set<unknown>>; reportTelemetry(event: string, props: Record<string, unknown>): void; drainTelemetry(): unknown[]; dropRejectedCredential(): void };
+		internals.telemetry = new TelemetryChannel({ storage });
+		internals.listeners = new Map();
+		internals.reportTelemetry('auth:complete', { is_new: true, waitlisted: false, source: 'shell' });
+		assert.ok(mirror.has(TELEMETRY_STORAGE_KEY), 'the fact is held and mirrored');
+		// the one path every rejected credential takes (a stored token that no longer validates, a failed
+		// callback connect); logout and another tab's sign-out drop the facts on their own paths
+		internals.dropRejectedCredential();
+		assert.deepEqual(internals.drainTelemetry(), [], 'no held fact survives the dropped credential');
+		assert.equal(mirror.has(TELEMETRY_STORAGE_KEY), false, 'the mirror is removed');
+		assert.equal(session.has('rr:auth:start_ts'), false, 'the round-trip stamp is removed');
+	} finally {
+		if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
+		else delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+	}
+});
+
+test('logout drops held telemetry facts and the round-trip stamp, so the next account cannot inherit them', async () => {
+	const mirror = new Map<string, string>();
+	const storage = { getItem: (k: string) => mirror.get(k) ?? null, setItem: (k: string, v: string) => { mirror.set(k, v); }, removeItem: (k: string) => { mirror.delete(k); } };
+	const session = new Map<string, string>([['rr:auth:start_ts', '123']]);
+	const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+	Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: { getItem: (k: string) => session.get(k) ?? null, setItem: (k: string, v: string) => { session.set(k, v); }, removeItem: (k: string) => { session.delete(k); } } });
+	try {
+		const { manager, emitted } = createTestManager();
+		const internals = manager as unknown as {
+			telemetry: TelemetryChannel;
+			listeners: Map<string, Set<unknown>>;
+			invalidateLifecycle(reason: string): void;
+			clearToken(): void;
+			clearSessionAppId(): void;
+			disconnect(): Promise<void>;
+			reportTelemetry(event: string, props: Record<string, unknown>): void;
+			drainTelemetry(): unknown[];
+		};
+		internals.telemetry = new TelemetryChannel({ storage });
+		internals.listeners = new Map();
+		internals.invalidateLifecycle = () => {};
+		internals.clearToken = () => {};
+		internals.clearSessionAppId = () => {};
+		internals.disconnect = async () => {};
+		// nobody listens: the facts of this session are held and mirrored
+		internals.reportTelemetry('auth:start', { register: false, auto: true });
+		internals.reportTelemetry('auth:complete', { is_new: false, waitlisted: false, source: 'shell' });
+		assert.ok(mirror.has(TELEMETRY_STORAGE_KEY), 'held facts are mirrored before the sign-out');
+		await manager.logout();
+		assert.deepEqual(internals.drainTelemetry(), [], 'no held fact survives the sign-out');
+		assert.equal(mirror.has(TELEMETRY_STORAGE_KEY), false, 'the mirror is removed');
+		assert.equal(session.has('rr:auth:start_ts'), false, 'the round-trip stamp is removed');
+		assert.ok(emitted.some((e) => e.event === 'shell:logout'), 'logout still emits shell:logout');
+	} finally {
+		if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
+		else delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
 	}
 });
 

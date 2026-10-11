@@ -98,6 +98,8 @@ export interface ServerAppEntry {
 // resetRemote() can tear down and re-register a container without callers
 // having to thread the entry URL through.
 const registeredEntries = new Map<string, string>();
+// Server-provided apps by APP id -> their MF container name, for loadAppModule().
+const serverAppModules = new Map<string, string>();
 
 // MF containers whose remote has successfully LOADED this document. A loaded
 // container is committed to its version (identity is the name — repointing a
@@ -105,14 +107,48 @@ const registeredEntries = new Map<string, string>();
 // consults this to decide repoint-in-place vs full reload.
 const loadedModules = new Set<string>();
 
-// MF containers with a descriptor load currently IN FLIGHT. A container is
-// committed to its entry from the moment its load STARTS, not when it
-// resolves: forced re-registration drops the runtime's cached promise but
-// does NOT cancel the running operation, so replacing the entry mid-load
+// MF containers with a load currently IN FLIGHT, counted per container. A
+// container is committed to its entry from the moment its load STARTS, not
+// when it resolves: forced re-registration drops the runtime's cached promise
+// but does NOT cancel the running operation, so replacing the entry mid-load
 // races two initializations of one container name. The dev takeover treats
-// pending like loaded. A Set suffices — loadDescriptor dedups concurrent
-// loads per app, so at most one load per container is in flight.
-const pendingModules = new Set<string>();
+// pending like loaded. Counted, not a Set: loadDescriptor dedups concurrent
+// descriptor loads per app, but loadAppModule (the home remote's telemetry
+// entry on the waitlist screen) can load the same container at the same time,
+// and the load that finishes first must not clear the mark of the other.
+const pendingModules = new Map<string, number>();
+
+function markPending(moduleId: string): void {
+	pendingModules.set(moduleId, (pendingModules.get(moduleId) ?? 0) + 1);
+}
+
+function releasePending(moduleId: string): void {
+	const left = (pendingModules.get(moduleId) ?? 0) - 1;
+	if (left > 0) pendingModules.set(moduleId, left);
+	else pendingModules.delete(moduleId);
+}
+
+/**
+ * Whether an MF container has a load in flight in this document (the
+ * descriptor, or another module it exposes).
+ *
+ * @param moduleId - The MF container name.
+ */
+export function isRemotePending(moduleId: string): boolean {
+	return (pendingModules.get(moduleId) ?? 0) > 0;
+}
+
+// The module loader the shell's loads go through: Module Federation's
+// loadRemote; tests substitute a controllable one (setRemoteLoaderForTests).
+let loadRemoteModule: (id: string) => Promise<unknown> = (id) => loadRemote(id) as Promise<unknown>;
+
+/**
+ * Tests only: substitute the module loader (null restores loadRemote), so a
+ * test can hold one load open while another finishes.
+ */
+export function setRemoteLoaderForTests(fn: ((id: string) => Promise<unknown>) | null): void {
+	loadRemoteModule = fn ?? ((id) => loadRemote(id) as Promise<unknown>);
+}
 
 /**
  * Whether an MF container's remote has successfully loaded this document.
@@ -352,7 +388,7 @@ export function registerDevRemote(appId: string, moduleId: string, name: string,
 	// permanent one-shot would strand the legitimate recurrence (an app
 	// fallback-loaded again long after its dev server revived). Budget
 	// exhausted → degrade to the force-registration below instead.
-	if (registeredEntries.has(moduleId) && !devRemoteModules.has(moduleId) && (loadedModules.has(moduleId) || pendingModules.has(moduleId))) {
+	if (registeredEntries.has(moduleId) && !devRemoteModules.has(moduleId) && (loadedModules.has(moduleId) || isRemotePending(moduleId))) {
 		const TAKEOVER_WINDOW_MS = 30 * 60_000;
 		const TAKEOVER_MAX_RELOADS = 2;
 		let reboot = false;
@@ -527,6 +563,35 @@ function dumpShareScope(): void {
 }
 
 /**
+ * Load a module an app's container exposes besides its AppDescriptor (the home
+ * remote's `telemetry` entry, used on the shell's own screens where no app
+ * renders). Resolves null when the app is unknown or its container does not
+ * expose that module; never throws. Keeps the same pending/loaded bookkeeping
+ * as load() (counted, so overlapping loads of one container each hold the
+ * mark until they finish): a container loaded here is committed to its
+ * version too, so a later version override falls back to a reload instead of
+ * repointing it.
+ *
+ * @param appId - The app id (not the container name).
+ * @param modulePath - The exposed module path without the leading `./`.
+ * @returns The module namespace, or null.
+ */
+export async function loadAppModule<T = unknown>(appId: string, modulePath: string): Promise<T | null> {
+	const moduleId = serverAppModules.get(appId) ?? localAppMetas.get(appId)?.moduleId;
+	if (!moduleId) return null;
+	markPending(moduleId);
+	try {
+		const mod = (await loadRemoteModule(`${moduleId}/${modulePath}`)) as T;
+		loadedModules.add(moduleId);
+		return mod;
+	} catch {
+		return null; // an older build of the app without that entry, or the container failed to load
+	} finally {
+		releasePending(moduleId);
+	}
+}
+
+/**
  * Returns the entry URL currently registered for an MF remote, or undefined
  * when the module has never been registered. Used by Shell to detect apps
  * whose entry URL changed (dev overlay repoint, new published version) and
@@ -692,6 +757,7 @@ export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEnt
 
 	// Record the registered URLs so resetRemote() can rebuild a container.
 	for (const { app, url } of registrable) registeredEntries.set(app.moduleId, url);
+	for (const { app } of resolved) serverAppModules.set(app.id, app.moduleId);
 
 	// Map server entries to runtime AppManifestEntry objects with lazy loaders
 	return resolved.map(({ app: a }) => ({
@@ -719,15 +785,23 @@ export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEnt
 			if (local) return local();
 			// Pending marks the container committed for the WHOLE load — the
 			// dev takeover must not force-register it mid-flight.
-			pendingModules.add(a.moduleId);
-			return (loadRemote(`${a.moduleId}/AppDescriptor`) as Promise<{ default: AppDescriptor }>)
+			markPending(a.moduleId);
+			let loading: Promise<{ default: AppDescriptor }>;
+			try {
+				loading = loadRemoteModule(`${a.moduleId}/AppDescriptor`) as Promise<{ default: AppDescriptor }>;
+			} catch (err) {
+				// a loader that throws before it returns a promise must not leave the mark behind
+				releasePending(a.moduleId);
+				throw err;
+			}
+			return loading
 				.then((m) => {
 					// A resolved remote commits this container to its version
 					// for the document's lifetime (see isRemoteLoaded).
 					loadedModules.add(a.moduleId);
 					return m.default;
 				})
-				.finally(() => pendingModules.delete(a.moduleId));
+				.finally(() => releasePending(a.moduleId));
 		},
 	}));
 }

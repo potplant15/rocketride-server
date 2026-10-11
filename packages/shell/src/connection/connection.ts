@@ -52,6 +52,7 @@ import { RemoteManager } from './remote-manager';
 import { AUTH_REJECTED_MESSAGE, ConnectionFailure } from './errors';
 import { shouldReloadForTokenStorageUpdate } from './tokenStorageUpdate';
 import { isEmbeddedDevShell, tokenStore } from '../util/devGate';
+import { TelemetryChannel, type TelemetryFact } from '../util/telemetryChannel';
 import { getStoredVerifier, clearStoredVerifier } from '../util/pkce';
 import {
 	LS_TOKEN,
@@ -64,6 +65,9 @@ import {
 	SERVICES_CHANGED_EVENT,
 	SERVICES_REFRESH_JITTER_MS,
 } from '../constants';
+
+/** sessionStorage stamp of the last OAuth start (ms); the forwarding app times the round trip to auth:complete from it. */
+const SS_AUTH_START_TS = 'rr:auth:start_ts';
 
 // =============================================================================
 // TYPES
@@ -432,7 +436,7 @@ export class ConnectionManager implements IConnectionManager {
 				// here, a token revoked mid-session leaves the UI showing
 				// "Reconnecting\u2026" forever with a dead token still stored.
 				if (error instanceof AuthenticationException) {
-					if (this.handleStoredTokenFailure(error)) this.clearToken();
+					if (this.handleStoredTokenFailure(error)) this.dropRejectedCredential();
 					this.accountInfo = undefined;
 					this.emit('shell:statusMessage', { message: null });
 					return;
@@ -482,6 +486,7 @@ export class ConnectionManager implements IConnectionManager {
 						this.clearToken();
 						this.accountInfo = undefined;
 						this.pendingEvents.clear();
+						this.dropHeldTelemetry();
 						this.clearServicesCache();
 						this.updateConnectionStatus({
 							state: ConnectionState.DISCONNECTED,
@@ -550,6 +555,42 @@ export class ConnectionManager implements IConnectionManager {
 	 *  never run twice in one page load (double authorize → Zitadel invalidates the
 	 *  first code → PKCE 400 → re-auth loop). */
 	private oauthStarted = false;
+	/** Telemetry facts raised before the active app subscribed (see reportTelemetry). */
+	private telemetry = new TelemetryChannel();
+	/** Ids of the facts delivered live (the channel numbers the held ones). */
+	private telemetrySeq = 0;
+
+	/**
+	 * Record a product-telemetry fact the shell observed and broadcast it as
+	 * `shell:telemetry`. The shell carries no analytics SDK: the active app
+	 * forwards these to its own transport. Facts raised before any app subscribed
+	 * (the OAuth callback resolves identity before the home remote mounts) wait
+	 * in a bounded buffer until `drainTelemetry()` hands them over. Never throws.
+	 *
+	 * @param event - Event name from the app's telemetry contract (e.g. 'auth:start').
+	 * @param props - Flat properties; the forwarding app adds its own super properties.
+	 */
+	public reportTelemetry(event: string, props: Record<string, unknown>): void {
+		try {
+			const ts = Date.now();
+			// A delivered fact is not held: the listener forwards it at once and a later drain
+			// must not replay it. With nobody listening the fact waits in the channel (mirrored to
+			// sessionStorage, so it survives a page load that never mounts the forwarding app).
+			if ((this.listeners.get('shell:telemetry')?.size ?? 0) > 0) this.emit('shell:telemetry', { event, props: { ...(props ?? {}) }, ts, id: `${ts.toString(36)}-l${(this.telemetrySeq++).toString(36)}` });
+			else this.telemetry.report(event, props, ts);
+		} catch { /* telemetry must never break the shell */ }
+	}
+
+	/**
+	 * Hand over every buffered telemetry fact, oldest first, and clear the buffer.
+	 * Call once from the app's analytics init, then subscribe to `shell:telemetry`
+	 * for the rest.
+	 *
+	 * @returns The buffered facts in the order they were raised.
+	 */
+	public drainTelemetry(): TelemetryFact[] {
+		return this.telemetry.drain();
+	}
 
 	/**
 	 * Redirect the browser to the OAuth provider for authorization.
@@ -560,14 +601,28 @@ export class ConnectionManager implements IConnectionManager {
 	 * @param register - Retained for compatibility; no longer changes the
 	 *                   destination. All flows land on Zitadel's login page
 	 *                   (prompt=login), which offers a Register link.
+	 * @param context - What raised the request: the app the visitor was opening
+	 *                  (`appId`, else the pending app id) and whether the shell's
+	 *                  auth gate raised it rather than a click (`auto`). Reported
+	 *                  on the auth:start telemetry fact.
 	 */
-	public async startOAuth(register?: boolean): Promise<void> {
+	public async startOAuth(register?: boolean, context?: { appId?: string; auto?: boolean }): Promise<void> {
 		// One-shot: a redirect is coming; never start a second authorize in the
 		// same page load (that invalidates the first code and 400s the exchange).
 		// The guard is released on any path that does NOT actually navigate, so a
 		// failed initiation can still be retried within the same page load.
 		if (this.oauthStarted) return;
 		this.oauthStarted = true;
+		// auth:start is observed here, after the guard: every sign-in and sign-up entry of the
+		// shell comes through (the login handler, the goodbye and error screens); a failed
+		// initiation releases the guard, so a retry raises it again, as a new attempt. The
+		// embedded (iframe) flow signs in through the auth popup, whose facts stay in the
+		// popup's own sessionStorage and are discarded when it closes: embedded sign-ins are
+		// not reported. CloudAuthProvider.signIn(), also on the shell API, does not raise it.
+		// The stamp lets the forwarding app time the round trip.
+		try { sessionStorage.setItem(SS_AUTH_START_TS, String(Date.now())); } catch { /* storage unavailable */ }
+		const appId = context?.appId || this.getPendingAppId();
+		this.reportTelemetry('auth:start', { register: !!register, ...(appId ? { app_id: appId } : {}), from_path: window.location.pathname, auto: context?.auto === true });
 		try {
 			if (this.authProvider) {
 				await this.authProvider.signIn(undefined, register);
@@ -693,7 +748,7 @@ export class ConnectionManager implements IConnectionManager {
 					try {
 						return await this.connectForBootstrap(staleToken, sessionAppId, config);
 					} catch (error) {
-						if (this.handleStoredTokenFailure(error)) this.clearToken();
+						if (this.handleStoredTokenFailure(error)) this.dropRejectedCredential();
 						else return null;
 					}
 				}
@@ -704,7 +759,11 @@ export class ConnectionManager implements IConnectionManager {
 			}
 
 			try {
-				return await this.connectForBootstrap({ code, verifier, redirectUri: window.location.origin }, sessionAppId, config);
+				const completed = await this.connectForBootstrap({ code, verifier, redirectUri: window.location.origin }, sessionAppId, config);
+				// The identity provider's round trip ended in an identity: the one place a
+				// sign-up or sign-in is known to have completed (token restores never pass here).
+				if (completed) this.reportTelemetry('auth:complete', { is_new: completed.result.isNewUser ?? null, waitlisted: completed.result.waitlisted === true, source: 'shell' });
+				return completed;
 			} catch (error) {
 				// The code is single-use and already stripped from the URL, so
 				// recovery always goes through a fresh flow — classify and latch
@@ -741,7 +800,7 @@ export class ConnectionManager implements IConnectionManager {
 					// owns starting a login flow, edition-aware). A network
 					// failure keeps the token so the recovery banner can retry
 					// with it once the server is reachable again.
-					if (this.handleStoredTokenFailure(error)) this.clearToken();
+					if (this.handleStoredTokenFailure(error)) this.dropRejectedCredential();
 				}
 			}
 			// Unauthenticated session-locked visit: bootstrap deliberately does
@@ -765,7 +824,7 @@ export class ConnectionManager implements IConnectionManager {
 				return await this.connectForBootstrap(token, '', config);
 			} catch (err) {
 				// Connect failed — retain the token when the server is unreachable.
-				if (this.handleStoredTokenFailure(err)) this.clearToken();
+				if (this.handleStoredTokenFailure(err)) this.dropRejectedCredential();
 				return null;
 			}
 		}
@@ -1018,7 +1077,7 @@ export class ConnectionManager implements IConnectionManager {
 			const state = this.getConnectionFailureState(error);
 			const isAuthFailure = state === ConnectionState.AUTH_FAILED;
 			if (isAuthFailure) {
-				this.clearToken();
+				this.dropRejectedCredential();
 				this.accountInfo = undefined;
 			}
 
@@ -1180,6 +1239,9 @@ export class ConnectionManager implements IConnectionManager {
 		// Drop any buffered user-intent events so a stale shell:subscribe /
 		// shell:loginRequest can't replay into the next session.
 		this.pendingEvents.clear();
+		// Telemetry facts held for this session, and the round-trip stamp, must not be
+		// forwarded under the next account that signs in on this tab.
+		this.dropHeldTelemetry();
 
 		// Emit logout before disconnecting so listeners can clean up
 		this.emit('shell:logout', {});
@@ -1304,6 +1366,23 @@ export class ConnectionManager implements IConnectionManager {
 		try { tokenStore().removeItem(LS_TOKEN); } catch (e) {
 			console.error('[ConnectionManager] Failed to clear token:', e);
 		}
+	}
+
+	/**
+	 * A credential the server rejected (a stored token that no longer validates, a failed
+	 * callback connect): drop it, and with it the telemetry facts held for that session and
+	 * the round-trip stamp, so none of them is forwarded under the next account that signs
+	 * in on this tab. Sign-out (logout) and another tab's sign-out do the same on their own paths.
+	 */
+	private dropRejectedCredential(): void {
+		this.clearToken();
+		this.dropHeldTelemetry();
+	}
+
+	/** Drop the held telemetry facts, their sessionStorage mirror and the round-trip stamp. Never throws. */
+	private dropHeldTelemetry(): void {
+		try { this.telemetry?.clear(); } catch { /* telemetry must never break the shell */ }
+		try { sessionStorage.removeItem(SS_AUTH_START_TS); } catch { /* storage unavailable */ }
 	}
 
 	/** Update the hasCredentials flag based on token availability. */
