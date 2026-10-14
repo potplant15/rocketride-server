@@ -1044,6 +1044,16 @@ PYBIND11_EMBEDDED_MODULE(engLib, engLib) {
         .PYBIND(close, &IServiceFilterInstance::cb_close)
         .PYBIND(closing, &IServiceFilterInstance::cb_closing)
 
+        .PYBIND_FUNCTION(setTraceDetail,
+                         [](IServiceFilterInstance &self, py::dict detail) {
+                             // Converting costs a little; skip it when no
+                             // leave trace will carry it.
+                             if (self.endpoint->config.pipelineTraceLevel <
+                                 PIPELINE_TRACE_LEVEL::METADATA)
+                                 return;
+                             self.traceDetail = pyjson::dictToJson(detail);
+                         })
+
         .PYBIND_PROP_READONLY_CUSTOM(
             currentObject, [](IServiceFilterInstance &obj) -> py::object {
                 if (obj.currentEntry)
