@@ -496,17 +496,23 @@ fails closed:
   report `isAuthenticated()`.
 
 **Activation** ([`activation.ts`](../../../apps/shared/src/explorer/devtool/activation.ts)).
-rocket-ui mounts every pinned controller at boot, so the first discovery waits
-for the first of these:
+The first discovery waits until the tool has been activated. Both hosts build
+a store tool's sidebar only when its tab is first selected, or when one of its
+frames summons the controller (`host.mountToolSidebar`), and then keep it
+mounted. So the mount itself counts as the activation in any realm the gate can
+classify: a client realm (rocket-ui) or a **socketless** one (VS Code:
+connected, `getClient()` null). The selection's `shell:toolSidebarActivated`
+fires before the sidebar can hear it, so the gate cannot wait for it.
+
+A bus the gate cannot classify (no `getClient`) waits for the first of these:
 
 - `shell:toolSidebarActivated` for this app;
 - the first op from a frame;
 - a string `activeDocKey` (`''` is the generic frame);
 - `open('user')`.
 
-VS Code mounts a tool sidebar lazily on its first tab select. That select's
-activation event fires before the sidebar can hear it, so a **socketless**
-realm (connected, `getClient()` null) counts the mount itself.
+Before #2625 `9bd5d931f`, rocket-ui mounted every pinned controller at boot,
+and the gate kept a client realm closed until one of those signals arrived.
 
 **Discovery** ([`watch.ts`](../../../apps/shared/src/explorer/devtool/watch.ts)).
 `createDevToolDiscovery({ cm, client, identity, activation })` gives the store's
