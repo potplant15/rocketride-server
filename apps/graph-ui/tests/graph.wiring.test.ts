@@ -199,6 +199,13 @@ test('a change of identity closes every connection document and clears the per-c
 	assert.ok(/useEffect\(\(\) => \{\s*forgetConnections\(getDocs\(\), \{ schemas \}\);\s*\}, \[fingerprint\]\);/.test(app), 'every change of it forgets the connections');
 });
 
+// #2625 9bd5d931f gave Documents a dirty-close policy and moved every app's group close onto it; the full app follows.
+test('closing a group goes through the shell\'s dirty-close policy (requestCloseGroup), as every app on #2625 does', () => {
+	const app = code(read('GraphApp.tsx'));
+	assert.ok(/onCloseGroup=\{\(gid\) => \{ void docs\.requestCloseGroup\(gid\); \}\}/.test(app), 'the group close asks the policy first');
+	assert.ok(!/docs\.closeGroup\(/.test(app), 'nothing closes a group around it');
+});
+
 // The drawer starts fresh for every card: one shared instance would show the last Test result on the next card opened.
 test('the connection drawer starts fresh for every card, and words its Test result through testResultText', () => {
 	const view = code(read('views', 'ConnectionsView.tsx'));

@@ -194,7 +194,7 @@ const GraphAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
 					if (!group) return null;
 					return (
 						<div style={styles.groupPane} onClick={() => docs.setActiveGroup(groupId)}>
-							<DocTabs docs={docs} groupId={groupId} isActive={state.activeGroupId === groupId} canClose={canCloseGroups} onSplit={(gid, dir) => docs.splitGroupWithDocument(gid, dir)} onCloseGroup={(gid) => docs.closeGroup(gid)} />
+							<DocTabs docs={docs} groupId={groupId} isActive={state.activeGroupId === groupId} canClose={canCloseGroups} onSplit={(gid, dir) => docs.splitGroupWithDocument(gid, dir)} onCloseGroup={(gid) => { void docs.requestCloseGroup(gid); }} />
 							{/* All editors stay mounted and visibility toggles, so a tab keeps its editor text, results and graph. */}
 							<div style={styles.content}>
 								{group.editorIds.length === 0 ? (
