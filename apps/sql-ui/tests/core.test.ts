@@ -229,14 +229,14 @@ describe('identity and activation gate discovery', () => {
 		}
 	});
 
-	it('a dev-tool controller signed in reads nothing, the saved list included, until it is activated (R7); then it reads and discovers', async () => {
+	it('a dev-tool controller reads nothing, the saved list included, while nobody is signed in; its mount is the activation (#2625 9bd5d931f), so signing in reads and discovers', async () => {
 		const engine = scriptedClientRealm(engineScript([PIPELINE], [devRow()]));
 		const core = createSqlCore({ cm: engine.cm, appId: SQL_APP_ID, mode: 'devtool', focusTarget: null });
 		try {
-			engine.realm.login(USER);
+			assert.equal(core.activation.reason(), 'lazyMount');
 			await new Promise<void>((resolve) => { setTimeout(resolve, 400); });
-			assert.deepEqual(engine.ops(), [], 'no engine request before activation');
-			engine.realm.activate(SQL_APP_ID);
+			assert.deepEqual(engine.ops(), [], 'no engine request while the identity is unknown');
+			engine.realm.login(USER);
 			await until(() => engine.ops().includes('client.fsReadJson'), 'the saved list to be read');
 			await until(() => engine.ops().includes('client.getTasks'), 'the first discovery');
 		} finally {

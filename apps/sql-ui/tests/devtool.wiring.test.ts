@@ -411,27 +411,22 @@ describe('T5 — mount -> dispose -> mount leaves one live op server; ops answer
 // T6 — QUIET SIDEBAR
 // =============================================================================
 
-describe('T6 — the sidebar mount posts nothing but retained state, opens no document, and discovers only once activated', () => {
-	it('zero events or calls and zero documents.open at mount, and no engine request at all until activation; then the first op opens it', async () => {
+describe('T6 — the sidebar mount posts nothing but retained state and opens no document; the mount is the activation', () => {
+	it('zero events or calls and zero documents.open at mount; the mount itself activates it (#2625 9bd5d931f), so the saved list, the history file and the first discovery follow with no activation event', async () => {
 		const r = await rig({ docKey: '', activate: false });
 		try {
-			await new Promise<void>((resolve) => { setTimeout(resolve, 400); });
+			await until(() => r.engine.ops().includes('client.getTasks') && r.engine.ops().includes('client.fsReadJson') && r.engine.ops().includes('client.fsStat'), 'the saved list, the history file and the first discovery');
 			const posted = r.spy.posts.map((post) => (post as { __rrtool?: string }).__rrtool);
 			assert.ok(posted.length > 0, 'retained state was published');
 			assert.deepEqual(posted.filter((kind) => kind !== 'state'), [], 'only state publishes at mount');
 			assert.deepEqual(r.docs.opened, []);
-			assert.deepEqual(r.engine.ops(), [], 'no engine request before activation: no discovery, no saved list, no history file');
-			// The first op from a frame activates the controller.
-			await r.env.discoverEndpoints();
-			assert.equal(r.mount.core.activation.reason(), 'op');
-			assert.ok(r.engine.ops().includes('client.getTasks'));
-			await until(() => r.engine.ops().includes('client.fsReadJson') && r.engine.ops().includes('client.fsStat'), 'the saved list and the history file, once active');
+			assert.equal(r.mount.core.activation.reason(), 'lazyMount');
 		} finally {
 			r.dispose();
 		}
 	});
 
-	it('a boot with the account already known (rocket-ui mounts every pinned sidebar) makes no engine request until the tool is activated (DA CE-6)', async () => {
+	it('a boot with the account already known reads and discovers exactly once at mount, and a later activation adds nothing (DA CE-6 now holds through the host: it mounts only a selected or summoned sidebar)', async () => {
 		resetSavedConnections({ force: true });
 		const h = createDevToolHarness(SQL_APP_ID, { json: true });
 		const engine = scriptedClientRealm(engineScript([PIPELINE], [taskRow('p1')], postgres, {}));
@@ -440,23 +435,25 @@ describe('T6 — the sidebar mount posts nothing but retained state, opens no do
 		const spy = spyPeer(h.sidebarPeer);
 		const mount = attachSqlController({ peer: spy.peer, channel: shellProtocol.createToolChannel(spy.peer), cm: engine.cm, protocol: shellProtocol, focusTarget: null });
 		try {
+			await until(() => getSavedConnectionsStatus() === 'ready', 'the saved list at mount');
+			await until(() => engine.ops().includes('client.fsStat') && engine.ops().includes('client.getTasks'), 'the history file and the first discovery');
+			const discoveries = engine.ops().filter((op) => op === 'client.getTasks').length;
+			engine.realm.activate(SQL_APP_ID);
 			await settle();
 			await new Promise<void>((resolve) => { setTimeout(resolve, 100); });
-			assert.deepEqual(engine.ops(), [], 'nothing before activation');
-			engine.realm.activate(SQL_APP_ID);
-			await until(() => getSavedConnectionsStatus() === 'ready', 'the saved list once activated');
-			await until(() => engine.ops().includes('client.fsStat') && engine.ops().includes('client.getTasks'), 'the history file and the first discovery');
+			assert.equal(engine.ops().filter((op) => op === 'client.getTasks').length, discoveries, 'a later selection starts nothing more');
 		} finally {
 			mount.dispose();
 		}
 	});
 
-	it('documents open on user actions only, and each one activates', async () => {
+	it('documents open on user actions only, and a click keeps the gate the mount opened', async () => {
 		const r = await rig({ docKey: '', activate: false });
 		try {
+			assert.deepEqual(r.docs.opened, [], 'none at mount');
 			r.mount.bridge.openConnection(PIPELINE);
 			assert.deepEqual(r.docs.opened, [['c-pipe', 'Orders']]);
-			assert.equal(r.mount.core.activation.reason(), 'user');
+			assert.equal(r.mount.core.activation.reason(), 'lazyMount');
 			r.mount.bridge.openConnectionEditor(null);
 			assert.deepEqual(r.docs.opened[1], ['edit:*new*', 'New Connection']);
 		} finally {

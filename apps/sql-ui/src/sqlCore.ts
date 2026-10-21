@@ -34,10 +34,10 @@
 //               explicit timeout;
 //   identity    the dev-tool identity tracker: it fails closed, and NOTHING is
 //               discovered while it cannot vouch for anyone;
-//   activation  the full app opens it at once; a dev-tool controller waits
-//               for the tool to be activated (rocket-ui mounts every pinned
-//               controller at boot), the first op from a frame, or a user
-//               action in the sidebar;
+//   activation  the full app opens it at once; a dev-tool controller's
+//               mount opens it, since both hosts build a tool's sidebar only
+//               when it is selected or a frame summons it (#2625 9bd5d931f;
+//               shared/explorer/devtool/activation.ts);
 //   endpoints   SQL Explorer's endpoint store (connect/endpoints.ts): owner-
 //               aware discovery, one probe per endpoint, the task-token vault,
 //               the sessions (tokens come ONLY from that vault);
@@ -358,9 +358,9 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		offLoadWhenActive?.();
 		offLoadWhenActive = null;
 		if (owner === null) return;
-		// Read only once the tool is activated (R7): rocket-ui mounts every
-		// pinned sidebar at boot, and none may reach the engine for that alone.
-		// The full app opens its gate at once.
+		// Read only once the tool is activated (R7). A dev-tool controller's
+		// mount is its activation (the hosts mount only a selected or summoned
+		// sidebar); the full app opens its gate at once.
 		offLoadWhenActive = activation.subscribe(() => {
 			if (!disposed && listOwner === owner) void loadSavedConnections(fs);
 		});
