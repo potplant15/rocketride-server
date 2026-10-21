@@ -490,6 +490,19 @@ describe('T9 — docKey routing for every family', () => {
 		assert.equal(connectionDocState({ ...base, found: true, failed: true, listStatus: 'ready' }), 'failed');
 	});
 
+	it('before the host publishes host:connection a document waits; it says "not connected" only once the host said so', () => {
+		const base = { ready: false, failed: false, opened: false, found: true, listStatus: 'ready' as const };
+		assert.equal(connectionDocState({ ...base, hostKnown: false }), 'waiting');
+		assert.equal(connectionDocState({ ...base, hostKnown: true }), 'not-connected');
+		assert.equal(connectionDocState(base), 'not-connected', 'callers that do not say (the full app) keep the old states');
+		assert.equal(connectionDocState({ ...base, ready: true, hostKnown: true }), 'opening');
+		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
+		assert.match(devTool, /const hostConnection = useConnectionReady\(toolChannel\);/);
+		assert.match(devTool, /const engineReady = hostConnection === true;/);
+		assert.match(devTool, /hostKnown=\{hostConnection !== undefined\}/);
+		assert.match(devTool, /case 'waiting':\s*body = <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Waiting for the server connection…"/);
+	});
+
 	it('a realm without a controller takes the snapshot as a read-only replica; a realm that owns the list never takes one', () => {
 		resetSavedConnections({ force: true });
 		applyReplicaConnections({ status: 'ready', list: [PIPELINE] });

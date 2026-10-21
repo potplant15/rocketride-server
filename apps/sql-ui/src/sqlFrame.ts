@@ -136,7 +136,7 @@ export function directReleaseKey(endpoint: SqlEndpoint | null): string | null {
 }
 
 /** What a connection document shows. */
-export type ConnectionDocState = 'not-connected' | 'no-sidebar' | 'failed' | 'not-found' | 'loading' | 'opening' | 'open';
+export type ConnectionDocState = 'waiting' | 'not-connected' | 'no-sidebar' | 'failed' | 'not-found' | 'loading' | 'opening' | 'open';
 
 /**
  * Decide what a connection document shows. An id the list does not hold is
@@ -145,17 +145,18 @@ export type ConnectionDocState = 'not-connected' | 'no-sidebar' | 'failed' | 'no
  * @param input - What the document knows.
  * @param input.ready - The frame may call: the engine is reachable (`host:connection`), the controller is ready and vouches for an account.
  * @param input.sidebarClosed - The engine is reachable but no controller is ready (the sidebar was never opened, or was closed): a document not yet open says to open the sidebar; an open one stays.
+ * @param input.hostKnown - Whether the host has published `host:connection` yet (frames only). `false` means no snapshot has arrived, which says nothing about the server: the document waits instead of claiming it is not connected.
  * @param input.listStatus - The saved-connection list's status.
  * @param input.found - The list holds the document's connection id.
  * @param input.failed - Opening it failed.
  * @param input.opened - It resolved to an endpoint.
  * @returns The state.
  */
-export function connectionDocState(input: { ready: boolean; sidebarClosed?: boolean; listStatus: SavedConnectionsStatus; found: boolean; failed: boolean; opened: boolean }): ConnectionDocState {
+export function connectionDocState(input: { ready: boolean; sidebarClosed?: boolean; hostKnown?: boolean; listStatus: SavedConnectionsStatus; found: boolean; failed: boolean; opened: boolean }): ConnectionDocState {
 	// An open document stays open (run and apply are disabled); one that has
 	// not opened says to open the sidebar instead of waiting.
 	if (input.sidebarClosed === true) return input.opened && !input.failed ? 'open' : 'no-sidebar';
-	if (!input.ready) return 'not-connected';
+	if (!input.ready) return input.hostKnown === false ? 'waiting' : 'not-connected';
 	if (input.failed) return 'failed';
 	if (!input.found) return input.listStatus === 'ready' ? 'not-found' : 'loading';
 	return input.opened ? 'open' : 'opening';

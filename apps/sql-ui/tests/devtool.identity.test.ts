@@ -723,7 +723,8 @@ describe('T8 — with host:connection false, frames disable run/apply and reject
 
 	it('run and apply follow the host connection in frames, and the sidebar follows the shell\'s isConnected', () => {
 		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
-		assert.match(devTool, /const engineReady = useConnectionReady\(toolChannel\);/);
+		assert.match(devTool, /const hostConnection = useConnectionReady\(toolChannel\);/);
+		assert.match(devTool, /const engineReady = hostConnection === true;/);
 		assert.match(devTool, /const ready = engineReady && controllerReady && vouched;/);
 		assert.match(devTool, /createRemoteSqlEnv\(mount\.frame\.caller, ready,/);
 		const query = fs.readFileSync(path.join(SRC, 'views', 'QueryView.tsx'), 'utf8');

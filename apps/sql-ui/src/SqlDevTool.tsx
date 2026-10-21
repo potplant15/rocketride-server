@@ -107,9 +107,10 @@ const OverlayHost: React.FC = () => {
  *
  * @param props.connId - The saved connection's id (the host document key).
  * @param props.sidebarClosed - The engine is reachable but the tool's controller (its sidebar) is not ready.
+ * @param props.hostKnown - The host has published `host:connection` (until then the document waits).
  * @param props.onOpenError - Tell the sidebar this connection could not be opened.
  */
-const SqlConnectionDocument: React.FC<{ connId: string; sidebarClosed: boolean; onOpenError: (message: string) => void }> = ({ connId, sidebarClosed, onOpenError }) => {
+const SqlConnectionDocument: React.FC<{ connId: string; sidebarClosed: boolean; hostKnown: boolean; onOpenError: (message: string) => void }> = ({ connId, sidebarClosed, hostKnown, onOpenError }) => {
 	const env = useSqlEnv();
 	const { record: conn, status } = useConnectionRecord(connId);
 	const [endpoint, setEndpoint] = useState<SqlEndpoint | null>(null);
@@ -156,9 +157,12 @@ const SqlConnectionDocument: React.FC<{ connId: string; sidebarClosed: boolean; 
 	}, [releaseKey, connId]);
 
 	let body: React.ReactNode;
-	switch (connectionDocState({ ready: env.ready, sidebarClosed, listStatus: status, found: conn !== null, failed: resolveError !== null, opened: endpoint !== null })) {
+	switch (connectionDocState({ ready: env.ready, sidebarClosed, hostKnown, listStatus: status, found: conn !== null, failed: resolveError !== null, opened: endpoint !== null })) {
 		case 'no-sidebar':
 			body = <SidebarClosed />;
+			break;
+		case 'waiting':
+			body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Waiting for the server connection…" description="This connection opens once the host reports the server connection." /></div>;
 			break;
 		case 'not-connected':
 			body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Not connected" description="Connect to a RocketRide server to open this connection." /></div>;
@@ -266,7 +270,11 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 	// (otherwise a frame's own first calls, opening its connection and the
 	// first schema read, would only be refused as "not signed in", and
 	// announced).
-	const engineReady = useConnectionReady(toolChannel);
+	// `host:connection` is tri-state (#2625): undefined until the host's first
+	// snapshot. The gates treat that as not ready; the document says it is
+	// waiting rather than that the server is unreachable.
+	const hostConnection = useConnectionReady(toolChannel);
+	const engineReady = hostConnection === true;
 	const controllerReady = useControllerReady(toolChannel);
 	const vouched = useVouched(toolChannel);
 	const ready = engineReady && controllerReady && vouched;
@@ -287,7 +295,7 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 			/>
 		);
 	} else if (route.kind === 'connection') {
-		body = <SqlConnectionDocument connId={route.connId} sidebarClosed={sidebarClosed} onOpenError={onOpenError} />;
+		body = <SqlConnectionDocument connId={route.connId} sidebarClosed={sidebarClosed} hostKnown={hostConnection !== undefined} onOpenError={onOpenError} />;
 	} else {
 		body = (
 			<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
