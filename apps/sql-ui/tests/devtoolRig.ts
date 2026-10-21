@@ -91,10 +91,10 @@ export interface IRig {
  * Mount a controller (as the hosts do: a host channel on the sidebar peer,
  * then the controller in an effect) and one frame on a connection document.
  *
- * @param opts - The engine's saved list, tasks and tool answers; whether to sign in.
+ * @param opts - The engine's saved list, tasks and tool answers; whether to sign in; `bareGate` hands the controller a bus without `getClient`, whose realm the activation gate cannot classify (a VS Code webview mounted while its root is down), so the gate waits for an explicit signal.
  * @returns The rig.
  */
-export async function rig(opts: { saved?: SavedSqlConnection[]; rows?: IFakeTaskRow[]; tool?: (params: { tool: string; input?: Record<string, unknown> }) => unknown; login?: boolean; activate?: boolean; now?: () => number; docKey?: string; files?: Record<string, unknown> } = {}): Promise<IRig> {
+export async function rig(opts: { saved?: SavedSqlConnection[]; rows?: IFakeTaskRow[]; tool?: (params: { tool: string; input?: Record<string, unknown> }) => unknown; login?: boolean; activate?: boolean; now?: () => number; docKey?: string; files?: Record<string, unknown>; bareGate?: boolean } = {}): Promise<IRig> {
 	resetSavedConnections({ force: true });
 	const h = createDevToolHarness(SQL_APP_ID, { json: true });
 	const engine = scriptedClientRealm(engineScript(opts.saved ?? [PIPELINE, DIRECT], opts.rows ?? [taskRow('p1')], opts.tool ?? postgres, opts.files ?? {}));
@@ -119,7 +119,10 @@ export async function rig(opts: { saved?: SavedSqlConnection[]; rows?: IFakeTask
 			return { serve: (op, handler) => server.serve(op, handler), dispose: () => { servers.disposed += 1; server.dispose(); } };
 		},
 	};
-	const controllerOpts = { peer: spy.peer, channel: hostChannel, documents, cm: engine.cm, protocol, focusTarget: null, ...(opts.now ? { now: opts.now } : {}) };
+	const cm = opts.bareGate
+		? new Proxy(engine.cm, { get: (target, prop) => (prop === 'getClient' ? undefined : Reflect.get(target, prop, target)) })
+		: engine.cm;
+	const controllerOpts = { peer: spy.peer, channel: hostChannel, documents, cm, protocol, focusTarget: null, ...(opts.now ? { now: opts.now } : {}) };
 	let mount = attachSqlController(controllerOpts);
 	if (opts.login !== false) engine.realm.login(USER);
 	// The user selected the tool's sidebar (rocket-ui's shell:toolSidebarActivated):

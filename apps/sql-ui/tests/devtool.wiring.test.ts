@@ -54,7 +54,7 @@ import type { PipelineBoundConnection, SavedSqlConnection } from '../src/connect
 import { lookupConnection } from '../src/connectionRecord';
 import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
 import type { ConnectionsState, HistoryState } from '../src/ops';
-import { connectionDocState, directReleaseKey, routeDocKey, sqlChannel } from '../src/sqlFrame';
+import { attachSqlFrame, connectionDocState, directReleaseKey, routeDocKey, sqlChannel } from '../src/sqlFrame';
 import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS } from '../src/sqlTimeouts';
 import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
@@ -447,6 +447,25 @@ describe('T6 — the sidebar mount posts nothing but retained state and opens no
 		}
 	});
 
+	it('where the realm cannot be classified the gate waits, and the wiring opens it on the first frame op or a user action', async () => {
+		const byOp = await rig({ docKey: '', activate: false, bareGate: true });
+		try {
+			assert.equal(byOp.mount.core.activation.reason(), null, 'the premise: the gate is closed at mount');
+			await byOp.env.discoverEndpoints().catch(() => undefined);
+			assert.equal(byOp.mount.core.activation.reason(), 'op');
+		} finally {
+			byOp.dispose();
+		}
+		const byUser = await rig({ docKey: '', activate: false, bareGate: true });
+		try {
+			assert.equal(byUser.mount.core.activation.reason(), null, 'the premise: the gate is closed at mount');
+			byUser.mount.bridge.openConnection(PIPELINE);
+			assert.equal(byUser.mount.core.activation.reason(), 'user');
+		} finally {
+			byUser.dispose();
+		}
+	});
+
 	it('documents open on user actions only, and a click keeps the gate the mount opened', async () => {
 		const r = await rig({ docKey: '', activate: false });
 		try {
@@ -458,6 +477,24 @@ describe('T6 — the sidebar mount posts nothing but retained state and opens no
 			assert.deepEqual(r.docs.opened[1], ['edit:*new*', 'New Connection']);
 		} finally {
 			r.dispose();
+		}
+	});
+});
+
+// =============================================================================
+// #2625 9bd5d931f — busPeer summons a controller that is not mounted
+// =============================================================================
+
+describe('a frame whose controller is not mounted summons it (busPeer host.mountToolSidebar, #2625 9bd5d931f)', () => {
+	it('a SQL frame announces `active` as its document wiring attaches, and that held event summons the controller once', async () => {
+		resetSavedConnections({ force: true });
+		const h = createDevToolHarness(SQL_APP_ID, { json: true });
+		const frame = attachSqlFrame({ peer: h.newFramePeer(), docKey: 'c-pipe', protocol: shellProtocol });
+		try {
+			await settle();
+			assert.deepEqual(h.emitted.filter((e) => e.op === 'host.mountToolSidebar'), [{ op: 'host.mountToolSidebar', params: { appId: SQL_APP_ID } }]);
+		} finally {
+			frame.dispose();
 		}
 	});
 });
