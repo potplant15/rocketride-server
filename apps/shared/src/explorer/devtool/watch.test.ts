@@ -35,6 +35,7 @@ import { identityFromConnectResult } from '../connect/identity';
 import { SINGLE_TOOLS_ROLE } from '../types';
 import type { IExplorerClient } from '../types';
 import { createActivationGate } from './activation';
+import type { IActivationBus } from './activation';
 import { createIdentityTracker } from './identity';
 import { createDevToolDiscovery } from './watch';
 import type { IDiscoveryBus } from './watch';
@@ -59,9 +60,10 @@ interface IRig {
 /**
  * Build the controller-side composition the lanes use: tracker + gate + discovery watch + store.
  *
+ * @param opts - `bareGate`: give the gate a bus without `getClient`, which cannot classify its realm and so waits for an explicit activation (the gate's fallback).
  * @returns The rig.
  */
-function rig(): IRig {
+function rig(opts: { bareGate?: boolean } = {}): IRig {
 	const realm = createFakeClientRealm();
 	const world = fakeWorld([row({ ownerId: 'user-a', teamId: 'team-1' })]);
 	const clock = manualClock();
@@ -72,7 +74,8 @@ function rig(): IRig {
 		removeMonitor: async () => { monitors.push('remove'); },
 	};
 	const identity = createIdentityTracker({ cm: realm.cm });
-	const activation = createActivationGate({ appId: APP, cm: realm.cm, activeDocKey: null });
+	const gateBus: IActivationBus = opts.bareGate ? { on: (event, handler) => realm.cm.on(event, handler), isConnected: () => realm.cm.isConnected() } : realm.cm;
+	const activation = createActivationGate({ appId: APP, cm: gateBus, activeDocKey: null });
 	const discovery = createDevToolDiscovery({ cm: realm.cm, client, identity, activation, focusTarget: null });
 	const store = createEndpointStore({ providers: new Set(['db_postgres']), roles: SINGLE_TOOLS_ROLE, tools: {}, clock });
 	const detach = store.attach(client, identity.get().identity, discovery.watch);
@@ -108,8 +111,23 @@ describe('createDevToolDiscovery', () => {
 		r.dispose();
 	});
 
-	it('rocket-ui boot: signed in but not activated means no discovery and no monitor; activation starts exactly one', async () => {
+	it('rocket-ui (since #2625 9bd5d931f a sidebar mounts only when selected or summoned): signed in at mount means exactly one discovery and one monitor, no activation event needed', async () => {
 		const r = rig();
+		r.realm.login(account('user-a', 'org-1', 'team-1'));
+		await r.clock.advance(1_000);
+		assert.equal(r.world.getTasksCalls, 1);
+		assert.equal(r.endpoints(), 1);
+		assert.deepEqual(r.monitors, ['add']);
+		r.realm.activate(APP);
+		await r.clock.advance(1_000);
+		assert.equal(r.world.getTasksCalls, 1, 'a later selection starts nothing more');
+		r.dispose();
+		await settle();
+		assert.deepEqual(r.monitors, ['add', 'remove']);
+	});
+
+	it('signed in but not activated (a gate that cannot classify its realm) means no discovery and no monitor; activation starts exactly one', async () => {
+		const r = rig({ bareGate: true });
 		r.realm.login(account('user-a', 'org-1', 'team-1'));
 		r.realm.emit('shell:event', { event: { event: 'apaevt_task', body: { action: 'begin' } } });
 		await r.clock.advance(1_000);

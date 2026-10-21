@@ -54,10 +54,49 @@ describe('realmKind', () => {
 	});
 });
 
-describe('createActivationGate — rocket-ui mounts every pinned controller at boot', () => {
-	it('stays closed through a boot: login, connect, other tools activating, a null activeDocKey', () => {
+describe('createActivationGate — both hosts build a tool sidebar only when it is selected or summoned (#2625 9bd5d931f), so mount IS the first activation', () => {
+	it('opens at mount in a client realm (rocket-ui), before any login or shell event', () => {
 		const realm = createFakeClientRealm();
 		const gate = createActivationGate({ appId: APP, cm: realm.cm, activeDocKey: null });
+		assert.equal(gate.reason(), 'lazyMount');
+		assert.deepEqual(realm.requests, [], 'creating the gate calls nothing');
+		const heard: ActivationReason[] = [];
+		gate.subscribe((reason) => heard.push(reason));
+		realm.activate(APP);
+		gate.open('user');
+		assert.deepEqual(heard, ['lazyMount'], 'later signals change nothing');
+		gate.dispose();
+	});
+
+	it('opens at mount in a connected socketless realm (VS Code)', async () => {
+		const realm = createFakeSocketlessRealm();
+		realm.root.connect(account('u'));
+		await settle();
+		const gate = createActivationGate({ appId: APP, cm: realm.cm, activeDocKey: undefined });
+		assert.equal(gate.reason(), 'lazyMount');
+		gate.dispose();
+	});
+
+	it('mounted while a socketless root is down: opens when the realm proves socketless on shell:connected', async () => {
+		const realm = createFakeSocketlessRealm();
+		const gate = createActivationGate({ appId: APP, cm: realm.cm });
+		assert.equal(gate.isOpen(), false);
+		realm.root.connect(account('u'));
+		await settle();
+		assert.equal(gate.reason(), 'lazyMount');
+		gate.dispose();
+	});
+});
+
+/** A realm's bus without `getClient`: its kind cannot be told, so the gate waits for the explicit signals. */
+function bareBus(realm: ReturnType<typeof createFakeClientRealm>): IActivationBus {
+	return { on: (event, handler) => realm.cm.on(event, handler), isConnected: () => realm.cm.isConnected() };
+}
+
+describe('createActivationGate — a bus that cannot be classified falls back to the explicit signals', () => {
+	it('stays closed through login, connect, other tools activating, a null activeDocKey', () => {
+		const realm = createFakeClientRealm();
+		const gate = createActivationGate({ appId: APP, cm: bareBus(realm), activeDocKey: null });
 		realm.login(account('u'));
 		realm.activate('graph-ui');
 		realm.deactivate('graph-ui');
@@ -72,7 +111,7 @@ describe('createActivationGate — rocket-ui mounts every pinned controller at b
 	it('opens on shell:toolSidebarActivated for THIS app', () => {
 		const realm = createFakeClientRealm();
 		realm.login(account('u'));
-		const gate = createActivationGate({ appId: APP, cm: realm.cm });
+		const gate = createActivationGate({ appId: APP, cm: bareBus(realm) });
 		realm.activate(APP);
 		assert.equal(gate.isOpen(), true);
 		assert.equal(gate.reason(), 'activated');
@@ -82,21 +121,21 @@ describe('createActivationGate — rocket-ui mounts every pinned controller at b
 	it("opens on an activeDocKey that is a string ('' is this tool's generic frame)", () => {
 		for (const key of ['', 'workbench:k1']) {
 			const realm = createFakeClientRealm();
-			const gate = createActivationGate({ appId: APP, cm: realm.cm, activeDocKey: null });
+			const gate = createActivationGate({ appId: APP, cm: bareBus(realm), activeDocKey: null });
 			gate.noteActiveDocKey(key);
 			assert.equal(gate.reason(), 'activeDoc', JSON.stringify(key));
 			gate.dispose();
 		}
 		const realm = createFakeClientRealm();
-		const atMount = createActivationGate({ appId: APP, cm: realm.cm, activeDocKey: '' });
-		assert.equal(atMount.reason(), 'activeDoc', 'a restored generic frame at boot counts');
+		const atMount = createActivationGate({ appId: APP, cm: bareBus(realm), activeDocKey: '' });
+		assert.equal(atMount.reason(), 'activeDoc', 'a generic frame already active at mount counts');
 		atMount.dispose();
 	});
 
 	it('opens on the first op from a frame and on an explicit user action', () => {
 		for (const reason of ['op', 'user'] as ActivationReason[]) {
 			const realm = createFakeClientRealm();
-			const gate = createActivationGate({ appId: APP, cm: realm.cm });
+			const gate = createActivationGate({ appId: APP, cm: bareBus(realm) });
 			gate.open(reason);
 			assert.equal(gate.reason(), reason);
 			gate.dispose();
@@ -105,7 +144,7 @@ describe('createActivationGate — rocket-ui mounts every pinned controller at b
 
 	it('opens once: the first reason sticks and subscribers hear it exactly once', () => {
 		const realm = createFakeClientRealm();
-		const gate = createActivationGate({ appId: APP, cm: realm.cm });
+		const gate = createActivationGate({ appId: APP, cm: bareBus(realm) });
 		const heard: ActivationReason[] = [];
 		gate.subscribe((reason) => heard.push(reason));
 		realm.activate(APP);
@@ -117,43 +156,11 @@ describe('createActivationGate — rocket-ui mounts every pinned controller at b
 		assert.deepEqual(late, ['activated'], 'a late subscriber hears the open state at once');
 		gate.dispose();
 	});
-});
-
-describe('createActivationGate — VS Code mounts a tool sidebar lazily, so mount IS the first activation', () => {
-	it('opens at mount in a connected socketless realm', async () => {
-		const realm = createFakeSocketlessRealm();
-		realm.root.connect(account('u'));
-		await settle();
-		const gate = createActivationGate({ appId: APP, cm: realm.cm, activeDocKey: undefined });
-		assert.equal(gate.reason(), 'lazyMount');
-		gate.dispose();
-	});
-
-	it('mounted while the root is down: opens when the realm proves socketless on shell:connected', async () => {
-		const realm = createFakeSocketlessRealm();
-		const gate = createActivationGate({ appId: APP, cm: realm.cm });
-		assert.equal(gate.isOpen(), false);
-		realm.root.connect(account('u'));
-		await settle();
-		assert.equal(gate.reason(), 'lazyMount');
-		gate.dispose();
-	});
-
-	it('a bus without getClient cannot tell, so it falls back to the explicit signals', () => {
-		const realm = createFakeClientRealm();
-		const bare: IActivationBus = { on: (event, handler) => realm.cm.on(event, handler), isConnected: () => realm.cm.isConnected() };
-		const gate = createActivationGate({ appId: APP, cm: bare });
-		realm.login(account('u'));
-		assert.equal(gate.isOpen(), false);
-		realm.activate(APP);
-		assert.equal(gate.reason(), 'activated');
-		gate.dispose();
-	});
 
 	it('dispose removes its listeners', () => {
 		const realm = createFakeClientRealm();
 		const before = realm.cm.listenerCount();
-		const gate = createActivationGate({ appId: APP, cm: realm.cm });
+		const gate = createActivationGate({ appId: APP, cm: bareBus(realm) });
 		gate.dispose();
 		assert.equal(realm.cm.listenerCount(), before);
 		realm.activate(APP);

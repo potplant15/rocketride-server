@@ -25,29 +25,33 @@
 // =============================================================================
 //
 // A controller must not discover (or register monitors, or probe) just
-// because it mounted: rocket-ui's TabPanel mounts EVERY pinned tool's sidebar
-// at boot, so a mount-time discovery would hit the engine once per pinned
-// tool. The gate opens ONCE, on the first of:
+// because a host built it for no reason the user gave. The gate opens ONCE,
+// on the first of:
 //
+//   lazyMount   the mount itself, in a realm whose kind is known (below)
 //   activated   `shell:toolSidebarActivated` for this appId (useToolStrip)
 //   op          the first op a frame sends (attachController onFirstOp)
 //   activeDoc   an `activeDocKey` that is a string: '' is this tool's generic
 //               frame; null means another tab is active, undefined that the
 //               host cannot tell yet (VS Code before devtools:activeDoc)
 //   user        an explicit action in the sidebar (`open('user')`)
-//   lazyMount   the mount itself, in a realm that mounts sidebars lazily
 //
-// LAZY MOUNT. VS Code mounts a tool sidebar on its first tab select, and that
-// selection's `shell:toolSidebarActivated` fires before the sidebar exists to
-// hear it (it is not replayed; types/shell.ts says "mounting IS the first
-// activation"). rocket-ui contradicts that comment: it mounts every pinned
-// sidebar at boot, so there mounting is NOT an activation. The signal used
-// to tell them apart: a SOCKETLESS realm (connected with no client, see
-// realm.ts) is a VS Code webview, and its sidebar mounts lazily. A realm that
-// is down and clientless cannot be classified yet, so the gate re-checks on
-// `shell:connected`. Fallback: when the realm cannot be classified (no
-// `getClient` on the bus), the gate waits for the explicit signals; the cost
-// is that the first discovery waits for the user's next action.
+// MOUNT IS THE FIRST ACTIVATION, in both hosts. Since #2625 9bd5d931f
+// ("one tool mount"), rocket-ui and VS Code both build a store tool's
+// sidebar only when its tab is first selected, or when one of its frames
+// summons the controller (busPeer's `host.mountToolSidebar`), and keep it
+// mounted afterwards (SidebarChrome's mounted-tool set). The selection's
+// `shell:toolSidebarActivated` fires before the sidebar exists to hear it
+// (it is not replayed; #2625 lists this as a known gap), so a gate that
+// waited for it would leave a first-selected tool idle. Before that commit
+// rocket-ui mounted every pinned sidebar at boot, which is what this gate
+// was built against; that no longer happens.
+//
+// So the gate opens at mount in any realm it can classify: a client realm
+// (rocket-ui) or a socketless one (a VS Code webview, see realm.ts). A
+// clientless realm that is down cannot be classified yet, so the gate
+// re-checks on `shell:connected`. Fallback: a bus that cannot be classified
+// at all (no `getClient`) waits for the explicit signals.
 // =============================================================================
 
 import type { ShellEventMap } from 'shell';
@@ -120,8 +124,9 @@ export function createActivationGate(opts: IActivationGateOptions): IActivationG
 		if (typeof key === 'string') open('activeDoc');
 	};
 
+	// Mounting is the activation wherever the realm can be classified (see the header).
 	const checkLazyMount = (): void => {
-		if (realmKind(cm) === 'socketless') open('lazyMount');
+		if (realmKind(cm) !== 'unknown') open('lazyMount');
 	};
 
 	offs.push(cm.on('shell:toolSidebarActivated', (payload: unknown) => {
