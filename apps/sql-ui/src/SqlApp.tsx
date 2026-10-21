@@ -285,7 +285,7 @@ const SqlAppReady: React.FC<{ docs: Documents; bridge: SqlSidebarBridge }> = ({ 
 								isActive={state.activeGroupId === groupId}
 								canClose={canCloseGroups}
 								onSplit={(gid, dir) => docs.splitGroupWithDocument(gid, dir)}
-								onCloseGroup={(gid) => docs.closeGroup(gid)}
+								onCloseGroup={(gid) => { void docs.requestCloseGroup(gid); }}
 							/>
 
 							{/* Editor content — all editors stay mounted; visibility
