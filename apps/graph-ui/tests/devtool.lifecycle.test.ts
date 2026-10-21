@@ -143,9 +143,11 @@ describe('frames say which document they are once per controller, and stay quiet
 	});
 
 	it('a schema load the sidebar starts by itself does not count as the user activating the tool', async () => {
-		const engine = rocketRealm();
-		engine.realm.login(account('u1'));
+		// A VS Code realm mounted while its root is down cannot be classified,
+		// so its gate is still closed (a classified realm's mount IS the activation).
+		const engine = vscodeRealm();
 		const mounted = mountController(engine.cm);
+		assert.equal(mounted.controller.activation.isOpen(), false, 'the premise: the gate is closed');
 		await mounted.controller.env(true).loadSchema('k1|unknown');
 		assert.equal(mounted.controller.activation.isOpen(), false, 'an effect-driven load opens nothing');
 		mounted.controller.env(true).openDocument({ kind: 'connections' });
@@ -154,8 +156,8 @@ describe('frames say which document they are once per controller, and stay quiet
 	});
 });
 
-describe('T6 - a quiet sidebar: no event, call or document at mount; the first discovery waits for activation', () => {
-	it('rocket-ui (every pinned sidebar mounts at boot): state publishes only, no engine request until the tool is activated', async () => {
+describe('T6 - a quiet sidebar: no event, call or document at mount; the mount is the activation, and discovery waits for a known identity', () => {
+	it('rocket-ui (since #2625 9bd5d931f a sidebar mounts only when selected or summoned): state publishes only, then the first discovery and the history read with no activation event', async () => {
 		const engine = rocketRealm();
 		engine.realm.login(account('u1'));
 		const mounted = mountController(engine.cm);
@@ -164,24 +166,28 @@ describe('T6 - a quiet sidebar: no event, call or document at mount; the first d
 		assert.ok(mounted.spy.posts.length > 0, 'the premise: retained state was published');
 		assert.deepEqual(mounted.docs.opened, [], 'no documents.open at mount');
 		assert.deepEqual(mounted.h.emitted, [], 'nothing summoned a frame');
-		assert.deepEqual(engine.requests, [], 'no engine request: no discovery, no monitor, no history read');
+		assert.equal(mounted.controller.activation.reason(), 'lazyMount', 'the mount is the activation');
 
+		await until(() => engine.requests.some((r) => r.op === 'client.getTasks'), 'the first discovery');
+		await until(() => engine.requests.some((r) => r.op === 'client.fsStat'), 'the history read');
+		const discoveries = engine.requests.filter((r) => r.op === 'client.getTasks').length;
 		engine.realm.activate(APP);
-		await until(() => engine.requests.some((r) => r.op === 'client.getTasks'), 'the first discovery after activation');
-		await until(() => engine.requests.some((r) => r.op === 'client.fsStat'), 'history read once activated');
+		await settle();
+		assert.equal(engine.requests.filter((r) => r.op === 'client.getTasks').length, discoveries, 'a later selection starts nothing more');
 		assert.deepEqual(nonStatePosts(mounted.spy.posts), [], 'still no event or call posts');
+		assert.deepEqual(mounted.docs.opened, [], 'still no documents.open');
 		mounted.controller.dispose();
 	});
 
-	it('rocket-ui: signing in after the sidebar booted still reads nothing (no history file) until the tool is activated', async () => {
+	it('rocket-ui: a sidebar mounted before sign-in reads nothing (no history file, no discovery) until the identity is known', async () => {
 		const engine = rocketRealm();
 		const mounted = mountController(engine.cm);
-		engine.realm.login(account('u1'));
 		await settle();
-		assert.equal(mounted.controller.identity.get().known, true, 'the premise: the identity is known');
-		assert.deepEqual(engine.requests, [], 'no history read, no discovery, before activation');
-		engine.realm.activate(APP);
-		await until(() => engine.requests.some((r) => r.op === 'client.fsStat'), 'history read once activated');
+		assert.equal(mounted.controller.activation.isOpen(), true, 'the premise: the mount activated it');
+		assert.deepEqual(engine.requests, [], 'no history read, no discovery, while nobody is signed in');
+		engine.realm.login(account('u1'));
+		await until(() => engine.requests.some((r) => r.op === 'client.fsStat'), 'history read once signed in');
+		await until(() => engine.requests.some((r) => r.op === 'client.getTasks'), 'discovery once signed in');
 		mounted.controller.dispose();
 	});
 
