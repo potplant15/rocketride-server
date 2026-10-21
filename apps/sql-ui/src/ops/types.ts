@@ -24,25 +24,24 @@
 // SQL-UI PROTOCOL — frames ask, the controller executes
 // =============================================================================
 //
-// The tool's whole wire vocabulary as protocol maps (shell ToolOpMap /
-// ToolStateMap / ToolEventMap pattern): ops a DOCUMENT FRAME calls, the
-// state topics the controller publishes, and the events either side sends.
-// Frames hold NO RocketRide client: a frame awaits
-// `call('sql.execute', …)` and the tool's sidebar controller executes it on
-// its single server connection (see sqlBridge.ts for the serving side,
-// sqlEnv.ts for the frame-side SqlEnv built over these).
+// The tool's wire vocabulary as protocol maps (shell ToolOpMap / ToolStateMap
+// / ToolEventMap pattern): the ops a DOCUMENT FRAME calls, the state topics
+// the controller publishes, and the events either side sends. What remains
+// here is COORDINATION of shared state, never transport: statement traffic
+// runs on each frame's own realm client (sqlEnv.ts), while ENDPOINT LIFECYCLE
+// stays controller-owned — direct-mode temp pipelines are refcounted, and two
+// realms refcounting independently would tear down each other's endpoints.
 //
 // Own module (types only) so sqlEnv and sqlBridge can both import the
-// vocabulary without a cycle. Connection reachability rides the shell's
-// `host:connection` system topic — not a sql-ui-specific vocabulary.
+// vocabulary without a cycle.
 // =============================================================================
 
 import type { ToolOpMap, ToolOpSpec, ToolStateMap, ToolEventMap } from 'shell';
-import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SqlDialect } from './connect';
+import type { SqlEndpoint, SavedSqlConnection } from '../connect';
 
 /** The sql tool's op map — private to this tool. */
 export interface SqlOps extends ToolOpMap {
-	// ── Connection lifecycle ─────────────────────────────────────────────────
+	// ── Connection lifecycle (refcounted — must live in ONE realm) ──────────
 	/** Resolve a saved connection to a live endpoint (direct mode starts or
 	 *  reattaches its temp tool pipeline — the controller owns the revival). */
 	'sql.resolveEndpoint': ToolOpSpec<{ connId: string }, SqlEndpoint>;
@@ -52,23 +51,6 @@ export interface SqlOps extends ToolOpMap {
 	/** Discover database endpoints across the server's running pipelines
 	 *  (the New Connection dialog's pipeline path). */
 	'sql.discoverEndpoints': ToolOpSpec<Record<string, never>, SqlEndpoint[]>;
-	// ── Session tools (SqlSession, one op per method) ───────────────────────
-	/** Execute one statement against an endpoint. */
-	'sql.execute': ToolOpSpec<{ endpoint: SqlEndpoint; sql: string; params?: unknown[]; idempotent?: boolean }, SqlExecuteResult>;
-	/** Read the endpoint's (task-start) schema reflection. */
-	'sql.getSchema': ToolOpSpec<{ endpoint: SqlEndpoint; table?: string }, SqlSchemaResponse>;
-	/** Ask the node to re-reflect the database (falls back to the task-start
-	 *  snapshot, flagged `stale`, when the node cannot). */
-	'sql.refreshSchema': ToolOpSpec<{ endpoint: SqlEndpoint }, SqlSchemaResponse>;
-	/** Report the endpoint's SQL dialect. */
-	'sql.dialect': ToolOpSpec<{ endpoint: SqlEndpoint }, SqlDialect>;
-	// ── Connection editor support ────────────────────────────────────────────
-	/** Fetch one service definition (the direct path's config schema). */
-	'sql.getService': ToolOpSpec<{ provider: string }, unknown>;
-	/** Validate a single-component pipeline payload server-side. */
-	'sql.validate': ToolOpSpec<{ pipeline: Record<string, unknown> }, unknown>;
-	/** Environment-variable names for the config form's `${}` autocomplete. */
-	'sql.envKeys': ToolOpSpec<Record<string, never>, string[]>;
 }
 
 /** The sql tool's state topics (controller → documents). */

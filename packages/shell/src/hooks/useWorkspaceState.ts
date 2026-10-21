@@ -34,7 +34,7 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { RocketRideClient } from 'rocketride';
 import { WorkspaceStore } from '../workspace/workspaceStore';
-import { usePrefsHost } from '../workspace/prefsHost';
+import { usePrefsHost } from '../ops/prefsHost';
 import { devBootConfig } from '../util/devGate';
 
 /**

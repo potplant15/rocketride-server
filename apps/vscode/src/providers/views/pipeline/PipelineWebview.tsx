@@ -267,21 +267,23 @@ const PipelineWebview: React.FC = () => {
 		let added = false;
 		let disposed = false;
 		const add = (): void => {
-			if (added || disposed || !cm.isConnected()) return;
+			const client = cm.getClient();
+			if (added || disposed || !cm.isConnected() || !client) return;
 			added = true;
-			void cm.request('client.addMonitor', { key: projectKey, types: projectTypes } as never).catch(() => {
+			void client.addMonitor(projectKey, projectTypes).catch(() => {
 				added = false;
 			});
-			void cm.request('client.addMonitor', { key: globalKey, types: globalTypes } as never).catch(() => {});
+			void client.addMonitor(globalKey, globalTypes).catch(() => {});
 		};
 		add();
 		const off = cm.on('shell:connected', add);
 		return () => {
 			disposed = true;
 			off();
-			if (added) {
-				cm.emitOp('client.removeMonitor', { key: projectKey, types: projectTypes });
-				cm.emitOp('client.removeMonitor', { key: globalKey, types: globalTypes });
+			const client = cm.getClient();
+			if (added && client) {
+				void client.removeMonitor(projectKey, projectTypes).catch(() => {});
+				void client.removeMonitor(globalKey, globalTypes).catch(() => {});
 			}
 		};
 	}, [projectId]);
@@ -396,11 +398,13 @@ const PipelineWebview: React.FC = () => {
 	);
 
 	const handleValidate = useCallback(async (pipeline: any): Promise<any> => {
-		// Brokered client.validate. CONTRACT: the old path resolved with an
+		// The realm client's validate. CONTRACT: the old path resolved with an
 		// EMPTY result on timeout/failure (the canvas has never seen a
 		// rejection here) — preserve that by catching everything.
 		try {
-			return await ConnectionManager.getInstance().request('client.validate', pipeline as never, { timeoutMs: 15000 });
+			const client = ConnectionManager.getInstance().getClient();
+			if (!client) return { errors: [], warnings: [] };
+			return await client.validate(pipeline);
 		} catch {
 			return { errors: [], warnings: [] };
 		}
@@ -413,9 +417,11 @@ const PipelineWebview: React.FC = () => {
 	 * host error or timeout so the canvas treats the request as retryable.
 	 */
 	const handleGetNodeSchema = useCallback(async (provider: string): Promise<Record<string, any> | undefined> => {
-		// Brokered client.getService — rejects on error/timeout so the canvas
-		// treats the request as retryable (unchanged contract).
-		return (await ConnectionManager.getInstance().request('client.getService', { service: provider } as never, { timeoutMs: 15000 })) as Record<string, any> | undefined;
+		// The realm client's getService — rejects on error/timeout so the
+		// canvas treats the request as retryable (unchanged contract).
+		const client = ConnectionManager.getInstance().getClient();
+		if (!client) throw new Error('Not connected to server');
+		return (await client.getService(provider)) as Record<string, any> | undefined;
 	}, []);
 
 	const handlePipelineAction = useCallback((action: 'run' | 'stop' | 'restart', source?: string) => {
@@ -468,22 +474,30 @@ const PipelineWebview: React.FC = () => {
 		ConnectionManager.getInstance().emitOp('host.pipeline.save', { doc: docRef.current });
 	}, []);
 
-	// --- Checkout callbacks — brokered client.billing.* bus ops ---------------
+	// --- Checkout callbacks — the realm client's billing surface --------------
+
+	const needBillingClient = useCallback(() => {
+		const cm = ConnectionManager.getInstance();
+		const client = cm.getClient();
+		if (!client || !cm.isConnected()) throw new Error('Not connected to server');
+		return client;
+	}, []);
 
 	const handleFetchPlans = useCallback((): Promise<CheckoutPlan[]> => {
-		return ConnectionManager.getInstance().request('client.billing.getProductPrices', { appId: PIPE_BUILDER_APP_ID } as never) as Promise<CheckoutPlan[]>;
-	}, []);
+		return needBillingClient().billing.getProductPrices(PIPE_BUILDER_APP_ID) as Promise<CheckoutPlan[]>;
+	}, [needBillingClient]);
 
 	const handleCreateCheckout = useCallback((priceId: string): Promise<{ clientSecret: string; subscriptionId: string }> => {
-		const cm = ConnectionManager.getInstance();
-		const orgId = cm.getAccountInfo()?.organization?.id;
+		const orgId = ConnectionManager.getInstance().getAccountInfo()?.organization?.id;
 		if (!orgId) return Promise.reject(new Error('No organisation found'));
-		return cm.request('client.billing.createCheckoutSession', { orgId, appId: PIPE_BUILDER_APP_ID, priceId } as never) as Promise<{ clientSecret: string; subscriptionId: string }>;
-	}, []);
+		return needBillingClient().billing.createCheckoutSession(orgId, PIPE_BUILDER_APP_ID, priceId) as Promise<{ clientSecret: string; subscriptionId: string }>;
+	}, [needBillingClient]);
 
 	const handleConfirmPending = useCallback(async (subscriptionId: string, priceId: string): Promise<void> => {
-		await ConnectionManager.getInstance().request('client.billing.confirmPending', { appId: PIPE_BUILDER_APP_ID, subscriptionId, priceId } as never);
-	}, []);
+		// No SDK method exists for confirm_pending; wrap the public call()
+		// exactly as BillingApi wraps its other verbs.
+		await needBillingClient().call('rrext_account_billing', { subcommand: 'confirm_pending', appId: PIPE_BUILDER_APP_ID, subscriptionId, priceId });
+	}, [needBillingClient]);
 
 	const handleCheckoutSuccess = useCallback(() => {
 		setShowCheckout(false);
@@ -540,7 +554,7 @@ const PipelineWebview: React.FC = () => {
 		// The drawer's run state is push-driven: the team-scoped task monitor's
 		// events trigger the re-fetches (brokered refcounts dedupe; released
 		// per-connection server-side, matching open-again-later usage).
-		void ConnectionManager.getInstance().request('client.addMonitor', { key: { projectId: projectIdRef.current, source: '*', teamId: toWireTeamId(teamId) }, types: ['task'] } as never).catch(() => {});
+		void ConnectionManager.getInstance().getClient()?.addMonitor({ projectId: projectIdRef.current, source: '*', teamId: toWireTeamId(teamId) }, ['task']).catch(() => {});
 		fetchDeploymentOp(projectIdRef.current, teamId, sourceId).then(
 			(payload) => {
 				// Stale-drawer guard: only the OPEN record's result applies.
@@ -641,7 +655,11 @@ const PipelineWebview: React.FC = () => {
 	);
 
 	/** Chapters/timeline fetch for one source (session-independent). */
-	const fetchLogTimeline = useCallback((source: string, teamId?: string): Promise<TaskTimeline> => ConnectionManager.getInstance().request('client.log.chapters', { projectId: projectIdRef.current, source, ...(teamId ? { teamId } : {}) } as never, { timeoutMs: DEPLOY_REQUEST_TIMEOUT_MS }) as Promise<TaskTimeline>, []);
+	const fetchLogTimeline = useCallback((source: string, teamId?: string): Promise<TaskTimeline> => {
+		const client = ConnectionManager.getInstance().getClient();
+		if (!client) return Promise.reject(new Error('Not connected to server'));
+		return client.log.chapters({ projectId: projectIdRef.current, source, ...(teamId ? { teamId } : {}) }) as unknown as Promise<TaskTimeline>;
+	}, []);
 
 	/** Dev-continuum DVR session factory for ProjectView's sections. */
 	const openEventStream = useCallback((stream: { source: string; runKind: 'dev' | 'deploy' }) => openLogSession(stream.source), [openLogSession]);

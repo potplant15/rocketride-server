@@ -180,7 +180,7 @@ const ToolStorePanel: React.FC<{
 		let alive = true;
 		const refresh = (): void => {
 			if (!cm.isConnected()) return; // stay on Loading until a connection answers
-			void fetchDevToolCatalog(cm).then(
+			void fetchDevToolCatalog(cm.getClient()).then(
 				(entries) => {
 					if (!alive) return;
 					const base = (cm.getHttpUrl() || '').replace(/\/$/, '');

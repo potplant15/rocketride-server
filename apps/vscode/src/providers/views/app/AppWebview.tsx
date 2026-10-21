@@ -596,7 +596,13 @@ const AppWebview: React.FC = () => {
 		const armMonitor = (): void => {
 			if (monitorArmed.current) return;
 			monitorArmed.current = true;
-			cm.request('client.addMonitor', { key: { token: '*' }, types: ['deploy'] } as never).catch(() => {
+			const client = cm.getClient();
+			if (!client) {
+				// Not seeded yet — re-arm on the next connect.
+				monitorArmed.current = false;
+				return;
+			}
+			client.addMonitor({ token: '*' }, ['deploy']).catch(() => {
 				// Not connected yet — re-arm on the next connect.
 				monitorArmed.current = false;
 			});

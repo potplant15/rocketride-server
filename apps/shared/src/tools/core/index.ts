@@ -27,7 +27,7 @@
 
 // The comms layer (typed protocol maps, op calls, the host:connection system
 // topic) lives in the shell now — import from 'shell': typedToolChannel,
-// useToolState, useConnectionReady, createToolController, createToolOpServer.
+// useToolState, useConnectionReady, createToolOpClient, createToolOpServer.
 export { registerBuiltinTool, getBuiltinTools, isBuiltinTool } from './registry';
 export type { BuiltinTool } from './registry';
 export { ToolHostProvider, useToolHost, createLoopbackPeer } from './ToolContext';

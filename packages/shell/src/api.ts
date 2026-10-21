@@ -59,6 +59,7 @@ import { commonStyles } from './themes/styles';
 
 // Hooks
 import { useShellConnection } from './connection/ConnectionContext';
+import { useShellApiKey } from './ops/hostOps';
 import { useAuthUser, useLogout } from './hooks/useAuthUser';
 import { useWorkspace } from './components/workspace/WorkspaceContext';
 import { useClient } from './hooks/useClient';
@@ -93,7 +94,7 @@ import { useAppState, AppStateProvider } from './components/contexts/AppStateCon
 // them as lazy getters (the freeze fingerprints VALUE names off shellApi's
 // members; a standalone re-export is invisible to it).
 import { createToolChannel, asToolStateMessage, asToolEventMessage } from './components/workspace/toolChannel';
-import { createToolController, createToolOpServer, asToolCallMessage, asToolReplyMessage, DEFAULT_OP_TIMEOUT_MS } from './components/workspace/toolOps';
+import { createToolOpClient, createToolOpServer, asToolCallMessage, asToolReplyMessage, DEFAULT_OP_TIMEOUT_MS } from './components/workspace/toolOps';
 import { typedToolChannel, useToolState, useConnectionReady, publishHostConnectionState, HOST_CONNECTION_TOPIC } from './components/workspace/toolProtocol';
 import { typedPrefs, scopedPrefs, createMirroredPrefsStore, createPrefsHub, realmPrefsHub, usePref } from './components/workspace/prefsStore';
 import { ToolHostProvider, useToolHost, createLoopbackPeer } from './components/workspace/toolHost';
@@ -103,7 +104,7 @@ import { createRetainedRegistry, localRetainedPort } from './ops/retained';
 import { registerClientOps } from './ops/clientOps';
 import { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
 import { hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
-import { createSidebarBusPeer, createFrameBusPeer } from './components/workspace/busPeer';
+import { createSidebarBusPeer, createFrameBusPeer, announceFramePresence } from './components/workspace/busPeer';
 import { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
 
 // Auth providers
@@ -184,7 +185,7 @@ export type { ShellAppProps, AppDescriptor, DevToolProps, AppManifestEntry, Shel
 // (devToolSidebar) and its document views (devToolFrame). Hosts construct it
 // over the peer transport; tools receive it as DevToolProps.channel.
 export { createToolChannel, asToolStateMessage, asToolEventMessage } from './components/workspace/toolChannel';
-export type { ToolChannel, ToolChannelUnsubscribe, IToolStateMessage, IToolEventMessage } from './components/workspace/toolChannel';
+export type { ToolChannel, ToolChannelUnsubscribe, IToolStateMessage, IToolEventMessage, IToolPeer } from './components/workspace/toolChannel';
 
 // Tool protocol — typed protocol maps over the tool channel (the ShellEventMap
 // pattern per tool): the host-owned base state map (`host:*` reserved), each
@@ -197,7 +198,7 @@ export type { ToolStateMap, ToolEventMap, TypedToolChannel, IHostConnectionState
 // its sidebar controller, typed by the tool's op map. The call/reply wire
 // guards are for host relays (calls are never retained, replies never
 // buffered or summoning).
-export { createToolController, createToolOpServer, asToolCallMessage, asToolReplyMessage, DEFAULT_OP_TIMEOUT_MS } from './components/workspace/toolOps';
+export { createToolOpClient, createToolOpServer, asToolCallMessage, asToolReplyMessage, DEFAULT_OP_TIMEOUT_MS } from './components/workspace/toolOps';
 export type { ToolOpMap, ToolOpSpec, ToolOpParams, ToolOpResult, ToolControllerFn, IToolOpServer, IToolCallOptions, IToolCallMessage, IToolReplyMessage } from './components/workspace/toolOps';
 
 // Workspace prefs store — the host framework's persisted-preference seam:
@@ -229,13 +230,13 @@ export type { ToolHostServices } from './components/workspace/toolHost';
 // (vscode: real files; rocket-ui: the staged store view). All-async.
 export type { WorkspaceFs, ChangeKind, CommitResult, StagedConflict, LayerMeta, PendingState } from './workspace/workspaceFs';
 export { StaleWriteError, globToRegExp } from './workspace/workspaceFs';
-export { createWorkspaceFs } from './workspace/workspaceFsClient';
-export type { IWorkspaceFsBus } from './workspace/workspaceFsClient';
+export { createWorkspaceFs } from './ops/workspaceFsClient';
+export type { IWorkspaceFsBus } from './ops/workspaceFsClient';
 
 // Tool relay — the ONE relay policy between a tool's two mounts (hosts wire
 // transport + scheduling; the relay decides retention/buffering/summon).
 export { hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
-export { createSidebarBusPeer, createFrameBusPeer } from './components/workspace/busPeer';
+export { createSidebarBusPeer, createFrameBusPeer, announceFramePresence } from './components/workspace/busPeer';
 
 // Tool document URIs — the `tool:<appId>[/<docKey>]` convention, spelled once.
 export { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
@@ -285,6 +286,7 @@ export type * from 'rocketride';
 
 // Connection manager standalone types
 export type { InitOptions, DebugLogEntry } from './connection/connection';
+export type { ShellApiKeyState } from './ops/hostOps';
 
 // Auth identity type (ConnectResult aliased as AuthUser)
 export type { AuthUser } from './hooks/useAuthUser';
@@ -579,6 +581,7 @@ export const shellApi = {
 	get formatDuration() { return formatDuration; },
 	get commonStyles() { return commonStyles; },
 	get useShellConnection() { return useShellConnection; },
+	get useShellApiKey() { return useShellApiKey; },
 	get useAuthUser() { return useAuthUser; },
 	get useLogout() { return useLogout; },
 	get useWorkspace() { return useWorkspace; },
@@ -591,7 +594,7 @@ export const shellApi = {
 	get createToolChannel() { return createToolChannel; },
 	get asToolStateMessage() { return asToolStateMessage; },
 	get asToolEventMessage() { return asToolEventMessage; },
-	get createToolController() { return createToolController; },
+	get createToolOpClient() { return createToolOpClient; },
 	get createToolOpServer() { return createToolOpServer; },
 	get asToolCallMessage() { return asToolCallMessage; },
 	get asToolReplyMessage() { return asToolReplyMessage; },
@@ -615,6 +618,7 @@ export const shellApi = {
 	get TOOL_RELAY_BUFFER_LIMIT() { return TOOL_RELAY_BUFFER_LIMIT; },
 	get createSidebarBusPeer() { return createSidebarBusPeer; },
 	get createFrameBusPeer() { return createFrameBusPeer; },
+	get announceFramePresence() { return announceFramePresence; },
 	get toolDocUri() { return toolDocUri; },
 	get parseToolDocUri() { return parseToolDocUri; },
 	get activeDocKeyFor() { return activeDocKeyFor; },
@@ -711,7 +715,7 @@ export const shellApi = {
 // additions are append-only, exactly like the object.
 export {
 	// Hooks
-	useShellConnection, useAuthUser, useLogout, useWorkspace, useClient,
+	useShellConnection, useShellApiKey, useAuthUser, useLogout, useWorkspace, useClient,
 	useShellEvent, useIframeBridge, useSubscriptions, usePolling,
 	useConnectionStatus, useShellApiConfig, useAppComponent,
 	useClickOutside, useFixedPopupPosition, usePrefs, useAppState,

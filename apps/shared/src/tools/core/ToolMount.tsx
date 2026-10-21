@@ -107,10 +107,8 @@ export interface IToolMountProps {
 	/** For SIDEBAR mounts: the tool's fronted document key, or null when
 	 *  another tab is fronted. Omit where the host cannot tell. */
 	activeDocKey?: string | null;
-	/** This mount's peer (frame ↔ sidebar). */
-	peer: DevToolProps['peer'];
-	/** This mount's typed channel, where the host builds one. */
-	channel?: DevToolProps['channel'];
+	/** This mount's channel (frame ↔ sidebar), host-built over its transport. */
+	channel: DevToolProps['channel'];
 	/** The host's documents API for this tool. */
 	documents?: DevToolProps['documents'];
 	/** The host's descriptor load (store tools only — see the file header). */
@@ -149,7 +147,6 @@ export const ToolMount: React.FC<IToolMountProps> = ({
 	slot,
 	docKey,
 	activeDocKey,
-	peer,
 	channel,
 	documents,
 	source,
@@ -186,8 +183,7 @@ export const ToolMount: React.FC<IToolMountProps> = ({
 	return (
 		<div style={styles.host}>
 			<Component
-				peer={peer}
-				{...(channel !== undefined ? { channel } : {})}
+				channel={channel}
 				{...(documents !== undefined ? { documents } : {})}
 				{...(docKey !== undefined ? { docKey } : {})}
 				{...(activeDocKey !== undefined ? { activeDocKey } : {})}

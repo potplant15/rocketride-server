@@ -8,9 +8,10 @@
 // =============================================================================
 //
 // The port of the extension host's DeployLifecycle fetch/mutation layer onto
-// the brokered `client.deploy.*` ops: every call ANSWERS ITS CALLER (the old
-// deploy:data push settled every outstanding waiter at once; the old
-// deployment:load was an echo-routed push). The mapping layer
+// the realm client's `client.deploy.*` surface (its requests ride the shell
+// bus): every call ANSWERS ITS CALLER (the old deploy:data push settled every
+// outstanding waiter at once; the old deployment:load was an echo-routed
+// push). The mapping layer
 // (deployMapping.ts) is pure and identity-decoupled, so the only host
 // residue left is publish (it needs the TextDocument — host.pipeline.*).
 //
@@ -20,11 +21,18 @@
 // =============================================================================
 
 import { ConnectionManager } from 'shell';
-import type { Deployment, DeployArtifact, DeployHistoryEntry } from 'rocketride';
+import type { Deployment, DeployArtifact, DeployHistoryEntry, RocketRideClient } from 'rocketride';
 import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo, wireTeamIdOf } from './deployMapping';
 import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, DeploymentLoadPayload } from '../../types/deployTypes';
 
 const cm = (): ConnectionManager => ConnectionManager.getInstance();
+
+/** The realm's connected client, or throws the standard message. */
+function needClient(): RocketRideClient {
+	const client = cm().getClient();
+	if (!client || !cm().isConnected()) throw new Error('Not connected to server');
+	return client;
+}
 
 /** The caller's uid off the mirrored identity ('' pre-auth). */
 function ownUid(): string {
@@ -61,9 +69,10 @@ export async function fetchDeployLifecycle(projectId: string | undefined): Promi
 	if (!projectId || !bus.isConnected()) return { versions: [], deployments: [], teams: [] };
 	const info = bus.getAccountInfo();
 	try {
+		const client = needClient();
 		const [versions, list] = await Promise.all([
-			bus.request('client.deploy.versions', { projectId } as never) as Promise<{ rows?: unknown[] }>,
-			bus.request('client.deploy.list', {} as never) as Promise<{ rows?: Deployment[] }>,
+			client.deploy.versions(projectId),
+			client.deploy.list(),
 		]);
 		const deploymentRows = list.rows ?? [];
 		const teams = resolveDeployTeams(info, deploymentRows);
@@ -97,18 +106,18 @@ export async function fetchDeployLifecycle(projectId: string | undefined): Promi
 export async function fetchDeployment(projectId: string, rawTeamId: string, sourceId?: string): Promise<DeploymentLoadPayload> {
 	const bus = cm();
 	const teamId = toWireTeamId(rawTeamId);
-	const req = <T,>(op: string, params: unknown): Promise<T> => bus.request(op, params as never) as Promise<T>;
+	const client = needClient();
 
 	// Step 1: the deployment record (version pointer, state, schedules).
-	const dep = await req<Deployment>('client.deploy.get', { projectId, teamId });
+	const dep = await client.deploy.get(projectId, teamId);
 
 	// Step 2: the immutable artifact this team runs (readonly DESIGN).
-	const pipeline = typeof dep.version === 'number' ? await req<Record<string, unknown>>('client.deploy.artifact', { projectId, version: dep.version }) : {};
+	const pipeline: Record<string, unknown> = typeof dep.version === 'number' ? ((await client.deploy.artifact(projectId, dep.version)) as unknown as Record<string, unknown>) : {};
 
 	// Step 3: this team's audit trail + the registry version picker.
-	const [history, versions] = await Promise.all([
-		req<{ rows?: DeployHistoryEntry[] }>('client.deploy.history', { projectId, teamId }),
-		req<{ rows?: DeployArtifact[] }>('client.deploy.versions', { projectId }),
+	const [history, versions]: [{ rows?: DeployHistoryEntry[] }, { rows?: DeployArtifact[] }] = await Promise.all([
+		client.deploy.history(projectId, { teamId }),
+		client.deploy.versions(projectId),
 	]);
 
 	// Step 4: next occurrence through THE single evaluator (never parse cron
@@ -119,7 +128,7 @@ export async function fetchDeployment(projectId: string, rawTeamId: string, sour
 	const sched = sourceId ? allScheds[sourceId] : undefined;
 	const armed = sourceId ? (sched?.cron && !sched.paused ? ([sourceId, sched] as const) : undefined) : Object.entries(allScheds).find(([, entry]) => entry.cron && !entry.paused);
 	if (armed?.[1].cron && dep.state === 'enabled') {
-		const preview = await req<{ valid?: boolean; next?: number[] }>('client.deploy.preview', { cron: armed[1].cron, count: 1 });
+		const preview: { valid?: boolean; next?: number[] } = await client.deploy.preview(armed[1].cron, 1);
 		const firstAt = preview.valid ? preview.next?.[0] : undefined;
 		if (typeof firstAt === 'number') nextRun = { at: firstAt, sourceId: armed[0], cron: armed[1].cron };
 	}
@@ -132,7 +141,7 @@ export async function fetchDeployment(projectId: string, rawTeamId: string, sour
 		const previews = await Promise.all(
 			armedSources.map(async ([sid, entry]) => {
 				try {
-					const preview = await req<{ valid?: boolean; next?: number[] }>('client.deploy.preview', { cron: entry.cron as string, count: 1 });
+					const preview: { valid?: boolean; next?: number[] } = await client.deploy.preview(entry.cron as string, 1);
 					return [sid, preview.valid ? preview.next?.[0] : undefined] as const;
 				} catch {
 					// An unpreviewable cron just leaves the cell empty.
@@ -149,7 +158,7 @@ export async function fetchDeployment(projectId: string, rawTeamId: string, sour
 	// A TEAM deployment matches on the descriptor's teamId; a PERSONAL (@me)
 	// deployment matches on the trusted owner scope instead (its row carries
 	// the billing team, never the wire '@me').
-	const tasks = await req<{ tasks?: Array<{ source?: string; teamId?: string; runKind?: string; ownerKind?: string; ownerId?: string; pipeline?: { project_id?: string } }> }>('client.listRunningTasks', {});
+	const tasks = await client.call<{ tasks?: Array<{ source?: string; teamId?: string; runKind?: string; ownerKind?: string; ownerId?: string; pipeline?: { project_id?: string } }> }>('rrext_get_tasks');
 	const personalUid = rawTeamId.startsWith('user~') ? rawTeamId.slice('user~'.length) : undefined;
 	const runningSources: Record<string, boolean> = {};
 	for (const t of tasks.tasks ?? []) {
@@ -200,31 +209,32 @@ export async function fetchDeployment(projectId: string, rawTeamId: string, sour
  *  ack; the CALLER drives any refresh afterwards (it owns the focused
  *  source), exactly the old contract. */
 export const deploymentActions = {
-	setDisabled: (projectId: string, rawTeamId: string, disabled: boolean) => cm().request(disabled ? 'client.deploy.disable' : 'client.deploy.enable', { projectId, teamId: toWireTeamId(rawTeamId) } as never),
-	deployVersion: (projectId: string, rawTeamId: string, version: number) => cm().request('client.deploy.deploy', { projectId, version, teamId: toWireTeamId(rawTeamId) } as never),
-	remove: (projectId: string, rawTeamId: string) => cm().request('client.deploy.remove', { projectId, teamId: toWireTeamId(rawTeamId) } as never),
-	runSource: (projectId: string, rawTeamId: string, sourceId: string) => cm().request('client.deploy.run', { projectId, sourceId, teamId: toWireTeamId(rawTeamId) } as never),
+	setDisabled: (projectId: string, rawTeamId: string, disabled: boolean) => (disabled ? needClient().deploy.disable(projectId, toWireTeamId(rawTeamId)) : needClient().deploy.enable(projectId, toWireTeamId(rawTeamId))),
+	deployVersion: (projectId: string, rawTeamId: string, version: number) => needClient().deploy.deploy(projectId, version, toWireTeamId(rawTeamId)),
+	remove: (projectId: string, rawTeamId: string) => needClient().deploy.remove(projectId, toWireTeamId(rawTeamId)),
+	runSource: (projectId: string, rawTeamId: string, sourceId: string) => needClient().deploy.run(projectId, sourceId, toWireTeamId(rawTeamId)),
 	stopSource: async (projectId: string, rawTeamId: string, sourceId: string) => {
 		// Existing task machinery: resolve the live task, terminate it. teamId
 		// scopes the lookup to the TEAM's deploy run.
+		const client = needClient();
 		const teamId = toWireTeamId(rawTeamId);
-		const token = await cm().request('client.getTaskToken', { projectId, source: sourceId, teamId } as never);
-		if (token) await cm().request('client.terminate', { token } as never);
+		const token = await client.getTaskToken({ projectId, source: sourceId, teamId });
+		if (token) await client.terminate(token);
 	},
-	setSchedule: (projectId: string, rawTeamId: string, sourceId: string, cron: string | null, ttl?: number | null) => cm().request('client.deploy.setSchedule', { projectId, sourceId, cron, teamId: toWireTeamId(rawTeamId), ...(ttl !== null && ttl !== undefined ? { ttl } : {}) } as never),
-	setSourceConfig: (projectId: string, rawTeamId: string, sourceId: string, traceLevel: string | null, debugOut: boolean) => cm().request('client.deploy.setSourceConfig', { projectId, sourceId, teamId: toWireTeamId(rawTeamId), ...(traceLevel ? { traceLevel } : {}), debugOut } as never),
-	setSchedulePaused: (projectId: string, rawTeamId: string, sourceId: string, paused: boolean) => cm().request(paused ? 'client.deploy.pauseSchedule' : 'client.deploy.resumeSchedule', { projectId, sourceId, teamId: toWireTeamId(rawTeamId) } as never),
+	setSchedule: (projectId: string, rawTeamId: string, sourceId: string, cron: string | null, ttl?: number | null) => needClient().deploy.setSchedule(projectId, sourceId, cron, toWireTeamId(rawTeamId), { ...(ttl !== null && ttl !== undefined ? { ttl } : {}) }),
+	setSourceConfig: (projectId: string, rawTeamId: string, sourceId: string, traceLevel: string | null, debugOut: boolean) => needClient().deploy.setSourceConfig(projectId, sourceId, toWireTeamId(rawTeamId), { ...(traceLevel ? { traceLevel: traceLevel as 'none' | 'metadata' | 'summary' | 'full' } : {}), debugOut }),
+	setSchedulePaused: (projectId: string, rawTeamId: string, sourceId: string, paused: boolean) => (paused ? needClient().deploy.pauseSchedule(projectId, sourceId, toWireTeamId(rawTeamId)) : needClient().deploy.resumeSchedule(projectId, sourceId, toWireTeamId(rawTeamId))),
 	/** Cron preview — THE single evaluator; teamId-free. */
-	preview: (cron: string, count: number) => cm().request('client.deploy.preview', { cron, count } as never),
+	preview: (cron: string, count: number) => needClient().deploy.preview(cron, count),
 	/** Validation passthrough (readonly canvas still validates). CONTRACT:
 	 *  failures render as a CLEAN canvas — never an error. */
 	validate: async (pipeline: Record<string, unknown>): Promise<{ errors: unknown[]; warnings: unknown[] }> => {
 		try {
-			return (await cm().request('client.validate', { pipeline } as never)) as { errors: unknown[]; warnings: unknown[] };
+			return (await needClient().validate({ pipeline })) as unknown as { errors: unknown[]; warnings: unknown[] };
 		} catch {
 			return { errors: [], warnings: [] };
 		}
 	},
 	/** Fetches one immutable artifact (the version drawer). */
-	artifact: (projectId: string, version: number) => cm().request('client.deploy.artifact', { projectId, version } as never) as Promise<Record<string, unknown>>,
+	artifact: (projectId: string, version: number) => needClient().deploy.artifact(projectId, version) as unknown as Promise<Record<string, unknown>>,
 };

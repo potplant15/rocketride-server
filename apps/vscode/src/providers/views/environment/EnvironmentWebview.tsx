@@ -7,12 +7,13 @@
  * EnvironmentWebview — the Variables framework page as a shell bus realm.
  *
  * Renders the shell's host-agnostic EnvironmentView with TWO connection
- * slots (development / deployment). Env reads and writes are the brokered
- * `client.account.getEnv/setEnv` ops carrying the slot's `connection`
- * dimension — the extension host's broker resolves deploy against the
- * DeployManager, whose state never leaves that process. Slot state
- * (connected / saas / admin flags per slot) therefore arrives via its own
- * host ops: `host.envSlots` (pull at mount) + `host.envSlotsChanged` (push).
+ * slots (development / deployment). Env reads and writes are the
+ * `host.env.get/set` ops carrying the slot's `connection` dimension — the
+ * extension host resolves deploy against the DeployManager, whose state
+ * never leaves that process (which is why this page does not use the realm
+ * client: that always rides the primary connection). Slot state
+ * (connected / saas / admin flags per slot) arrives via its own host ops:
+ * `host.envSlots` (pull at mount) + `host.envSlotsChanged` (push).
  *
  * The missing-keys prefill (the pre-run env gate) is `env.getPrefill`
  * (pull, covers open-with-args) + `env.prefill` (push, covers an already
@@ -107,7 +108,7 @@ const EnvironmentWebview: React.FC = () => {
 	const handleLoadEnv = useCallback(
 		(slotId: string, scope: EnvironmentScope, scopeId?: string) => {
 			const cacheKey = `${slotId}:${scope}:${scopeId ?? ''}`;
-			(cm.request('client.account.getEnv', { scope, scopeId, connection: connectionOf(slotId) }) as Promise<Record<string, string>>)
+			(cm.request('host.env.get', { scope, scopeId, connection: connectionOf(slotId) }) as Promise<Record<string, string>>)
 				.then((env) => {
 					// Merge required keys into the development user scope so the
 					// gate's missing keys render as empty editable rows.
@@ -132,7 +133,7 @@ const EnvironmentWebview: React.FC = () => {
 	/** Persists env data for a slot+scope and updates the local cache. */
 	const handleSaveEnv = useCallback(
 		async (slotId: string, scope: EnvironmentScope, env: Record<string, string>, scopeId?: string) => {
-			await cm.request('client.account.setEnv', { scope, env, scopeId, connection: connectionOf(slotId) });
+			await cm.request('host.env.set', { scope, env, scopeId, connection: connectionOf(slotId) });
 			const cacheKey = `${slotId}:${scope}:${scopeId ?? ''}`;
 			setEnvs((prev) => ({ ...prev, [cacheKey]: env }));
 			setError(null);

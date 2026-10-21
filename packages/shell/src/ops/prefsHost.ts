@@ -19,11 +19,11 @@
 
 import { useEffect } from 'react';
 import { ConnectionManager } from '../connection/connection';
-import { registerOpHandlers } from '../ops/busOps';
-import type { OpImplTable, ShellOpMap, ShellOpSpec } from '../ops/busOps';
+import { registerOpHandlers } from './busOps';
+import type { OpImplTable, ShellOpMap, ShellOpSpec } from './busOps';
 import { prefsTopic } from '../components/workspace/prefsStore';
-import { SHELL_PARTITION } from './workspaceStore';
-import type { WorkspaceStore, Partition } from './workspaceStore';
+import { SHELL_PARTITION } from '../workspace/workspaceStore';
+import type { WorkspaceStore, Partition } from '../workspace/workspaceStore';
 
 /** The two prefs ops, declared locally so the shell owns no app's op map. */
 interface PrefsHostOpMap extends ShellOpMap {

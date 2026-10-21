@@ -57,7 +57,7 @@ export function registerRocketHostOps(): () => void {
 			ConnectionManager.getInstance().emit('shell:openOverlay', { id: p.page } as never);
 		},
 		// NOT here: the prefs ops. The WORKSPACE MANAGER serves those (shell
-		// workspace/prefsHost.ts), because it is the single writer and this
+		// ops/prefsHost.ts), because it is the single writer and this
 		// module has no handle on it. host.envSlots is a multi-connection
 		// (VS Code dev/deploy) concern.
 	};

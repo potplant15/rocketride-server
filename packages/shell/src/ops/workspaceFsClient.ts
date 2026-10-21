@@ -36,7 +36,7 @@
 // contract, not to one host.
 // =============================================================================
 
-import type { WorkspaceFs, CommitResult, LayerMeta, PendingState } from './workspaceFs';
+import type { WorkspaceFs, CommitResult, LayerMeta, PendingState } from '../workspace/workspaceFs';
 
 /** The bus surface the client needs (realm or root ConnectionManager). */
 export interface IWorkspaceFsBus {

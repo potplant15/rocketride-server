@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV6 — never edit by hand
 // =============================================================================
-// Generated:     2026-10-21T00:31:58.054Z
-// Source commit: b8a2e0bad259d587b74d78d8f1d95b804eb4556d
+// Generated:     2026-10-21T20:45:30.263Z
+// Source commit: 9bd5d931fdbaeefdbf13b15f3dea9d334f17714d
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -5726,9 +5726,34 @@ export declare class RocketRideClient extends DAPClient {
     fsReadString(path: string): Promise<string>;
     /** Write a UTF-8 string to a file. */
     fsWriteString(path: string, text: string): Promise<void>;
-    /** Read a JSON file. */
+    /**
+     * Read a JSON file.
+     *
+     * ONE round trip (`fs_get_json`), not open/read/close — see
+     * {@link fsWriteJson} for why that matters.
+     *
+     * @param path - Relative path within the account store
+     * @returns The parsed value
+     */
     fsReadJson<T = any>(path: string): Promise<T>;
-    /** Write an object as JSON. */
+    /**
+     * Write an object as JSON.
+     *
+     * ONE round trip (`fs_put_json`). The handle sequence this used to run —
+     * fs_open, fs_write, fs_close — leaves a write handle open between
+     * messages, and the server commits that handle when the connection
+     * drops: a client that dies after fs_open replaces the file with an
+     * empty buffer. A browser reload mid-save was enough to zero a
+     * workspace file. A single request has no such window; one that never
+     * arrives leaves the file exactly as it was.
+     *
+     * The whole value travels in that one message, so this is for complete
+     * documents (it always was — the object is serialised in full either
+     * way). Large payloads still belong on the streaming handle API.
+     *
+     * @param path - Relative path within the account store
+     * @param obj - Any JSON-serialisable value
+     */
     fsWriteJson(path: string, obj: any): Promise<void>;
     /**
      * Retrieve a server dashboard snapshot.
@@ -5995,7 +6020,17 @@ export declare class RocketRideClient extends DAPClient {
     }): Promise<T>;
 }
 interface ShellConnectionState {
-    /** The shared RocketRideClient instance, or `null` if not yet initialised. */
+    /**
+     * The realm's RocketRideClient, or `null` while the realm has none yet.
+     *
+     * In EVERY realm this is a real client: the root's socket-owning instance
+     * at a framework root, and elsewhere the realm client, whose requests
+     * ride the shell bus to the root's one socket. It stays `null` until the
+     * realm is ready to answer truthfully — at the root until `init()`, in a
+     * bus-mirrored realm until the first identity mirror lands (a client
+     * seeded from nothing would confidently report "logged out" over a live
+     * session).
+     */
     client: RocketRideClient | null;
     /** `true` when the WebSocket is authenticated and connected. */
     isConnected: boolean;
@@ -6014,11 +6049,178 @@ interface ShellConnectionState {
  *
  * @example
  * ```tsx
+ * // `client` is non-null in every CONNECTED realm (root or spoke) — gate
+ * // actions on it, but never early-return your whole surface on a null
+ * // client: while the shell is connecting (or before a spoke realm's first
+ * // mirror delivery) that branch would render indefinitely. Render the
+ * // surface in its disconnected/empty state instead.
  * const { client, isConnected } = useShellConnection();
- * if (!client || !isConnected) return <div>Connecting...</div>;
+ * const ready = isConnected && client !== null;
+ * return <Toolbar onRun={ready ? () => client!.restart({ token }) : undefined} />;
  * ```
  */
 export declare function useShellConnection(): ShellConnectionState;
+/** Default per-request timeout — matches the tool-op lane's generosity
+ *  (engine-side work can legitimately run long); override per call. */
+export declare const DEFAULT_BUS_REQUEST_TIMEOUT_MS = 120000;
+/** One operation's compile-time shape: params in, result out. */
+export interface ShellOpSpec<P, R> {
+    /** Phantom carriers — never read at runtime. */
+    readonly params: P;
+    readonly result: R;
+}
+/**
+ * The base op map a domain's op vocabulary extends — the protocol-map
+ * pattern (ShellConnectionEventMap, ToolOpMap) applied to the bus. A domain
+ * declares, in its own module:
+ *
+ *   interface ClientOps extends ShellOpMap {
+ *       'client.setTeam': ShellOpSpec<{ teamId: string }, void>;
+ *   }
+ *
+ * The interface key is the wire name, so a typo'd string or drifted payload
+ * shape fails to compile at both ends.
+ */
+export interface ShellOpMap {
+}
+/** The params type of one op in a map. */
+export type ShellOpParams<O, K extends keyof O> = O[K] extends ShellOpSpec<infer P, unknown> ? P : never;
+/** The result type of one op in a map. */
+export type ShellOpResult<O, K extends keyof O> = O[K] extends ShellOpSpec<unknown, infer R> ? R : never;
+/** Per-request options. */
+export interface IBusRequestOptions {
+    /** Overrides {@link DEFAULT_BUS_REQUEST_TIMEOUT_MS}. */
+    timeoutMs?: number;
+}
+/** A registered op handler — a plain async function, no transport knowledge. */
+export type BusOpHandler = (params: unknown) => unknown | Promise<unknown>;
+/**
+ * Where an unresolved op goes when this realm is bridged (set by
+ * busBridge.ts). Absent on the framework root (nothing above it) and in
+ * unbridged realms (tests, standalone).
+ */
+export interface IBusForwarder {
+    /** Forwards a request; resolves/rejects with the remote outcome. */
+    request(op: string, params: unknown, timeoutMs: number): Promise<unknown>;
+    /** Forwards a fire-and-forget op invocation. */
+    emitOp(op: string, params: unknown): void;
+    /** Announces a local registration (routing entry at the root). */
+    register(op: string): void;
+    /** Withdraws a local registration. */
+    unregister(op: string): void;
+}
+/** Thrown when a request resolves to no handler anywhere. */
+export declare class BusNoHandlerError extends Error {
+    constructor(op: string);
+}
+/** The op lane of one realm's bus. */
+export interface IOpBus {
+    /**
+     * Registers THE handler for an op. One handler per name — a second
+     * registration throws (registration is the allowlist; ambiguity is a
+     * bug, not a fan-out).
+     *
+     * @param op - The wire name (`ns.verb` by convention).
+     * @param handler - Plain async function; its return value answers requests.
+     * @returns An unregister function.
+     */
+    handle(op: string, handler: BusOpHandler): () => void;
+    /**
+     * Invokes an op and awaits its result — local handler first, else the
+     * forwarder (the bridge to the framework root), else rejects with
+     * {@link BusNoHandlerError}.
+     */
+    request(op: string, params: unknown, opts?: IBusRequestOptions): Promise<unknown>;
+    /**
+     * Invokes an op fire-and-forget — the handler runs (local or forwarded),
+     * the return value is discarded, failures are debug-logged, an unknown
+     * op is DROPPED with a debug trace (never buffered at this layer).
+     */
+    emitOp(op: string, params: unknown): void;
+    /** True when THIS realm registered the op. */
+    hasHandler(op: string): boolean;
+    /** The ops this realm registered (the bridge announces these). */
+    localOps(): string[];
+    /** Wires the realm's upstream (bridge-owned; root has none). */
+    setForwarder(forwarder: IBusForwarder | null): void;
+    /** Observes registration changes (the bridge re-announces on change). */
+    onRegistrationChange(cb: (op: string, registered: boolean) => void): () => void;
+}
+/**
+ * Creates one realm's op bus. ConnectionManager holds exactly one and
+ * exposes it as `request`/`handle`/`emitOp`; the bridge and router build on
+ * the same object.
+ *
+ * @returns The op bus.
+ */
+/**
+ * An implementation table for (a subset of) an op map: one function per op
+ * name, FULLY typed against the map — params and result both derive from the
+ * op's ShellOpSpec, so a drifted payload shape or wrong return type fails to
+ * compile in the table itself. THE one way every domain registers —
+ * clientOps, hostOps, and host-specific override tables all ride this.
+ */
+export type OpImplTable<M extends ShellOpMap> = Partial<{
+    [K in keyof M]: (params: ShellOpParams<M, K>) => ShellOpResult<M, K> | Promise<ShellOpResult<M, K>>;
+}>;
+/**
+ * Registers an implementation table on a bus. Per entry: skipped when the
+ * host already registered its own override (`hasHandler`) or when listed in
+ * `skip` — specific-before-shared is the composition rule.
+ *
+ * @param bus - The realm's op bus.
+ * @param impls - One implementation per op name.
+ * @param options - Ops to leave unregistered.
+ * @returns Unregister-all function.
+ */
+export declare function registerOpHandlers<M extends ShellOpMap>(bus: IOpBus, impls: OpImplTable<M>, options?: {
+    skip?: ReadonlySet<string>;
+}): () => void;
+export declare function createOpBus(): IOpBus;
+/** The typed facade over a bus for one op map. */
+export interface ITypedBusOps<O extends ShellOpMap> {
+    /** Awaits the op's result. */
+    request<K extends keyof O & string>(op: K, params: ShellOpParams<O, K>, opts?: IBusRequestOptions): Promise<ShellOpResult<O, K>>;
+    /** Fires the op without a result (same handler, return value discarded). */
+    emit<K extends keyof O & string>(op: K, params: ShellOpParams<O, K>): void;
+    /** Registers the op's handler. */
+    handle<K extends keyof O & string>(op: K, handler: (params: ShellOpParams<O, K>) => ShellOpResult<O, K> | Promise<ShellOpResult<O, K>>): () => void;
+}
+/**
+ * Types one op map over a bus — the `typedToolChannel` convention applied
+ * to the bus lane. Domains hold one of these; raw string ops never appear
+ * at call sites.
+ *
+ * @param bus - The realm's op bus.
+ * @returns The typed facade.
+ */
+export declare function typedBusOps<O extends ShellOpMap>(bus: IOpBus): ITypedBusOps<O>;
+/** What {@link useShellApiKey} returns. */
+export interface ShellApiKeyState {
+    /** The key, or null — both once `loading` is false. */
+    apiKey: string | null;
+    /** True until the first answer (or failure) arrives. */
+    loading: boolean;
+    /** Why the request failed, or null. */
+    error: string | null;
+}
+/**
+ * Fetches the connection's API key, from any realm.
+ *
+ * The deliberate replacement for `client.getApiKey()`, which throws in a
+ * realm (see RocketRideClientProxy). Use it only when the credential itself
+ * is needed — to hand to a non-SDK HTTP call, or to pass into a preview
+ * frame. Engine work needs no key: the client already carries the session.
+ *
+ * @returns The key, with its loading and failure states.
+ *
+ * @example
+ * ```tsx
+ * const { apiKey, loading } = useShellApiKey();
+ * if (loading) return <Spinner />;           // NOT "no key" — unknown yet
+ * ```
+ */
+export declare function useShellApiKey(): ShellApiKeyState;
 /**
  * Hook that returns the current authenticated user identity, or null if
  * the shell has not yet completed a successful connectClient() call.
@@ -6040,7 +6242,58 @@ export declare function useAuthUser(): ConnectResult | null;
  * @returns Always null in the current implementation.
  */
 export declare function useLogout(): (() => void) | null;
+/**
+ * The raw pipe a HOST builds a channel over — the transport seam between a
+ * tool's two mounts. Host-internal: tools never see one (DevToolProps
+ * carries only the channel); hosts obtain theirs from the bus peers
+ * (busPeer.ts) or a loopback (toolHost.ts).
+ */
+export interface IToolPeer {
+    /** Send a message to the other mount (buffered briefly while it opens). */
+    post(message: unknown): void;
+    /** Subscribe to messages from the other mount; returns unsubscribe. */
+    subscribe(cb: (message: unknown) => void): () => void;
+}
 declare const ENVELOPE = "__rrtool";
+/** Default per-call timeout for the op lane — generous because engine-side
+ *  statements can legitimately run long; override per call. */
+export declare const DEFAULT_OP_TIMEOUT_MS = 120000;
+/** Per-call options for the op lane. */
+export interface IToolCallOptions {
+    /** Overrides {@link DEFAULT_OP_TIMEOUT_MS}. */
+    timeoutMs?: number;
+}
+/** A correlated request on the wire. */
+export interface IToolCallMessage {
+    [ENVELOPE]: "call";
+    id: string;
+    op: string;
+    args?: unknown;
+}
+/** A correlated reply on the wire. */
+export interface IToolReplyMessage {
+    [ENVELOPE]: "reply";
+    id: string;
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+}
+/**
+ * Narrows a peer payload to a CALL — for the channel and the host relays
+ * (which must exclude calls from retention).
+ *
+ * @param message - Any peer payload.
+ * @returns The call message, or null.
+ */
+export declare function asToolCallMessage(message: unknown): IToolCallMessage | null;
+/**
+ * Narrows a peer payload to a REPLY — for the channel and the host relays
+ * (which deliver replies to live subscribers only).
+ *
+ * @param message - Any peer payload.
+ * @returns The reply message, or null.
+ */
+export declare function asToolReplyMessage(message: unknown): IToolReplyMessage | null;
 /** A retained state snapshot on the wire. */
 export interface IToolStateMessage {
     [ENVELOPE]: "state";
@@ -6110,9 +6363,38 @@ export interface ToolChannel {
      * @returns Unsubscribe.
      */
     onEvent(name: string, cb: (payload: unknown) => void): ToolChannelUnsubscribe;
+    /**
+     * FRAME side of the op lane: ask the controller to execute one operation
+     * and await the result. Untyped core — tools call through the typed
+     * surface (createToolOpClient, toolOps.ts).
+     *
+     * Timeouts are honest: 'did not answer' is NOT 'did not happen' — the
+     * controller may still be executing. No automatic retries, ever.
+     *
+     * @param op - The op's wire name.
+     * @param args - The op's parameters.
+     * @param opts - Timeout override.
+     * @returns The handler's result.
+     */
+    call(op: string, args?: unknown, opts?: IToolCallOptions): Promise<unknown>;
+    /**
+     * CONTROLLER side of the op lane: serve one operation. Replaces any
+     * previous handler for the op. Untyped core — controllers register
+     * through the typed surface (createToolOpServer, toolOps.ts).
+     *
+     * Reply-iff-tracked: a CALL gets a correlated reply; a plain channel
+     * EVENT whose name matches a served op runs the same handler with NO
+     * reply (opt-in correlation — nothing dangles).
+     *
+     * @param op - The op's wire name.
+     * @param handler - Plain async function; a thrown error becomes the
+     *                  caller's rejection (its message crosses the wire).
+     * @returns Unregister for this op.
+     */
+    serveOp(op: string, handler: (params: unknown) => unknown): ToolChannelUnsubscribe;
 }
 /**
- * Builds a ToolChannel over a DevToolProps.peer pipe. Called by HOST mounts
+ * Builds a ToolChannel over a host transport pipe. Called by HOST mounts
  * (one channel per mount); tools receive the result as
  * {@link DevToolProps.channel} and never construct one themselves.
  *
@@ -6121,10 +6403,10 @@ export interface ToolChannel {
  * freshly attached documents is the host relay's job (it re-delivers its
  * retained state messages into the new realm, which lands here).
  *
- * @param peer - The mount's peer pipe.
+ * @param peer - The mount's transport pipe (host-built; see IToolPeer).
  * @returns The channel.
  */
-export declare function createToolChannel(peer: DevToolProps["peer"]): ToolChannel;
+export declare function createToolChannel(peer: IToolPeer): ToolChannel;
 /**
  * Props injected by the shell into the app's main `<App />` component.
  *
@@ -6388,20 +6670,29 @@ export interface AppDescriptor {
      * Dev-tool sidebar — the tool's CONTROLLER, mounted by the host workbench
      * in ITS sidebar (behind the tool's tab) while `devToolFrame` runs in the
      * main surface. The two mounts may live in isolated documents (VS Code
-     * webviews). The controller realm owns the tool's single engine
-     * connection; frames hold none — every frame↔engine interaction is a
-     * correlated operation to the controller over the tool channel, and
-     * ephemeral UI coordination rides `peer`.
+     * webviews). The controller owns AUTHORITY over the tool's shared state
+     * (refcounted/singleton coordination, owner-realm stores) — never
+     * transport: every realm holds its own working client
+     * (`useShellConnection().client`), and there is ONE socket per host
+     * process behind them all. Ephemeral UI coordination rides `peer`.
      */
     devToolSidebar?: React$1.ComponentType<DevToolProps>;
 }
 /**
  * Props every dev-tool component receives from its host workbench.
  *
- * NO client member: dev-tool mounts never receive an engine connection.
- * The tool's sidebar CONTROLLER realm owns one (established by that realm
- * itself, not through these props), and frames reach the engine solely via
- * correlated operations over the tool channel (tools/core opCall).
+ * NO client member — and none is needed: every mount's realm already holds a
+ * working `RocketRideClient` via `useShellConnection().client` (the root's
+ * real client, or the realm client whose requests ride the shell bus). There
+ * is ONE socket per host process; a controller mount owns AUTHORITY to
+ * coordinate its tool's shared state (refcounted endpoints, single-writer
+ * stores, shared pollers), never the transport. Everything frame↔controller
+ * rides `channel` — ops for that coordination, events for ephemeral UI
+ * coordination, retained state for shared snapshots.
+ *
+ * NO peer member (removed 2026-10-21): the raw post/subscribe pipe is a
+ * host-internal transport seam now (IToolPeer — hosts build the channel over
+ * it). Tools never correlate or envelope by hand.
  *
  * No theme member: tools are themed by the ambient `--rr-*` CSS custom
  * properties of the document they mount into (the shell's active theme
@@ -6409,34 +6700,33 @@ export interface AppDescriptor {
  */
 export interface DevToolProps {
     /**
-     * Ephemeral coordination channel to this tool's OTHER mount (frame ↔
-     * sidebar). Message payloads are opaque to the host. In-shell hosts relay
-     * in-memory; the VS Code extension relays across its webviews.
+     * The channel to this tool's OTHER mount (frame ↔ sidebar) — the tool's
+     * ONE transport surface, host-built over its relay (in-memory in-shell;
+     * across webviews in VS Code). Three lanes:
+     *
+     *   - STATE (controller → frames): retained per topic, replayed to late
+     *     subscribers; a publish never summons a window.
+     *   - EVENTS (either direction): fire-and-forget. Direction discipline: a
+     *     sidebar mount sends ONLY in response to a user action (an event to
+     *     a closed frame summons it — a tree click is an implicit "open the
+     *     tool"); the frame PUSHES its state whenever it changes, and the
+     *     host retains the last frame→sidebar payload so a (re)mounted
+     *     sidebar renders without asking. Mount-time handshakes from the
+     *     sidebar side are a bug: every pinned tool's sidebar mount boots
+     *     with the host sidebar, and an ask-on-mount would summon every
+     *     tool's frame.
+     *   - OPS (frame → controller, correlated): the typed request/response
+     *     lane — see toolOps.ts (createToolOpClient / createToolOpServer).
      */
-    peer: {
-        /**
-         * Send a message to the other mount (buffered briefly while it opens).
-         *
-         * Direction discipline: a sidebar mount posts ONLY in response to a
-         * user action (a post to a closed frame summons it — a tree click is
-         * an implicit "open the tool"); the frame PUSHES its state whenever
-         * it changes, and the host retains the last frame→sidebar message so
-         * a (re)mounted sidebar renders without asking. Mount-time handshakes
-         * from the sidebar side are a bug: every pinned tool's sidebar mount
-         * boots with the host sidebar, and an ask-on-mount would summon every
-         * tool's frame.
-         */
-        post(message: unknown): void;
-        /** Subscribe to messages from the other mount; returns unsubscribe. */
-        subscribe(cb: (message: unknown) => void): () => void;
-    };
+    channel: ToolChannel;
     /**
      * Host documents — present on hosts that give one tool MULTIPLE top-level
      * documents (e.g. one tab per database connection). `open` opens or
      * focuses the tool document for `docKey` with the given tab title,
      * mounting `devToolFrame` with that key in {@link DevToolProps.docKey};
      * `close` closes it. Hosts without the capability omit the member — the
-     * tool falls back to its single-frame behavior (peer summon).
+     * tool falls back to its single-frame behavior (an event summons the
+     * frame).
      */
     documents?: {
         /** Opens (or focuses) the tool document for one key. */
@@ -6458,18 +6748,9 @@ export interface DevToolProps {
      * follow the selection — highlight the fronted document's row, clear
      * highlight and dependent panels on null. Omitted (undefined) by hosts
      * that cannot tell and on frame mounts; a sidebar then falls back to its
-     * own signals (e.g. frame pushes over `peer`).
+     * own signals (e.g. the frame's channel-event pushes).
      */
     activeDocKey?: string | null;
-    /**
-     * The typed state/event channel between this tool's controller (the
-     * sidebar mount) and its document views — the PREFERRED surface over the
-     * raw `peer`: state snapshots are retained per topic (late subscribers
-     * replay), events are buffered, and a state publish never summons a
-     * window. Rides the same transport as `peer`; both work side by side
-     * while tools migrate. See `createToolChannel` / ToolChannel.
-     */
-    channel?: ToolChannel;
 }
 /**
  * Branding tokens for a specific app or the login screen.
@@ -7806,6 +8087,13 @@ export interface IWorkspaceContext {
     appState: Record<string, unknown>;
     /** Update the opaque app-owned state via a functional updater. */
     updateAppState: (updater: (prev: Record<string, unknown>) => Record<string, unknown>) => void;
+    /**
+     * Writes the workspace's pending debounced state to disk NOW.
+     *
+     * Hand this to Documents as `WorkspaceBinding.flushNow` so a page
+     * teardown cannot strand the last change in a timer that never fires.
+     */
+    flushWorkspaceNow: () => void;
     /** ID of the currently active app. */
     activeAppId: string;
     /** Lightweight manifest entries for all apps — always available, no bundle load needed. */
@@ -8181,141 +8469,6 @@ export declare function useFixedPopupPosition(triggerRef: React$1.RefObject<HTML
  * new code.
  */
 export declare function getClient(): RocketRideClient | null;
-/** Default per-request timeout — matches the tool-op lane's generosity
- *  (engine-side work can legitimately run long); override per call. */
-export declare const DEFAULT_BUS_REQUEST_TIMEOUT_MS = 120000;
-/** One operation's compile-time shape: params in, result out. */
-export interface ShellOpSpec<P, R> {
-    /** Phantom carriers — never read at runtime. */
-    readonly params: P;
-    readonly result: R;
-}
-/**
- * The base op map a domain's op vocabulary extends — the protocol-map
- * pattern (ShellConnectionEventMap, ToolOpMap) applied to the bus. A domain
- * declares, in its own module:
- *
- *   interface ClientOps extends ShellOpMap {
- *       'client.setTeam': ShellOpSpec<{ teamId: string }, void>;
- *   }
- *
- * The interface key is the wire name, so a typo'd string or drifted payload
- * shape fails to compile at both ends.
- */
-export interface ShellOpMap {
-}
-/** The params type of one op in a map. */
-export type ShellOpParams<O, K extends keyof O> = O[K] extends ShellOpSpec<infer P, unknown> ? P : never;
-/** The result type of one op in a map. */
-export type ShellOpResult<O, K extends keyof O> = O[K] extends ShellOpSpec<unknown, infer R> ? R : never;
-/** Per-request options. */
-export interface IBusRequestOptions {
-    /** Overrides {@link DEFAULT_BUS_REQUEST_TIMEOUT_MS}. */
-    timeoutMs?: number;
-}
-/** A registered op handler — a plain async function, no transport knowledge. */
-export type BusOpHandler = (params: unknown) => unknown | Promise<unknown>;
-/**
- * Where an unresolved op goes when this realm is bridged (set by
- * busBridge.ts). Absent on the framework root (nothing above it) and in
- * unbridged realms (tests, standalone).
- */
-export interface IBusForwarder {
-    /** Forwards a request; resolves/rejects with the remote outcome. */
-    request(op: string, params: unknown, timeoutMs: number): Promise<unknown>;
-    /** Forwards a fire-and-forget op invocation. */
-    emitOp(op: string, params: unknown): void;
-    /** Announces a local registration (routing entry at the root). */
-    register(op: string): void;
-    /** Withdraws a local registration. */
-    unregister(op: string): void;
-}
-/** Thrown when a request resolves to no handler anywhere. */
-export declare class BusNoHandlerError extends Error {
-    constructor(op: string);
-}
-/** The op lane of one realm's bus. */
-export interface IOpBus {
-    /**
-     * Registers THE handler for an op. One handler per name — a second
-     * registration throws (registration is the allowlist; ambiguity is a
-     * bug, not a fan-out).
-     *
-     * @param op - The wire name (`ns.verb` by convention).
-     * @param handler - Plain async function; its return value answers requests.
-     * @returns An unregister function.
-     */
-    handle(op: string, handler: BusOpHandler): () => void;
-    /**
-     * Invokes an op and awaits its result — local handler first, else the
-     * forwarder (the bridge to the framework root), else rejects with
-     * {@link BusNoHandlerError}.
-     */
-    request(op: string, params: unknown, opts?: IBusRequestOptions): Promise<unknown>;
-    /**
-     * Invokes an op fire-and-forget — the handler runs (local or forwarded),
-     * the return value is discarded, failures are debug-logged, an unknown
-     * op is DROPPED with a debug trace (never buffered at this layer).
-     */
-    emitOp(op: string, params: unknown): void;
-    /** True when THIS realm registered the op. */
-    hasHandler(op: string): boolean;
-    /** The ops this realm registered (the bridge announces these). */
-    localOps(): string[];
-    /** Wires the realm's upstream (bridge-owned; root has none). */
-    setForwarder(forwarder: IBusForwarder | null): void;
-    /** Observes registration changes (the bridge re-announces on change). */
-    onRegistrationChange(cb: (op: string, registered: boolean) => void): () => void;
-}
-/**
- * Creates one realm's op bus. ConnectionManager holds exactly one and
- * exposes it as `request`/`handle`/`emitOp`; the bridge and router build on
- * the same object.
- *
- * @returns The op bus.
- */
-/**
- * An implementation table for (a subset of) an op map: one function per op
- * name, FULLY typed against the map — params and result both derive from the
- * op's ShellOpSpec, so a drifted payload shape or wrong return type fails to
- * compile in the table itself. THE one way every domain registers —
- * clientOps, hostOps, and host-specific override tables all ride this.
- */
-export type OpImplTable<M extends ShellOpMap> = Partial<{
-    [K in keyof M]: (params: ShellOpParams<M, K>) => ShellOpResult<M, K> | Promise<ShellOpResult<M, K>>;
-}>;
-/**
- * Registers an implementation table on a bus. Per entry: skipped when the
- * host already registered its own override (`hasHandler`) or when listed in
- * `skip` — specific-before-shared is the composition rule.
- *
- * @param bus - The realm's op bus.
- * @param impls - One implementation per op name.
- * @param options - Ops to leave unregistered.
- * @returns Unregister-all function.
- */
-export declare function registerOpHandlers<M extends ShellOpMap>(bus: IOpBus, impls: OpImplTable<M>, options?: {
-    skip?: ReadonlySet<string>;
-}): () => void;
-export declare function createOpBus(): IOpBus;
-/** The typed facade over a bus for one op map. */
-export interface ITypedBusOps<O extends ShellOpMap> {
-    /** Awaits the op's result. */
-    request<K extends keyof O & string>(op: K, params: ShellOpParams<O, K>, opts?: IBusRequestOptions): Promise<ShellOpResult<O, K>>;
-    /** Fires the op without a result (same handler, return value discarded). */
-    emit<K extends keyof O & string>(op: K, params: ShellOpParams<O, K>): void;
-    /** Registers the op's handler. */
-    handle<K extends keyof O & string>(op: K, handler: (params: ShellOpParams<O, K>) => ShellOpResult<O, K> | Promise<ShellOpResult<O, K>>): () => void;
-}
-/**
- * Types one op map over a bus — the `typedToolChannel` convention applied
- * to the bus lane. Domains hold one of these; raw string ops never appear
- * at call sites.
- *
- * @param bus - The realm's op bus.
- * @returns The typed facade.
- */
-export declare function typedBusOps<O extends ShellOpMap>(bus: IOpBus): ITypedBusOps<O>;
 /** A topic subscriber. `undefined` delivers a retraction. */
 export type RetainedSubscriber = (snapshot: unknown) => void;
 /** The retained-topic registry — one per framework root, THE authority. */
@@ -8518,7 +8671,16 @@ export declare class ConnectionManager implements IConnectionManager {
      * Clean up all resources. Called on page unload.
      */
     dispose(): Promise<void>;
-    /** Returns the RocketRideClient instance, or null if not initialized. */
+    /**
+     * Returns the RocketRideClient instance, or null if not initialized.
+     *
+     * In a BUS-MIRRORED realm this is the realm's own
+     * {@link RocketRideClientProxy} — a real client whose `call()` rides the
+     * bus to the root's socket. It appears once the first mirror delivery has
+     * seeded it, and not before: a client answering `isAuthenticated()` from
+     * an unseeded handshake would report a confident FALSE over a live
+     * session, which is worse than the null a caller already handles.
+     */
     getClient(): RocketRideClient | null;
     /** Returns true if the WebSocket is authenticated and connected. */
     isConnected(): boolean;
@@ -9206,41 +9368,6 @@ export declare function AppStateProvider({ value, children }: {
  * @returns The `{ getAppState, setAppState }` accessor.
  */
 export declare function useAppState(): IAppStateApi;
-declare const ENVELOPE$1 = "__rrtool";
-/** Default per-call timeout — generous because engine-side statements can
- *  legitimately run long; override per call. */
-export declare const DEFAULT_OP_TIMEOUT_MS = 120000;
-/** A correlated request on the wire. */
-export interface IToolCallMessage {
-    [ENVELOPE$1]: "call";
-    id: string;
-    op: string;
-    args?: unknown;
-}
-/** A correlated reply on the wire. */
-export interface IToolReplyMessage {
-    [ENVELOPE$1]: "reply";
-    id: string;
-    ok: boolean;
-    result?: unknown;
-    error?: string;
-}
-/**
- * Narrows a peer payload to a CALL — for the server and the host relays
- * (which must exclude calls from retention).
- *
- * @param message - Any peer payload.
- * @returns The call message, or null.
- */
-export declare function asToolCallMessage(message: unknown): IToolCallMessage | null;
-/**
- * Narrows a peer payload to a REPLY — for the client and the host relays
- * (which deliver replies to live subscribers only).
- *
- * @param message - Any peer payload.
- * @returns The reply message, or null.
- */
-export declare function asToolReplyMessage(message: unknown): IToolReplyMessage | null;
 /** One operation's compile-time shape: params in, result out. */
 export interface ToolOpSpec<P, R> {
     /** Phantom carriers — never read at runtime. */
@@ -9265,11 +9392,6 @@ export interface ToolOpMap {
 export type ToolOpParams<O, K extends keyof O> = O[K] extends ToolOpSpec<infer P, unknown> ? P : never;
 /** The result type of one op in a map. */
 export type ToolOpResult<O, K extends keyof O> = O[K] extends ToolOpSpec<unknown, infer R> ? R : never;
-/** Per-call options. */
-export interface IToolCallOptions {
-    /** Overrides {@link DEFAULT_OP_TIMEOUT_MS}. */
-    timeoutMs?: number;
-}
 /**
  * The calling function a frame holds: ask this tool's controller to execute
  * an operation and await the result. Keys and both payload types come from
@@ -9277,13 +9399,12 @@ export interface IToolCallOptions {
  */
 export type ToolControllerFn<O extends ToolOpMap = ToolOpMap> = <K extends keyof O & string>(op: K, params: ToolOpParams<O, K>, opts?: IToolCallOptions) => Promise<ToolOpResult<O, K>>;
 /**
- * Builds the frame's controller function over a mount's peer pipe. One
- * client per mount lifetime (it holds a standing peer subscription).
+ * The frame's typed controller function over its mount's channel.
  *
- * @param peer - The mount's peer pipe (DevToolProps.peer).
+ * @param channel - The mount's channel (DevToolProps.channel).
  * @returns The calling function, typed by the tool's op map.
  */
-export declare function createToolController<O extends ToolOpMap = ToolOpMap>(peer: DevToolProps["peer"]): ToolControllerFn<O>;
+export declare function createToolOpClient<O extends ToolOpMap = ToolOpMap>(channel: ToolChannel): ToolControllerFn<O>;
 /** The controller-side registry, typed by the tool's op map. */
 export interface IToolOpServer<O extends ToolOpMap = ToolOpMap> {
     /**
@@ -9295,20 +9416,17 @@ export interface IToolOpServer<O extends ToolOpMap = ToolOpMap> {
      * @returns Unregister for this op.
      */
     serve<K extends keyof O & string>(op: K, handler: (params: ToolOpParams<O, K>) => ToolOpResult<O, K> | Promise<ToolOpResult<O, K>>): () => void;
-    /** Tears the whole registry down (unsubscribes from the peer). */
+    /** Unregisters everything this server registered. */
     dispose(): void;
 }
 /**
- * Builds the controller's op server over its peer pipe. One per controller
- * mount, created beside its state publishing.
+ * The controller's typed op server over its mount's channel. One per
+ * controller mount, created beside its state publishing.
  *
- * Reply-iff-tracked: a CALL gets a correlated reply; a plain channel EVENT
- * whose name matches a served op runs the same handler with NO reply.
- *
- * @param peer - The controller mount's peer pipe.
+ * @param channel - The controller mount's channel (DevToolProps.channel).
  * @returns The registry, typed by the tool's op map.
  */
-export declare function createToolOpServer<O extends ToolOpMap = ToolOpMap>(peer: DevToolProps["peer"]): IToolOpServer<O>;
+export declare function createToolOpServer<O extends ToolOpMap = ToolOpMap>(channel: ToolChannel): IToolOpServer<O>;
 /** Wire name of the host connection topic (see toolProtocol.ts for the
  *  tool-facing surface; defined here so non-browser host processes get it
  *  without the React import chain). */
@@ -9442,12 +9560,6 @@ export interface PrefsStore {
 export interface ShellPrefsMap {
     /** The sidebar chrome style ('rocketride' | 'vscode' | 'cursor'). */
     sidebarMode?: string;
-    /** The sidebar strip's tab order (mode ids + `tool:<appId>` ids). */
-    sidebarTabOrder?: string[];
-    /** Pinned dev-tool app ids, in pin order. */
-    devToolPins?: string[];
-    /** Disabled builtin tool ids (builtins are disabled, never removed). */
-    disabledBuiltins?: string[];
     /** DataGrid layout blobs: tableId -> { persistence type -> blob }. */
     tableLayouts?: Record<string, Record<string, unknown>>;
 }
@@ -9522,16 +9634,23 @@ export interface IPrefsHub {
     dispose(): void;
 }
 /**
- * A realm's prefs hub: one mirrored store per partition, created on demand
- * and cached.
+ * THE prefs hub for this realm — one per page/webview, created over the
+ * realm's bus on first use.
  *
- * A realm hosts more than one partition — its own chrome reads `shell`, and
- * every tool it mounts reads `app:<id>` (or `preview:<id>`). Each gets its
- * own topic; the hub keeps them from being subscribed twice.
+ * Every consumer shares it, so a partition has exactly ONE mirrored store
+ * and one subscription no matter how many components read it. Before this
+ * existed each host built its own hub (and the dev-tool strip kept a third
+ * store of its own), which meant several mirrors of the same partition
+ * racing to answer the same question.
  *
- * @param bus - The realm's connection manager.
- * @returns The hub, plus a disposer that drops every subscription.
+ * Never dispose this from a component: it belongs to the realm, not to
+ * whoever happened to read prefs first. `createPrefsHub` stays for the
+ * cases that genuinely need an isolated hub (tests, a second bus).
+ *
+ * @param bus - The realm's bus; used only on the first call.
+ * @returns The realm's hub.
  */
+export declare function realmPrefsHub(bus: IPrefsBus): IPrefsHub;
 export declare function createPrefsHub(bus: IPrefsBus): IPrefsHub;
 /**
  * The live value of one preference key (re-renders on store changes).
@@ -9782,10 +9901,11 @@ export declare function useToolHost<T extends ToolHostServices = ToolHostService
  * A dead-simple in-realm peer for tool mounts that have no isolated
  * counterpart document: posts loop back to this realm's own subscribers,
  * asynchronously (matching the real transports' macrotask semantics).
+ * HOST-side — the result feeds createToolChannel, never a tool directly.
  *
  * @returns The loopback peer.
  */
-export declare function createLoopbackPeer(): DevToolProps["peer"];
+export declare function createLoopbackPeer(): IToolPeer;
 /** How long a summoned owner gets to register before waiting requests fail. */
 export declare const DEFAULT_SUMMON_TIMEOUT_MS = 30000;
 /** One side of a transport between two realms. */
@@ -9876,43 +9996,52 @@ export declare function createLocalEndpointPair(): [
     IBusEndpoint,
     IBusEndpoint
 ];
+declare const ERROR_MARKER = "__rrerr";
+interface IWireError {
+    /** Discriminant — present only on a serialized error. */
+    [ERROR_MARKER]: true;
+    /** The class name, for {@link rehydrateError}'s registry lookup. */
+    name: string;
+    /** The human-readable message. */
+    message: string;
+    /** The originating realm's stack, kept for the rethrown error's trace. */
+    stack?: string;
+    /** Own enumerable fields (`code`, `hint`, `dapResult`, `reason`, …). */
+    fields: Record<string, unknown>;
+}
+type IWireEnvelope = {
+    ok: true;
+    value: unknown;
+} | {
+    ok: false;
+    error: IWireError;
+};
 type C = RocketRideClient;
-type Acct = C["account"];
-type Bill = C["billing"];
-type Dep = C["deploy"];
-type LogFam = C["log"];
 type R<M extends (...args: never[]) => unknown> = Awaited<ReturnType<M>>;
-type P0<M extends (...args: never[]) => unknown> = NonNullable<Parameters<M>[0]>;
-type P1<M extends (...args: never[]) => unknown> = NonNullable<Parameters<M>[1]>;
 /** A monitor key — exactly what the SDK's addMonitor takes. */
 export type ClientMonitorKey = Parameters<C["addMonitor"]>[0];
 /**
- * The brokered client vocabulary, strictly typed. The remaining `unknown`s
- * are deliberate and documented inline: generic-erased SDK results and raw
- * polymorphic wire verbs — nothing else.
+ * The brokered client vocabulary, strictly typed.
  */
 export interface ClientOpMap extends ShellOpMap {
-    "client.getDashboard": ShellOpSpec<Record<string, never>, R<C["getDashboard"]>>;
-    "client.listTasks": ShellOpSpec<P0<C["listTasks"]>, R<C["listTasks"]>>;
-    "client.listConnections": ShellOpSpec<P0<C["listConnections"]>, R<C["listConnections"]>>;
-    "client.getTasks": ShellOpSpec<Record<string, never>, R<C["getTasks"]>>;
-    "client.getTaskToken": ShellOpSpec<P0<C["getTaskToken"]>, R<C["getTaskToken"]>>;
-    "client.getTaskPipeline": ShellOpSpec<{
-        token: string;
-    }, R<C["getTaskPipeline"]>>;
-    "client.getTaskStatus": ShellOpSpec<{
-        token: string;
+    /**
+     * One DAP message on the root's socket — what `RocketRideClientProxy`
+     * routes `request()` through.
+     *
+     * The SDK's TRANSPORT chokepoint, deliberately lower than `call()`:
+     * everything that bypasses `call()` to reach DAP's binary member
+     * (`fsRead`, `fsReadMany`, the DataPipe writes) funnels here too, so one
+     * op carries the file operations as well as every command.
+     *
+     * The result is an {@link IWireEnvelope}, not the response: a failure must
+     * reach the realm as the SAME EXCEPTION CLASS it was thrown as, and a
+     * rejection cannot carry that across `postMessage` (see errorWire.ts).
+     * `openEnvelope` unwraps at the realm end.
+     */
+    "client.request": ShellOpSpec<{
+        message: DAPMessage;
         timeout?: number;
-    }, R<C["getTaskStatus"]>>;
-    "client.terminate": ShellOpSpec<{
-        token: string;
-    }, R<C["terminate"]>>;
-    "client.use": ShellOpSpec<P0<C["use"]>, R<C["use"]>>;
-    "client.restart": ShellOpSpec<P0<C["restart"]>, R<C["restart"]>>;
-    "client.validate": ShellOpSpec<P0<C["validate"]>, R<C["validate"]>>;
-    /** Result stays `unknown`: the SDK's `tool<T = any>` erases its return
-     *  type — there is nothing to derive; callers narrow at the edge. */
-    "client.tool": ShellOpSpec<P0<C["tool"]>, unknown>;
+    }, IWireEnvelope>;
     "client.addMonitor": ShellOpSpec<{
         key: ClientMonitorKey;
         types: string[];
@@ -9921,233 +10050,6 @@ export interface ClientOpMap extends ShellOpMap {
         key: ClientMonitorKey;
         types: string[];
     }, R<C["removeMonitor"]>>;
-    "client.fsListDir": ShellOpSpec<{
-        path: string;
-    }, R<C["fsListDir"]>>;
-    "client.fsStat": ShellOpSpec<{
-        path: string;
-    }, R<C["fsStat"]>>;
-    "client.fsGetUrl": ShellOpSpec<{
-        path: string;
-        expiresIn?: number;
-        downloadName?: string;
-    }, R<C["fsGetUrl"]>>;
-    "client.fsReadString": ShellOpSpec<{
-        path: string;
-    }, R<C["fsReadString"]>>;
-    "client.fsWriteString": ShellOpSpec<{
-        path: string;
-        text: string;
-    }, R<C["fsWriteString"]>>;
-    /** JSON file contents — `unknown` IS the honest type (schemaless). */
-    "client.fsReadJson": ShellOpSpec<{
-        path: string;
-    }, unknown>;
-    "client.fsWriteJson": ShellOpSpec<{
-        path: string;
-        value: unknown;
-    }, R<C["fsWriteJson"]>>;
-    "client.fsRename": ShellOpSpec<{
-        from: string;
-        to: string;
-    }, R<C["fsRename"]>>;
-    "client.fsDelete": ShellOpSpec<{
-        path: string;
-    }, R<C["fsDelete"]>>;
-    "client.fsMkdir": ShellOpSpec<{
-        path: string;
-    }, R<C["fsMkdir"]>>;
-    "client.fsRmdir": ShellOpSpec<{
-        path: string;
-        recursive?: boolean;
-    }, R<C["fsRmdir"]>>;
-    "client.fsOpen": ShellOpSpec<{
-        path: string;
-        mode: "r" | "w";
-    }, R<C["fsOpen"]>>;
-    "client.fsWrite": ShellOpSpec<{
-        handle: string;
-        dataB64: string;
-    }, R<C["fsWrite"]>>;
-    "client.fsClose": ShellOpSpec<{
-        handle: string;
-        mode: "r" | "w";
-    }, R<C["fsClose"]>>;
-    /** NOTE: `session` is a STRING per the SDK — the old loose spec said
-     *  `Record<string, unknown>`, a drift this typing now makes impossible. */
-    "client.cprofileStart": ShellOpSpec<{
-        target?: string | null;
-        session?: string;
-    }, R<C["cprofileStart"]>>;
-    "client.cprofileStop": ShellOpSpec<{
-        target?: string | null;
-    }, R<C["cprofileStop"]>>;
-    "client.cprofileStatus": ShellOpSpec<{
-        target?: string | null;
-    }, R<C["cprofileStatus"]>>;
-    "client.cprofileReport": ShellOpSpec<{
-        target?: string | null;
-    }, R<C["cprofileReport"]>>;
-    "client.cprofileReportTree": ShellOpSpec<{
-        target?: string | null;
-        max_depth?: number;
-        min_pct?: number;
-        include_system?: boolean;
-        thread?: number | null;
-    }, R<C["cprofileReportTree"]>>;
-    "client.cprofileThreads": ShellOpSpec<{
-        target?: string | null;
-    }, R<C["cprofileThreads"]>>;
-    "client.getService": ShellOpSpec<{
-        service: string;
-    }, R<C["getService"]>>;
-    "client.getEnvironmentKeys": ShellOpSpec<Record<string, never>, R<Acct["getEnvironmentKeys"]>>;
-    "client.deploy.list": ShellOpSpec<Record<string, never>, R<Dep["list"]>>;
-    "client.deploy.versions": ShellOpSpec<{
-        projectId: string;
-    }, R<Dep["versions"]>>;
-    "client.deploy.get": ShellOpSpec<{
-        projectId: string;
-        teamId: string;
-    }, R<Dep["get"]>>;
-    "client.deploy.artifact": ShellOpSpec<{
-        projectId: string;
-        version: number;
-    }, R<Dep["artifact"]>>;
-    "client.deploy.history": ShellOpSpec<{
-        projectId: string;
-        teamId?: string;
-        page?: number;
-        pageSize?: number;
-    }, R<Dep["history"]>>;
-    "client.deploy.deploy": ShellOpSpec<{
-        projectId: string;
-        version: number;
-        teamId: string;
-    }, R<Dep["deploy"]>>;
-    "client.deploy.disable": ShellOpSpec<{
-        projectId: string;
-        teamId: string;
-    }, R<Dep["disable"]>>;
-    "client.deploy.enable": ShellOpSpec<{
-        projectId: string;
-        teamId: string;
-    }, R<Dep["enable"]>>;
-    "client.deploy.remove": ShellOpSpec<{
-        projectId: string;
-        teamId: string;
-    }, R<Dep["remove"]>>;
-    "client.deploy.run": ShellOpSpec<{
-        projectId: string;
-        sourceId: string;
-        teamId: string;
-    }, R<Dep["run"]>>;
-    /** cron=null clears the schedule; ttl rides options. */
-    "client.deploy.setSchedule": ShellOpSpec<{
-        projectId: string;
-        sourceId: string;
-        cron: string | null;
-        teamId: string;
-        ttl?: number;
-    }, R<Dep["setSchedule"]>>;
-    "client.deploy.pauseSchedule": ShellOpSpec<{
-        projectId: string;
-        sourceId: string;
-        teamId: string;
-    }, R<Dep["pauseSchedule"]>>;
-    "client.deploy.resumeSchedule": ShellOpSpec<{
-        projectId: string;
-        sourceId: string;
-        teamId: string;
-    }, R<Dep["resumeSchedule"]>>;
-    "client.deploy.setSourceConfig": ShellOpSpec<{
-        projectId: string;
-        sourceId: string;
-        teamId: string;
-        traceLevel?: string;
-        debugOut?: boolean;
-    }, R<Dep["setSourceConfig"]>>;
-    "client.deploy.preview": ShellOpSpec<{
-        cron: string;
-        count: number;
-    }, R<Dep["preview"]>>;
-    /** The server task registry's raw rows (ownerKind/ownerId/runKind/teamId
-     *  carried) — the deploy drawers' live-run scan. A NAMED allowlist entry
-     *  over the one extension command (never a generic call passthrough).
-     *  Raw wire verb — the body shape is the server's, typed to what every
-     *  consumer reads. */
-    "client.listRunningTasks": ShellOpSpec<Record<string, never>, {
-        tasks?: Array<Record<string, unknown>>;
-    }>;
-    "client.app.listDeployments": ShellOpSpec<{
-        appId: string;
-    }, R<C["listDeployments"]>>;
-    "client.app.where": ShellOpSpec<{
-        appId: string;
-    }, R<C["whereApp"]>>;
-    "client.app.submit": ShellOpSpec<{
-        appId: string;
-        version: number;
-    }, R<C["submitApp"]>>;
-    "client.app.publish": ShellOpSpec<{
-        appId: string;
-        version: number;
-        target: string;
-    }, R<C["publishApp"]>>;
-    "client.app.withdraw": ShellOpSpec<{
-        appId: string;
-        version: number;
-    }, R<C["withdrawApp"]>>;
-    "client.app.removePublish": ShellOpSpec<{
-        appId: string;
-        target: string;
-    }, R<C["removeAppPublish"]>>;
-    "client.app.buildLog": ShellOpSpec<{
-        appId: string;
-        version: number;
-    }, R<C["buildLog"]>>;
-    "client.app.reply": ShellOpSpec<{
-        appId: string;
-        message: string;
-        version?: number;
-    }, R<C["replyApp"]>>;
-    /** Raw wire verb (no SDK method): the server returns exactly these keys
-     *  on BOTH editions (OSS base.py + SaaS app_handler). */
-    "client.app.developerStatus": ShellOpSpec<Record<string, never>, {
-        developerId: string | null;
-        stripeAccountId: string | null;
-        stripeAccountStatus: string;
-    }>;
-    /** The marketplace walk (`rrext_app list`): every app the caller can
-     *  reach on the @me/@team/@public rails. THE app catalog — pickers and
-     *  store surfaces call this; the account list (desktop-only on SaaS)
-     *  and the MF registration list are never catalogs. Rows are manifest-
-     *  shaped; `category`/`search` are documented on the wire but implemented
-     *  by no edition yet — filter client-side. */
-    "client.app.list": ShellOpSpec<{
-        offset?: number;
-        limit?: number;
-        search?: string;
-        category?: string;
-        shell?: string;
-    }, {
-        apps: AppManifestEntry$1[];
-        total?: number;
-        offset?: number;
-        limit?: number;
-    }>;
-    /** Raw wire verb — the server's confirmed body (app_handler.py). */
-    "client.app.developerRegister": ShellOpSpec<{
-        developerId: string;
-    }, {
-        developerId: string;
-        orgId: string;
-    }>;
-    "client.log.chapters": ShellOpSpec<{
-        projectId: string;
-        source: string;
-        teamId?: string;
-    }, R<LogFam["chapters"]>>;
     "client.log.openStream": ShellOpSpec<{
         sessionId: string;
         projectId: string;
@@ -10181,155 +10083,6 @@ export interface ClientOpMap extends ShellOpMap {
     "client.log.streamClose": ShellOpSpec<{
         sessionId: string;
     }, void>;
-    "client.account.getProfile": ShellOpSpec<Record<string, never>, R<Acct["getProfile"]>>;
-    "client.account.updateProfile": ShellOpSpec<{
-        fields: P0<Acct["updateProfile"]>;
-    }, R<Acct["updateProfile"]>>;
-    "client.account.setDevTeam": ShellOpSpec<{
-        teamId: string;
-    }, R<Acct["setDevTeam"]>>;
-    "client.account.setDefaultOrg": ShellOpSpec<{
-        orgId: string;
-    }, R<Acct["setDefaultOrg"]>>;
-    "client.account.deleteAccount": ShellOpSpec<Record<string, never>, R<Acct["deleteAccount"]>>;
-    "client.account.getOrg": ShellOpSpec<{
-        orgId?: string;
-    }, R<Acct["getOrg"]>>;
-    "client.account.updateOrgName": ShellOpSpec<{
-        orgId: string;
-        name: string;
-    }, R<Acct["updateOrgName"]>>;
-    "client.account.listKeys": ShellOpSpec<Record<string, never>, R<Acct["listKeys"]>>;
-    "client.account.createKey": ShellOpSpec<{
-        params: P0<Acct["createKey"]>;
-    }, R<Acct["createKey"]>>;
-    "client.account.revokeKey": ShellOpSpec<{
-        keyId: string;
-    }, R<Acct["revokeKey"]>>;
-    "client.account.listMembers": ShellOpSpec<{
-        orgId: string;
-    }, R<Acct["listMembers"]>>;
-    "client.account.inviteMember": ShellOpSpec<{
-        orgId: string;
-        params: P1<Acct["inviteMember"]>;
-    }, R<Acct["inviteMember"]>>;
-    "client.account.updateMemberRole": ShellOpSpec<{
-        orgId: string;
-        userId: string;
-        role: string;
-    }, R<Acct["updateMemberRole"]>>;
-    "client.account.removeMember": ShellOpSpec<{
-        orgId: string;
-        userId: string;
-    }, R<Acct["removeMember"]>>;
-    "client.account.resendInvite": ShellOpSpec<{
-        orgId: string;
-        userId: string;
-    }, R<Acct["resendInvite"]>>;
-    "client.account.listTeams": ShellOpSpec<{
-        orgId: string;
-    }, R<Acct["listTeams"]>>;
-    "client.account.getTeamDetail": ShellOpSpec<{
-        orgId: string;
-        teamId: string;
-    }, R<Acct["getTeamDetail"]>>;
-    "client.account.createTeam": ShellOpSpec<{
-        orgId: string;
-        name: string;
-    }, R<Acct["createTeam"]>>;
-    "client.account.deleteTeam": ShellOpSpec<{
-        orgId: string;
-        teamId: string;
-    }, R<Acct["deleteTeam"]>>;
-    "client.account.addTeamMember": ShellOpSpec<{
-        orgId: string;
-        params: P1<Acct["addTeamMember"]>;
-    }, R<Acct["addTeamMember"]>>;
-    "client.account.updateTeamMemberPerms": ShellOpSpec<{
-        orgId: string;
-        params: P1<Acct["updateTeamMemberPerms"]>;
-    }, R<Acct["updateTeamMemberPerms"]>>;
-    "client.account.removeTeamMember": ShellOpSpec<{
-        orgId: string;
-        params: P1<Acct["removeTeamMember"]>;
-    }, R<Acct["removeTeamMember"]>>;
-    "client.account.getEnv": ShellOpSpec<{
-        scope: "org" | "team" | "user";
-        scopeId?: string;
-        connection?: "dev" | "deploy";
-    }, R<Acct["getEnv"]>>;
-    "client.account.setEnv": ShellOpSpec<{
-        scope: "org" | "team" | "user";
-        env: Record<string, string>;
-        scopeId?: string;
-        connection?: "dev" | "deploy";
-    }, R<Acct["setEnv"]>>;
-    "client.billing.getDetails": ShellOpSpec<{
-        orgId: string;
-    }, R<Bill["getDetails"]>>;
-    "client.billing.getProductPrices": ShellOpSpec<{
-        appId: string;
-    }, R<Bill["getProductPrices"]>>;
-    "client.billing.createCheckoutSession": ShellOpSpec<{
-        orgId: string;
-        appId: string;
-        priceId: string;
-        promotionCode?: string;
-    }, R<Bill["createCheckoutSession"]>>;
-    "client.billing.validatePromoCode": ShellOpSpec<{
-        orgId: string;
-        code: string;
-        priceId?: string;
-    }, R<Bill["validatePromoCode"]>>;
-    "client.billing.redeemPromoCode": ShellOpSpec<{
-        orgId: string;
-        code: string;
-    }, R<Bill["redeemPromoCode"]>>;
-    "client.billing.createPortalSession": ShellOpSpec<{
-        orgId: string;
-    }, R<Bill["createPortalSession"]>>;
-    "client.billing.cancelSubscription": ShellOpSpec<{
-        orgId: string;
-        appId: string;
-    }, R<Bill["cancelSubscription"]>>;
-    "client.billing.upgradeSubscription": ShellOpSpec<{
-        orgId: string;
-        appId: string;
-        newPriceId: string;
-    }, R<Bill["upgradeSubscription"]>>;
-    "client.billing.purchaseTopup": ShellOpSpec<{
-        orgId: string;
-        priceId: string;
-    }, R<Bill["purchaseTopup"]>>;
-    "client.billing.getCreditBalance": ShellOpSpec<{
-        orgId: string;
-    }, R<Bill["getCreditBalance"]>>;
-    "client.billing.listCreditPacks": ShellOpSpec<Record<string, never>, R<Bill["listCreditPacks"]>>;
-    "client.billing.getTransactions": ShellOpSpec<{
-        orgId: string;
-        options?: P1<Bill["getTransactions"]>;
-    }, R<Bill["getTransactions"]>>;
-    "client.billing.getTransactionDistinct": ShellOpSpec<{
-        orgId: string;
-        field: string;
-    }, R<Bill["getTransactionDistinct"]>>;
-    "client.billing.getUsageByUser": ShellOpSpec<{
-        orgId: string;
-    }, R<Bill["getUsageByUser"]>>;
-    "client.billing.getUsageByTeam": ShellOpSpec<{
-        orgId: string;
-    }, R<Bill["getUsageByTeam"]>>;
-    "client.billing.createCreditCheckout": ShellOpSpec<{
-        orgId: string;
-        packId: string;
-    }, R<Bill["createCreditCheckout"]>>;
-    "client.billing.confirmPending": ShellOpSpec<{
-        appId: string;
-        subscriptionId: string;
-        priceId: string;
-    }, {
-        status: string;
-    }>;
 }
 /** What the registration needs from its host — the SDK client and liveness.
  *  Typed structurally so BOTH ConnectionManager classes (shell and the VS
@@ -10343,10 +10096,6 @@ export interface IClientOpsOptions {
     /** Ops to leave UNREGISTERED (the VS Code root pre-registers its
      *  broker-owned monitor pair; cloud registers everything). */
     skip?: ReadonlySet<string>;
-    /** Where Stripe sends the browser back from the customer portal — HOST
-     *  POLICY (cloud: its own origin; VS Code: the public site). Required
-     *  for `client.billing.createPortalSession` to be served. */
-    portalReturnUrl?: () => string;
 }
 /**
  * Registers the brokered `client.*` surface on a framework root's bus.
@@ -10370,7 +10119,7 @@ interface IBusPeerBus {
     read(topic: string): Promise<unknown>;
     emitOp(op: string, params: unknown): void;
 }
-type Peer = DevToolProps["peer"];
+type Peer = IToolPeer;
 /**
  * The sidebar mount's peer for one tool. Create ONE per tool per realm and
  * keep it for the realm's lifetime (mounts subscribe and unsubscribe; the
@@ -10382,15 +10131,32 @@ type Peer = DevToolProps["peer"];
  */
 export declare function createSidebarBusPeer(appId: string, cm: IBusPeerBus): Peer;
 /**
- * A frame mount's peer for one tool. Create one per mount; its subscribe's
- * cleanup says BYE (hosts whose panels die without cleanup publish the
- * presence topic instead).
+ * A frame realm's peer for one tool. A host may cache one per tool (the
+ * channel built over it holds one standing subscription); MOUNT liveness is
+ * announced separately via {@link announceFramePresence}.
  *
  * @param appId - The tool's app id.
  * @param cm - The realm's bus verbs (its ConnectionManager).
  * @returns The peer.
  */
 export declare function createFrameBusPeer(appId: string, cm: IBusPeerBus): Peer;
+/**
+ * Announces one FRAME MOUNT of a tool to its sidebar peer — HELLO now, BYE
+ * from the returned cleanup. HOST-side, one call per mount lifetime (a React
+ * effect): the hello is what flips the sidebar peer to direct delivery and
+ * flushes its buffered events, and the bye is what re-arms buffering and the
+ * panel summon. Call it AFTER the mount's channel exists, so the flushed
+ * buffer has a live subscriber to land on.
+ *
+ * Hosts whose panels can die without cleanup (VS Code webviews) also publish
+ * the authoritative panel count on the presence topic; the hello is still
+ * required there — it is the flush trigger.
+ *
+ * @param appId - The tool's app id.
+ * @param cm - The realm's bus verbs (its ConnectionManager).
+ * @returns Cleanup — says BYE.
+ */
+export declare function announceFramePresence(appId: string, cm: IBusPeerBus): () => void;
 /** The tool-document URI prefix. */
 export declare const TOOL_DOC_PREFIX = "tool:";
 /**
@@ -10867,6 +10633,8 @@ export type LayoutNode = LayoutLeaf | LayoutSplit;
 type Public<T> = {
     [K in keyof T]: T[K];
 };
+type LateDocumentsVerbs = "requestCloseEditor" | "requestCloseGroup" | "saveActiveDocument" | "flushPersistence";
+type DocumentsLike = Omit<Public<Documents>, LateDocumentsVerbs> & Partial<Pick<Public<Documents>, LateDocumentsVerbs>>;
 /** Complete documents model state. */
 export interface DocumentsState {
     /** All open documents keyed by URI. */
@@ -10898,6 +10666,64 @@ export interface WorkspaceBinding {
     appState: Record<string, unknown>;
     /** Functional updater to write back to workspace appState. */
     updateAppState: (updater: (prev: Record<string, unknown>) => Record<string, unknown>) => void;
+    /**
+     * Optional: writes the workspace's own pending debounced state NOW.
+     *
+     * Documents debounces into appState and the workspace debounces appState
+     * to disk, so a flush that stops at the first stage still leaves the
+     * change in a timer. Supplying this pushes it down the whole chain.
+     *
+     * For a LIVE page only. This must NOT be wired to `pagehide`: the write
+     * rides the engine socket, and a reload closes it mid-flight — the
+     * server truncates the target file and never receives the body, which
+     * turned a workspace file into zero bytes. A half-second of debounce is
+     * worth losing; the workspace is not.
+     */
+    flushNow?: () => void;
+}
+/** What a dirty-close decision can be. */
+export type DirtyCloseChoice = "save" | "discard" | "cancel";
+/** One unsaved document a close is about to destroy. */
+export interface DirtyDocInfo {
+    /** The document URI. */
+    uri: string;
+    /** The tab label (the editor's label, or the URI). */
+    label: string;
+    /** True for a never-saved document — saving it needs a path first. */
+    isNew: boolean;
+    /** Whether this instance can save it without asking for a path. */
+    canSave: boolean;
+}
+/** The UI policy hooks for a {@link Documents} instance (see file header). */
+export interface DocumentsUi {
+    /**
+     * Decides what happens to documents whose LAST view is closing with
+     * unsaved changes. Called once per close with every affected document,
+     * so a group close asks one question rather than one per tab.
+     *
+     * Omit for the shell's Save/Discard/Cancel dialog; pass null to discard
+     * without asking.
+     */
+    confirmDirtyClose?: ((docs: readonly DirtyDocInfo[]) => Promise<DirtyCloseChoice>) | null;
+    /**
+     * Supplies a path for a never-saved document, so "Save" can be offered
+     * when closing one. Resolve null to abandon the save (the close is then
+     * cancelled too — the user asked to save and we could not).
+     *
+     * The shell has NO default here: a save-as dialog needs the file types
+     * of the app's own documents, which Documents cannot know. Without it,
+     * "Save" is simply not offered for new documents.
+     */
+    pickSavePath?: ((doc: DirtyDocInfo) => Promise<string | null>) | null;
+}
+/** Constructor options for {@link Documents}. */
+export interface DocumentsOptions {
+    /** Virtual file system for reading/writing document content. */
+    vfs?: IVirtualFileSystem | null;
+    /** Workspace binding for automatic persistence. */
+    workspace?: WorkspaceBinding;
+    /** Dirty-close and save-as policy (see {@link DocumentsUi}). */
+    ui?: DocumentsUi;
 }
 /**
  * VS Code-style document model.
@@ -10917,12 +10743,26 @@ export declare class Documents {
     /**
      * Creates a new Documents instance.
      *
-     * @param vfs       - Virtual file system for reading/writing document content.
-     * @param workspace - Optional workspace binding for automatic persistence.
-     *                    When provided, state is restored from appState on creation
-     *                    and debounce-saved back on every change.
+     * Accepts either the positional form (kept verbatim — it is in the frozen
+     * shell contract) or a single options bag, which is the only way to pass
+     * the {@link DocumentsUi} policy. The two are told apart by `read`: every
+     * IVirtualFileSystem has one, no DocumentsOptions does.
+     *
+     * @param vfsOrOptions - A virtual file system, or {@link DocumentsOptions}.
+     * @param workspace    - Optional workspace binding for automatic persistence
+     *                       (positional form only). When provided, state is
+     *                       restored from appState on creation and debounce-saved
+     *                       back on every change.
      */
-    constructor(vfs?: IVirtualFileSystem | null, workspace?: WorkspaceBinding);
+    constructor(vfsOrOptions?: IVirtualFileSystem | null | DocumentsOptions, workspace?: WorkspaceBinding);
+    /**
+     * Writes this instance's state through to persistence immediately,
+     * cancelling the pending debounce.
+     *
+     * Safe to call at any time and when nothing is pending: the write is an
+     * idempotent overwrite of the same value.
+     */
+    flushPersistence(): void;
     /**
      * Returns the current state snapshot without subscribing.
      *
@@ -10988,6 +10828,38 @@ export declare class Documents {
      * @param editorId - The editor to close.
      */
     closeEditor(editorId: string): void;
+    /**
+     * Closes one editor, asking about unsaved changes first.
+     *
+     * The prompt happens ONLY when this is the last view of a dirty
+     * document: closing one of two split views of the same document
+     * destroys nothing, so asking would be both spurious and dangerous
+     * (a "discard" would throw away content still on screen).
+     *
+     * @param editorId - The editor to close.
+     * @returns True when the editor closed; false when the user cancelled.
+     */
+    requestCloseEditor(editorId: string): Promise<boolean>;
+    /**
+     * Closes a group, asking once about every unsaved document it is the
+     * last home of ("3 files have unsaved changes").
+     *
+     * One aggregated question, never a loop: the dialog service allows one
+     * dialog at a time, so prompting per tab would ask about the first and
+     * silently refuse the rest.
+     *
+     * @param groupId - The group to close.
+     * @returns True when the group closed; false when the user cancelled.
+     */
+    requestCloseGroup(groupId: string): Promise<boolean>;
+    /**
+     * Saves the document in the active editor of the active group — the
+     * Ctrl+S verb, stated once instead of re-derived in every app's
+     * `tab:save` listener.
+     *
+     * @returns Resolves when the save completed (or there was nothing to do).
+     */
+    saveActiveDocument(): Promise<void>;
     /**
      * Force-remove a document and all its editors from state, regardless of
      * dirty status. Used when the backing file has been deleted from disk —
@@ -11287,8 +11159,16 @@ export declare class CachedVfs implements IVirtualFileSystem {
  * Props for the DocTabs component.
  */
 export interface DocTabsProps {
-    /** The Documents instance to read state from and dispatch actions to. */
-    docs: Public<Documents>;
+    /**
+     * The Documents instance to read state from and dispatch actions to.
+     *
+     * The policy-aware verbs are OPTIONAL in this type on purpose: the
+     * frozen shell contract pins the Documents shape apps were built
+     * against, so requiring members added later would reject a perfectly
+     * good instance from a v5-era app. Absence is feature-detected below
+     * and falls back to the unconditional close.
+     */
+    docs: DocumentsLike;
     /** The editor group whose tabs should be rendered. */
     groupId: string;
     /** Whether this group is the currently focused group. */
@@ -11317,7 +11197,7 @@ export declare const DocTabs: React$1.FC<DocTabsProps>;
  */
 export interface DocSplitLayoutProps {
     /** The Documents instance to read layout state from. */
-    docs: Public<Documents>;
+    docs: DocumentsLike;
     /** Render function for each leaf pane — receives groupId, returns JSX. */
     renderPane: (groupId: string) => React$1.ReactNode;
 }
@@ -11580,10 +11460,76 @@ export interface IConfirmDialogProps {
  * @returns The confirm dialog element.
  */
 export declare function ConfirmDialog({ title, message, confirmLabel, cancelLabel, secondaryLabel, onConfirm, onCancel, onSecondary, destructive, confirmDisabled, }: IConfirmDialogProps): React$1.ReactElement;
+/** One selectable action in a {@link ChoiceDialog}. */
+export interface IChoiceOption {
+    /** Stable id resolved to the caller when this action is chosen. */
+    id: string;
+    /** Button label. */
+    label: string;
+    /** Render in the danger style (irreversible: discard, delete). */
+    destructive?: boolean;
+    /** Render as the affirmative action (primary style + initial focus). */
+    primary?: boolean;
+    /** Disable the button (e.g. an action unavailable in this state). */
+    disabled?: boolean;
+}
+/** Props for the {@link ChoiceDialog} component. */
+export interface IChoiceDialogProps {
+    /** Dialog title. */
+    title: string;
+    /** Body message — a plain string or a custom node. */
+    message: React$1.ReactNode;
+    /** The actions, in left-to-right render order. */
+    options: readonly IChoiceOption[];
+    /** Fired with the chosen option's id. */
+    onChoose: (id: string) => void;
+    /** Fired on Escape, the corner ✕, or a dismiss that chose nothing. */
+    onCancel: () => void;
+    /** Box width in px (defaults to the modal default). */
+    width?: number;
+}
+/**
+ * Renders a dialog with any number of actions.
+ *
+ * @param props - {@link IChoiceDialogProps}.
+ * @returns The dialog element.
+ */
+export declare function ChoiceDialog({ title, message, options, onChoose, onCancel, width }: IChoiceDialogProps): React$1.ReactElement;
+/** A {@link showChoiceDialog} request. */
+export interface ChoiceDialogRequest {
+    /** Dialog title. */
+    title: string;
+    /** Body message — a plain string or a custom node. */
+    message: React$1.ReactNode;
+    /** The actions, in left-to-right render order (affirmative last). */
+    options: readonly IChoiceOption[];
+    /**
+     * Id resolved when the dialog is DISMISSED (Escape, the corner ✕, or a
+     * cancel option). Omit and a dismissal resolves null — indistinguishable
+     * from a call that could not be shown, so pass it whenever the
+     * difference matters.
+     */
+    cancelId?: string;
+    /** Box width in px (defaults to the modal default). */
+    width?: number;
+}
+/**
+ * Shows a dialog with any number of actions in THIS realm and resolves with
+ * the chosen option's id. Never rejects.
+ *
+ * Resolves `null` when the choice was never made: the dialog could not be
+ * shown (another is already open), or it was dismissed and no `cancelId`
+ * was given. A `null` must therefore never be treated as an affirmative —
+ * the safe reading is always "do nothing".
+ *
+ * @param request - See {@link ChoiceDialogRequest}.
+ * @returns The chosen option id, the `cancelId` on dismissal, or null.
+ */
+export declare function showChoiceDialog(request: ChoiceDialogRequest): Promise<string | null>;
 /**
  * Shows the shell's confirmation dialog in THIS realm and resolves with
- * the user's choice. Never rejects; a call while another confirmation is
- * open resolves false (no stacked modals).
+ * the user's choice. Never rejects; a call while another dialog is open
+ * resolves false (no stacked modals).
  *
  * @param title - Dialog title.
  * @param message - Body message.
@@ -14525,6 +14471,7 @@ export declare const shellApi: {
         indicatorMuted: import("react").CSSProperties;
     };
     readonly useShellConnection: typeof useShellConnection;
+    readonly useShellApiKey: typeof useShellApiKey;
     readonly useAuthUser: typeof useAuthUser;
     readonly useLogout: typeof useLogout;
     readonly useWorkspace: typeof useWorkspace;
@@ -14535,7 +14482,7 @@ export declare const shellApi: {
     readonly createToolChannel: typeof createToolChannel;
     readonly asToolStateMessage: typeof asToolStateMessage;
     readonly asToolEventMessage: typeof asToolEventMessage;
-    readonly createToolController: typeof createToolController;
+    readonly createToolOpClient: typeof createToolOpClient;
     readonly createToolOpServer: typeof createToolOpServer;
     readonly asToolCallMessage: typeof asToolCallMessage;
     readonly asToolReplyMessage: typeof asToolReplyMessage;
@@ -14549,6 +14496,7 @@ export declare const shellApi: {
     readonly scopedPrefs: typeof scopedPrefs;
     readonly createMirroredPrefsStore: typeof createMirroredPrefsStore;
     readonly createPrefsHub: typeof createPrefsHub;
+    readonly realmPrefsHub: typeof realmPrefsHub;
     readonly usePref: typeof usePref;
     readonly ToolHostProvider: import("react").Provider<ToolHostServices | null>;
     readonly useToolHost: typeof useToolHost;
@@ -14558,6 +14506,7 @@ export declare const shellApi: {
     readonly TOOL_RELAY_BUFFER_LIMIT: number;
     readonly createSidebarBusPeer: typeof createSidebarBusPeer;
     readonly createFrameBusPeer: typeof createFrameBusPeer;
+    readonly announceFramePresence: typeof announceFramePresence;
     readonly toolDocUri: typeof toolDocUri;
     readonly parseToolDocUri: typeof parseToolDocUri;
     readonly activeDocKeyFor: typeof activeDocKeyFor;

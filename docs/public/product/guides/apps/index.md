@@ -879,37 +879,51 @@ Both components receive `DevToolProps`:
 
 | Prop | Purpose |
 |---|---|
-| `peer` | Raw ephemeral channel to the tool's other mount (`post` / `subscribe`) — frame and sidebar may live in isolated documents (VS Code webviews) |
-| `channel` | The typed state/event channel over `peer` (retained state topics, buffered events) — prefer it over raw `peer` |
+| `channel` | The tool's ONE transport surface to its other mount (frame ↔ sidebar; the mounts may live in isolated documents — VS Code webviews). Three lanes: retained state topics, fire-and-forget events, correlated ops |
 | `documents` | On multi-document hosts: `open(docKey, title)` / `close(docKey)` |
 | `docKey` / `activeDocKey` | The document key a frame serves / the fronted document a sidebar follows |
 
-There is NO client prop: the sidebar mount (the tool's **controller**) owns the tool's single server connection, and frames reach the server only through correlated ops served by the controller. The shell ships the whole protocol layer:
+There is NO client prop — and none is needed. The realm model in three lines:
+
+1. Every surface runs in a **realm** (the shell page, each VS Code webview, each framework page) attached to the shell bus.
+2. Every realm's `useShellConnection().client` is a **real `RocketRideClient`**: the root realm's client owns the socket; every other realm holds a *realm client* whose requests ride the bus to that same socket. There is ONE socket per host process.
+3. A tool's sidebar mount (its **controller**) therefore owns *authority*, not transport: it coordinates the tool's genuinely shared state — refcounted resources, single-writer stores, one shared poller — through tool ops, while every mount makes its own engine calls on its own client.
+
+A tool's ops live in a `src/ops/` directory with a fixed three-file layout (see sql-ui and monitor-ui for the reference shape), re-exported by an `ops/index.ts` barrel:
 
 ```ts
-// ops.ts — the tool's protocol, declared ONCE as maps extending the shell's
-// base maps (the ShellEventMap pattern, per tool; `host:*` keys are reserved):
+// ops/types.ts — the tool's COORDINATION protocol, declared ONCE as maps
+// extending the shell's base maps (per tool; `host:*` keys are reserved).
+// Only shared state belongs here — plain engine calls go through the realm
+// client.
 import type { ToolOpMap, ToolOpSpec, ToolStateMap, ToolEventMap } from 'shell';
 
-interface MyOps extends ToolOpMap {
-	'myTool.fetch': ToolOpSpec<{ id: string }, MyRecord>;
+export interface MyOps extends ToolOpMap {
+	'myTool.acquire': ToolOpSpec<{ id: string }, MyHandle>; // refcounted — ONE owner realm
 }
-interface MyStateMap extends ToolStateMap { records: MyRecord[] }
-interface MyEventMap extends ToolEventMap { save: MyRecord }
+export interface MyStateMap extends ToolStateMap { records: MyRecord[] }
+export interface MyEventMap extends ToolEventMap { save: MyRecord }
 
-// Sidebar (controller): serve ops on the realm's client, publish state.
-const ops = createToolOpServer<MyOps>(peer);
-ops.serve('myTool.fetch', async ({ id }) => load(getClient(), id));
-typedToolChannel<MyStateMap, MyEventMap>(channel).publishState('records', list);
+// ops/server.ts — the implementations, served by the sidebar CONTROLLER mount.
+export function serveMyOps(channel: ToolChannel): () => void {
+	const ops = createToolOpServer<MyOps>(channel);
+	ops.serve('myTool.acquire', async ({ id }) => acquire(id));
+	return () => ops.dispose();
+}
 
-// Frame: call ops, read state — never a client.
-const call = createToolController<MyOps>(peer);
-const record = await call('myTool.fetch', { id });
-const ready = useConnectionReady(channel);   // the host-published
-                                             // 'host:connection' system topic
+// ops/client.ts — the typed calls, used by FRAME mounts.
+export function createMyOpsClient(channel: ToolChannel) {
+	const call = createToolOpClient<MyOps>(channel);
+	return { acquire: (id: string) => call('myTool.acquire', { id }) };
+}
+
+// In the frame: engine work on the realm's own client; shared state via ops.
+const { client, isConnected } = useShellConnection();
+const rows = client ? await client.listTasks({}) : [];
+const handle = await createMyOpsClient(channel).acquire(id);
 ```
 
-`useConnectionReady` reads the `host:connection` system topic — the controller realm's server-connection status, published by the **host** (never by a tool) and retained on the channel, so a frame restored before its controller ever ran still reads correctly. Gate run/apply affordances on it instead of probing the connection.
+**Why two readiness hooks exist.** `useShellConnection().isConnected` is *this realm's* connection truth — the mirrored state of the one socket the realm client rides; gate engine calls on it. `useConnectionReady(channel)` reads the `host:connection` system topic — the **controller realm's** reachability, published by the host (never by a tool) and retained on the channel. Today both describe the same single socket; they stay distinct because hosts are growing *multiple connections* (the VS Code dev/deploy slots — see `host.envSlots`), where "my realm's client can reach the engine" and "the controller's connection is up" stop being the same question. Gate frame↔controller coordination on `useConnectionReady`, engine calls on your own realm's state.
 
 There is no theme prop: dev-tool components are themed by the ambient `--rr-*` CSS custom properties of the document they mount into (the active shell theme in a browser; the editor-variable mapping in VS Code) — style exclusively with `var(--rr-*)` tokens. The tab icon hosts show comes from the manifest `icon`; the descriptor is loaded only when the tool is opened.
 

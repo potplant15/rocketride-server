@@ -31,7 +31,7 @@
 // file is the only place that changes.
 // =============================================================================
 
-import type { SqlWireClient } from './busClient';
+import type { RocketRideClient } from 'rocketride';
 import type { SqlEndpoint } from './types';
 
 // =============================================================================
@@ -82,7 +82,7 @@ interface PipelineDict {
  * @param client - The shell's RocketRide client.
  * @returns Endpoints sorted by pipeline name, then node id.
  */
-export async function discoverSqlEndpoints(client: SqlWireClient): Promise<SqlEndpoint[]> {
+export async function discoverSqlEndpoints(client: RocketRideClient): Promise<SqlEndpoint[]> {
 	// One page of 100 covers realistic task counts; discovery re-runs on demand.
 	const tasks = await client.listTasks({ page_size: 100 });
 	/** The task-row shape this discovery reads (loose adapter result). */

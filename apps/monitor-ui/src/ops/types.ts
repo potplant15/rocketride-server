@@ -25,15 +25,15 @@
 // =============================================================================
 //
 // The tool's wire vocabulary as protocol maps (shell ToolOpMap/ToolStateMap
-// pattern). The dev-tool frame holds NO RocketRide client. The controller
-// (the tool's sidebar mount) polls the dashboard with its own connection and
-// publishes the snapshot + activity feed as the retained 'dashboard' topic;
-// the frame's two remote grids page through correlated ops. Connection
-// reachability rides the shell's `host:connection` system topic.
+// pattern). What remains here is COORDINATION of shared state, never
+// transport: the controller (the tool's sidebar mount) runs the ONE dashboard
+// poller shared by all views and publishes each tick as the retained
+// 'dashboard' topic; `monitor.refresh` nudges that poller. The grids page
+// with the frame's own realm client — those ops are gone.
 // =============================================================================
 
-import type { ToolOpMap, ToolOpSpec, ToolStateMap } from 'shell';
-import type { ActivityEvent, DashboardConnection, DashboardResponse, DashboardTask, ListPageRequest, ListPageResponse } from './monitor';
+import type { ToolOpMap, ToolOpSpec, ToolStateMap, ToolEventMap } from 'shell';
+import type { ActivityEvent, DashboardResponse, MonitorPageId } from '../monitor';
 
 /** The 'dashboard' topic's snapshot shape. */
 export interface IDashboardSnapshot {
@@ -45,12 +45,17 @@ export interface IDashboardSnapshot {
 
 /** The monitor's op map — private to this tool. */
 export interface MonitorOps extends ToolOpMap {
-	/** One page of the Connections grid (REMOTE mode paging/sort/filter). */
-	'monitor.listConnections': ToolOpSpec<ListPageRequest, ListPageResponse<DashboardConnection>>;
-	/** One page of the Tasks grid. */
-	'monitor.listTasks': ToolOpSpec<ListPageRequest, ListPageResponse<DashboardTask>>;
-	/** Manual dashboard refresh (the view's refresh affordance). */
+	/** Manual dashboard refresh — nudges the controller's shared poller. */
 	'monitor.refresh': ToolOpSpec<Record<string, never>, void>;
+}
+
+/** The monitor's events (either direction). */
+export interface MonitorEventMap extends ToolEventMap {
+	/** Page sync: "the active page is / should be `page`". The FRAME pushes
+	 *  it on mount and on every change (the host retains the last frame push
+	 *  for a reloaded sidebar); the SIDEBAR sends it only on a user
+	 *  selection. */
+	page: MonitorPageId;
 }
 
 /** The monitor's state topics (controller → documents). */

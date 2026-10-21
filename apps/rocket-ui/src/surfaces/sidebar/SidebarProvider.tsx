@@ -558,7 +558,6 @@ const SidebarProvider: React.FC = () => {
 		prefsHub,
 		pins,
 		onPinsChange: setPins,
-		peerFor: getSidebarPeer,
 		channelFor,
 		documentsFor,
 		revealTool,

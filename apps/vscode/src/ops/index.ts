@@ -40,11 +40,7 @@ import type { ISettingsOpsController } from './settingsOps';
 export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionContext): ISettingsOpsController {
 	busHost.registerMonitorBroker();
 	registerVscodeClientOverrides(busHost.rootBus, busHost.connectionManager);
-	registerClientOps(busHost.rootBus, busHost.connectionManager, {
-		// Stripe portal/checkout return target: the webview's own origin is
-		// never valid, so the HOST decides — the public site.
-		portalReturnUrl: () => 'https://rocketride.ai',
-	});
+	registerClientOps(busHost.rootBus, busHost.connectionManager);
 	registerVscodeHostOps(busHost.rootBus, {
 		context,
 		connectionManager: busHost.connectionManager,

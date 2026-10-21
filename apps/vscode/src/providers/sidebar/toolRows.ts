@@ -144,7 +144,7 @@ export class ToolRows {
 		// pays for it).
 		if (this.bus && this.connectionManager.isConnected() && pinned.some((id) => !byId.has(id))) {
 			try {
-				for (const entry of await fetchDevToolCatalog(this.bus)) {
+				for (const entry of await fetchDevToolCatalog(this.connectionManager.getClient())) {
 					if (!byId.has(entry.id)) byId.set(entry.id, entry);
 				}
 			} catch (err) {

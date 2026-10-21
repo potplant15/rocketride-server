@@ -31,7 +31,7 @@
 //   - the Store rows (enable/disable, never uninstall),
 //   - the strip items: each enabled builtin's sidebar mounted under its
 //     own ToolHostProvider carrying ITS OWN mirrored prefs partition (isolation
-//     by construction) and its per-tool peer/channel/documents wiring,
+//     by construction) and its per-tool channel/documents wiring,
 //   - the activation/deactivation discipline: selecting a tool tab emits
 //     `shell:toolSidebarActivated` and reveals (never creates) a window;
 //     the tab it REPLACED gets `shell:toolSidebarDeactivated` first, and
@@ -43,7 +43,7 @@
 // =============================================================================
 
 import { useCallback, useMemo, useRef } from 'react';
-import { ConnectionManager, ToolHostProvider, createLoopbackPeer } from 'shell';
+import { ConnectionManager, ToolHostProvider, createLoopbackPeer, createToolChannel } from 'shell';
 import { appPartition } from 'shell/src/workspace/workspaceStore';
 import type { DevToolProps, IPrefsHub, ToolChannel } from 'shell';
 import type { BuiltinToolServices } from '../ToolContext';
@@ -79,9 +79,8 @@ export interface ToolStripConfig {
 	pins: readonly string[];
 	/** Persists a new toolbar list. */
 	onPinsChange: (next: string[]) => void;
-	/** Per-tool sidebar peer; omit for stable loopback peers. */
-	peerFor?: (toolId: string) => DevToolProps['peer'];
-	/** Per-tool channel; omit when the tool builds its own over the peer. */
+	/** Per-tool sidebar channel; omit for stable loopback channels (builtins
+	 *  with no isolated frame document). */
 	channelFor?: (toolId: string) => ToolChannel;
 	/** Per-tool documents API; omit on hosts without one for builtins. */
 	documentsFor?: (toolId: string) => NonNullable<DevToolProps['documents']>;
@@ -118,22 +117,23 @@ export interface ToolStrip {
  * @returns Strip items, store rows, and the activation handlers.
  */
 export function useToolStrip(config: ToolStripConfig): ToolStrip {
-	const { host, services, prefsHub, pins, onPinsChange, peerFor, channelFor, documentsFor, revealTool } = config;
+	const { host, services, prefsHub, pins, onPinsChange, channelFor, documentsFor, revealTool } = config;
 
-	// Stable loopback peers for hosts without per-tool transports — one per
-	// tool for the realm's lifetime, so mounts keep their identities.
-	const loopbacksRef = useRef(new Map<string, DevToolProps['peer']>());
-	const resolvePeer = useCallback(
-		(toolId: string): DevToolProps['peer'] => {
-			if (peerFor) return peerFor(toolId);
-			let peer = loopbacksRef.current.get(toolId);
-			if (!peer) {
-				peer = createLoopbackPeer();
-				loopbacksRef.current.set(toolId, peer);
+	// Stable loopback channels for hosts without per-tool transports — one
+	// per tool for the realm's lifetime, so mounts keep their identities (a
+	// channel holds one standing transport subscription).
+	const loopbacksRef = useRef(new Map<string, ToolChannel>());
+	const resolveChannel = useCallback(
+		(toolId: string): ToolChannel => {
+			if (channelFor) return channelFor(toolId);
+			let channel = loopbacksRef.current.get(toolId);
+			if (!channel) {
+				channel = createToolChannel(createLoopbackPeer());
+				loopbacksRef.current.set(toolId, channel);
 			}
-			return peer;
+			return channel;
 		},
-		[peerFor]
+		[channelFor]
 	);
 
 	/** Enabled = named by the list. An empty list is "never arranged", so
@@ -187,8 +187,7 @@ export function useToolStrip(config: ToolStripConfig): ToolStrip {
 				.filter((t) => (!t.hosts || t.hosts.includes(host)) && isEnabled(t.id))
 				.map((t) => {
 					const Sidebar = t.sidebar;
-					const peer = resolvePeer(t.id);
-					const channel = channelFor?.(t.id);
+					const channel = resolveChannel(t.id);
 					const documents = documentsFor?.(t.id);
 					return {
 						id: t.id,
@@ -199,12 +198,12 @@ export function useToolStrip(config: ToolStripConfig): ToolStrip {
 						// app's keys (isolation by construction).
 						render: () => (
 							<ToolHostProvider value={{ ...services, prefs: prefsHub.partition(appPartition(t.id)) }}>
-								<Sidebar peer={peer} {...(channel !== undefined ? { channel } : {})} {...(documents !== undefined ? { documents } : {})} />
+								<Sidebar channel={channel} {...(documents !== undefined ? { documents } : {})} />
 							</ToolHostProvider>
 						),
 					};
 				}),
-		[host, isEnabled, services, prefsHub, resolvePeer, channelFor, documentsFor]
+		[host, isEnabled, services, prefsHub, resolveChannel, documentsFor]
 	);
 
 	/** Strip tab selection → reveal an open window of the tool (create none),

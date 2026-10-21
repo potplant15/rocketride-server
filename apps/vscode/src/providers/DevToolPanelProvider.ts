@@ -404,7 +404,7 @@ export class DevToolPanelProvider {
 		let row = connected ? this.findApp(appId) : undefined;
 		if (connected && (!row || row.registryVersion === undefined) && this.busHost) {
 			try {
-				row = (await fetchDevToolCatalog(this.busHost.rootBus)).find((a) => a.id === appId);
+				row = (await fetchDevToolCatalog(this.busHost.connectionManager.getClient())).find((a) => a.id === appId);
 			} catch (err) {
 				getLogger().error(`[devtool] catalog resolve failed for ${appId}: ${err}`);
 			}

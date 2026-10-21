@@ -38,6 +38,7 @@ import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { CONNECT_TIMEOUT_MS, LS_TOKEN } from '../constants';
 import { resetDevGateForTests } from '../util/devGate';
 import { createRetainedRegistry, localRetainedPort } from '../ops/retained';
+import { createOpBus } from '../ops/busOps';
 import type { IRetainedPort } from '../ops/retained';
 
 type EmittedEvent = { event: string; payload: unknown };
@@ -1250,4 +1251,100 @@ test('a joiner arriving before the first replay is not served twice', async () =
 	await new Promise((r) => setTimeout(r, 0));
 	assert.deepEqual(a, [1]);
 	assert.deepEqual(b, [1]);
+});
+
+// =============================================================================
+// REALM-OWNED CLIENT — the brokered client a mirrored realm builds for itself
+// =============================================================================
+
+/**
+ * A realm with NO socket and NO bridge: just the retained-topic machinery and
+ * the mirror subscriptions, which is exactly what a VS Code webview's
+ * ConnectionManager is once the host starts publishing.
+ */
+function createMirroredManager(): ConnectionManager {
+	const manager = Object.create(ConnectionManager.prototype) as ConnectionManager;
+	const fields = manager as unknown as {
+		topicSubs: Map<string, unknown>;
+		retainedPort: IRetainedPort;
+		opBus: ReturnType<typeof createOpBus>;
+		listeners: Map<string, Set<unknown>>;
+		wildcardListeners: Set<unknown>;
+		pendingEvents: Map<string, unknown>;
+		debugLog: unknown[];
+		installMirrorSubscriptions(): void;
+	};
+	fields.topicSubs = new Map();
+	fields.retainedPort = localRetainedPort(createRetainedRegistry());
+	// Seeding the realm client registers the engine-event handler on it.
+	fields.opBus = createOpBus();
+	fields.listeners = new Map();
+	fields.wildcardListeners = new Set();
+	fields.pendingEvents = new Map();
+	fields.debugLog = [];
+	fields.installMirrorSubscriptions();
+	return manager;
+}
+
+test('a mirrored realm has NO client until the root tells it something', async () => {
+	const cm = createMirroredManager();
+	// Not "disconnected" — UNKNOWN. A client here would answer
+	// isAuthenticated() with a confident false over a live session.
+	assert.equal(cm.getClient(), null);
+});
+
+test('the first mirror delivery seeds a real client whose accessors tell the truth', async () => {
+	const cm = createMirroredManager();
+	cm.publish('shell:status', { connected: true, status: { state: 'connected', hasCredentials: true }, engineHttpUrl: 'https://engine.example' });
+	cm.publish('shell:account', { user: { id: 'u1' }, organization: { id: 'org-7' } });
+	await new Promise((r) => setTimeout(r, 0));
+
+	const client = cm.getClient();
+	assert.ok(client, 'the realm now owns a client');
+	// Each of these is an accessor that reads private handshake state, and
+	// each is the SDK's own unmodified implementation.
+	assert.equal(client.isConnected(), true);
+	assert.equal(client.isAttached(), true);
+	assert.equal(client.isAuthenticated(), true);
+	assert.equal(client.getOrgId(), 'org-7');
+	assert.equal(client.getConnectionInfo().uri, 'https://engine.example');
+});
+
+test('a root disconnect moves the realm client with it', async () => {
+	const cm = createMirroredManager();
+	cm.publish('shell:status', { connected: true, status: { state: 'connected', hasCredentials: true } });
+	await new Promise((r) => setTimeout(r, 0));
+	const client = cm.getClient();
+	assert.equal(client?.isConnected(), true);
+
+	cm.publish('shell:status', { connected: false, status: { state: 'disconnected', hasCredentials: true } });
+	await new Promise((r) => setTimeout(r, 0));
+
+	// The SAME instance, re-seeded — a realm holding a reference must not be
+	// left with a confidently stale client.
+	assert.equal(cm.getClient(), client);
+	assert.equal(client?.isConnected(), false);
+	assert.equal(client?.isAuthenticated(), false);
+});
+
+test('a LATE-mounting realm replays the current state instead of waiting for an edge', async () => {
+	// The profiler bug's shape: the root published before this realm existed.
+	const cm = createMirroredManager();
+	cm.publish('shell:status', { connected: true, status: { state: 'connected', hasCredentials: true } });
+	await new Promise((r) => setTimeout(r, 0));
+
+	const late = Object.create(ConnectionManager.prototype) as ConnectionManager;
+	const lateFields = late as unknown as Record<string, unknown>;
+	lateFields.topicSubs = new Map();
+	// The same registry the first realm published into — one host, two realms.
+	lateFields.retainedPort = (cm as unknown as { retainedPort: IRetainedPort }).retainedPort;
+	lateFields.opBus = createOpBus();
+	lateFields.listeners = new Map();
+	lateFields.wildcardListeners = new Set();
+	lateFields.pendingEvents = new Map();
+	lateFields.debugLog = [];
+	(late as unknown as { installMirrorSubscriptions(): void }).installMirrorSubscriptions();
+	await new Promise((r) => setTimeout(r, 0));
+
+	assert.equal(late.getClient()?.isConnected(), true);
 });

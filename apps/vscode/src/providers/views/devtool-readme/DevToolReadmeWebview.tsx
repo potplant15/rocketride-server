@@ -59,7 +59,7 @@ const DevToolReadmeWebview: React.FC = () => {
 		const refresh = (): void => {
 			setConnected(cm.isConnected());
 			if (!cm.isConnected()) return;
-			void fetchDevToolCatalog(cm).then(setCatalog, () => setCatalog((prev) => prev ?? []));
+			void fetchDevToolCatalog(cm.getClient()).then(setCatalog, () => setCatalog((prev) => prev ?? []));
 		};
 		refresh();
 		const offs = [

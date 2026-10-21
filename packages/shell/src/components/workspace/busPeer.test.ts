@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRetainedRegistry, localRetainedPort } from '../../ops/retained';
-import { createSidebarBusPeer, createFrameBusPeer } from './busPeer';
+import { announceFramePresence, createSidebarBusPeer, createFrameBusPeer } from './busPeer';
 import type { IBusPeerBus } from './busPeer';
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
@@ -63,6 +63,7 @@ test('a sidebar EVENT with no frame buffers and summons; the frame hello flushes
 	const frame = createFrameBusPeer('t1', bus);
 	const seen: unknown[] = [];
 	frame.subscribe((m) => seen.push(m));
+	announceFramePresence('t1', bus); // the mount's HELLO is the flush trigger
 	await settle();
 	assert.deepEqual(seen.at(-1), { kind: 'open-table', name: 'users' });
 });
@@ -116,11 +117,22 @@ test('events signal directly once a frame is ready; replies are live-only', asyn
 	const frame = createFrameBusPeer('t1', bus);
 	const seen: unknown[] = [];
 	frame.subscribe((m) => seen.push(m));
+	const bye = announceFramePresence('t1', bus);
 	await settle();
 
 	sidebar.post({ kind: 'refresh' });
 	await settle();
 	assert.deepEqual(seen.at(-1), { kind: 'refresh' });
+
+	// BYE re-arms buffering: the next event waits for the next mount.
+	bye();
+	await settle(); // signals deliver async — let the BYE land first
+	sidebar.post({ kind: 'after-bye' });
+	await settle();
+	assert.deepEqual(seen.at(-1), { kind: 'refresh' }, 'event after BYE is buffered, not delivered');
+	announceFramePresence('t1', bus);
+	await settle();
+	assert.deepEqual(seen.at(-1), { kind: 'after-bye' }, 'the next HELLO flushes it');
 });
 
 test('frame non-call payloads retain the LAST one; a remounting sidebar replays it', async () => {
@@ -190,6 +202,7 @@ test('host presence topic gates summoning (panel exists → no summon)', async (
 	const frame = createFrameBusPeer('t1', bus);
 	const seen: unknown[] = [];
 	frame.subscribe((m) => seen.push(m));
+	announceFramePresence('t1', bus); // the hello is still the flush trigger
 	await settle();
 	assert.deepEqual(seen.at(-1), { kind: 'event-while-panel-boots' });
 });
