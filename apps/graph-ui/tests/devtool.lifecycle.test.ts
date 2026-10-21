@@ -23,6 +23,7 @@ import { OP } from '../src/devtool/protocol';
 import { historyPrefsPath } from 'shared/explorer/devtool/prefs';
 import { PREVIEW_MAX_AGE_MS, previewFor } from '../src/graph/previews';
 import { account, graphRow, mountController, mountFrame, readOnlyNode, rocketRealm, settle, signInVsCode, until, vscodeRealm } from './support/devtool';
+import { createDevToolHarness } from 'shared/explorer/devtool/testing';
 
 const APP = 'rocketride.graph';
 
@@ -705,5 +706,25 @@ describe('owedHistory: parking, adoption and the time limit', () => {
 		await settle();
 		assert.deepEqual(s.log, ['flush as A', 'prefs.dispose', 'tracker.dispose']);
 		assert.equal(hasParkedHistory('p/self'), false);
+	});
+});
+
+describe('a frame whose controller is not mounted summons it (busPeer host.mountToolSidebar, #2625 9bd5d931f)', () => {
+	it('a graph frame posts nothing at mount, so it summons nothing; its `active` on a window focus summons the controller, once per hold', async () => {
+		const h = createDevToolHarness(APP, { json: true });
+		const listeners = new Set<() => void>();
+		const focusTarget = {
+			addEventListener: (_type: string, listener: () => void) => { listeners.add(listener); },
+			removeEventListener: (_type: string, listener: () => void) => { listeners.delete(listener); },
+		};
+		const { frame } = mountFrame(h, 'workbench:k1|a', { focusTarget });
+		const summons = (): unknown[] => h.emitted.filter((e) => e.op === 'host.mountToolSidebar');
+		await settle();
+		assert.deepEqual(summons(), [], 'nothing at mount');
+		for (const listener of [...listeners]) listener();
+		for (const listener of [...listeners]) listener();
+		await settle();
+		assert.deepEqual(summons(), [{ op: 'host.mountToolSidebar', params: { appId: APP } }], 'two focuses, one summon');
+		frame.dispose();
 	});
 });
