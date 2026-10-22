@@ -35,7 +35,7 @@
 // It holds no client (R1): every view below reads the REMOTE GraphEnv.
 // =============================================================================
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Banner, Button, EmptyState } from 'shell';
 import type { DevToolProps } from 'shell';
@@ -43,7 +43,8 @@ import { announcer } from './adapters/explorer';
 import RealmLiveRegion from './components/RealmLiveRegion';
 import { createGraphFrame } from './devtool/frame';
 import type { IGraphFrame } from './devtool/frame';
-import { CONTROLLER_NOT_READY_TEXT, frameFailureText, missingConnectionText } from './devtool/frameText';
+import { CONTROLLER_NOT_READY_TEXT, DOC_STATE_TEXT, connectionDocState, frameFailureText, missingConnectionText, showsControllerBanner } from './devtool/frameText';
+import type { IDocGates } from './devtool/frameText';
 import type { DocRoute } from './devtool/protocol';
 import { FRAME_PROTOCOL } from './devtool/wiring';
 import { GraphEnvProvider, useGraphEndpoints, useGraphEnv, useReadable } from './env';
@@ -92,20 +93,18 @@ export const GraphDevTool: React.FC<DevToolProps> = ({ peer, channel, documents,
 
 /** The frame's env provider (rebuilt when `host:connection` flips) and its routed body. */
 const FrameRoot: React.FC<{ frame: IGraphFrame }> = ({ frame }) => {
-	// Not yet published is not ready either (the frame's cell tells the two apart for the document states).
-	const ready = useReadable(frame.connected) === true;
-	const controllerReady = useReadable(frame.controllerReady);
+	const host = useReadable(frame.connected);
+	const summon = useReadable(frame.summon);
+	const signIn = useReadable(frame.signIn);
+	// Not yet published is not ready either; the document states tell the two apart.
+	const ready = host === true;
 	const env = useMemo(() => frame.env(ready), [frame, ready]);
+	const gates: IDocGates = { host, summon, signIn };
 	return (
 		<GraphEnvProvider value={env}>
 			<div style={styles.root}>
 				<RealmLiveRegion />
-				{ready && !controllerReady && (
-					<div style={styles.notice}>
-						<Banner variant="info">{CONTROLLER_NOT_READY_TEXT}</Banner>
-					</div>
-				)}
-				<FrameBody route={frame.route} controllerReady={controllerReady} />
+				<FrameBody route={frame.route} gates={gates} />
 			</div>
 		</GraphEnvProvider>
 	);
@@ -115,10 +114,10 @@ const FrameRoot: React.FC<{ frame: IGraphFrame }> = ({ frame }) => {
  * The view a route renders.
  *
  * @param props.route - The frame's route.
- * @param props.controllerReady - Whether a controller is up (a missing connection says why).
+ * @param props.gates - The host connection, the summon and the sign-in (a connection document's state).
  * @returns The view.
  */
-export const FrameBody: React.FC<{ route: DocRoute; controllerReady: boolean }> = ({ route, controllerReady }) => {
+export const FrameBody: React.FC<{ route: DocRoute; gates: IDocGates }> = ({ route, gates }) => {
 	if (route.kind === 'landing') return <ConnectionsView />;
 	if (route.kind === 'unknown') {
 		return (
@@ -127,20 +126,23 @@ export const FrameBody: React.FC<{ route: DocRoute; controllerReady: boolean }> 
 			</div>
 		);
 	}
-	return <FrameConnectionDocument kind={route.kind} endpointKey={route.key} controllerReady={controllerReady} />;
+	return <FrameConnectionDocument kind={route.kind} endpointKey={route.key} gates={gates} />;
 };
 
 /**
- * A connection's document, bound to the live endpoint the controller publishes.
+ * A connection's document, bound to the live endpoint the controller publishes. What it shows is decided by
+ * connectionDocState (F13); a document that has shown its view keeps it while its controller is summoned again.
  *
  * @param props.kind - Workbench or write console.
  * @param props.endpointKey - The connection.
+ * @param props.gates - The host connection, the summon and the sign-in.
  * @returns The view, or why there is none yet.
  */
-const FrameConnectionDocument: React.FC<{ kind: 'workbench' | 'write'; endpointKey: string; controllerReady: boolean }> = ({ kind, endpointKey, controllerReady }) => {
+const FrameConnectionDocument: React.FC<{ kind: 'workbench' | 'write'; endpointKey: string; gates: IDocGates }> = ({ kind, endpointKey, gates }) => {
 	const env = useGraphEnv();
 	const { status, endpoints, omitted } = useGraphEndpoints();
 	const endpoint = endpoints.find((candidate) => candidate.key === endpointKey) ?? null;
+	const opened = useRef(false);
 
 	// A document restored before anything was discovered asks for discovery (an op: it also activates the controller).
 	// Automatic, so quiet: a refusal while the controller settles its identity is not announced.
@@ -148,8 +150,23 @@ const FrameConnectionDocument: React.FC<{ kind: 'workbench' | 'write'; endpointK
 		if (env.ready && status === 'idle') void env.refresh({ quiet: true });
 	}, [env, status]);
 
-	if (!endpoint) {
-		const missing = missingConnectionText(status, omitted, controllerReady);
+	const state = connectionDocState({ host: gates.host, summon: gates.summon, signIn: gates.signIn, found: endpoint !== null, opened: opened.current });
+	if (state === 'open' && endpoint) {
+		opened.current = true;
+		return (
+			<>
+				{showsControllerBanner(state, gates.summon) && (
+					<div style={styles.notice}>
+						<Banner variant="info">{CONTROLLER_NOT_READY_TEXT}</Banner>
+					</div>
+				)}
+				{kind === 'write' ? <WriteConsoleView key={endpoint.key} endpoint={endpoint} /> : <WorkbenchView key={endpoint.key} endpoint={endpoint} />}
+			</>
+		);
+	}
+	// ('open' always has its endpoint: connectionDocState says so only when the list holds it.)
+	if (state === 'missing' || state === 'open') {
+		const missing = missingConnectionText(status, omitted);
 		return (
 			<div style={styles.center}>
 				<EmptyState
@@ -165,7 +182,12 @@ const FrameConnectionDocument: React.FC<{ kind: 'workbench' | 'write'; endpointK
 			</div>
 		);
 	}
-	return kind === 'write' ? <WriteConsoleView key={endpoint.key} endpoint={endpoint} /> : <WorkbenchView key={endpoint.key} endpoint={endpoint} />;
+	const text = DOC_STATE_TEXT[state];
+	return (
+		<div style={styles.center}>
+			<EmptyState icon={<GraphIcon />} title={text.title} description={text.description} />
+		</div>
+	);
 };
 
 export default GraphDevTool;

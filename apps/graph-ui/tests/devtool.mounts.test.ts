@@ -18,7 +18,8 @@ import { findToolFactoryImports } from 'shared/explorer/devtool/testing';
 import { makeGraphEndpointStore, makeGraphHistory } from '../src/adapters/explorer';
 import { remoteSession } from '../src/devtool/frame';
 import type { IGraphFrameOptions } from '../src/devtool/frame';
-import { CONTROLLER_NOT_READY_TEXT, controllerNotReadyError, frameFailureText, isNotSent, missingConnectionText } from '../src/devtool/frameText';
+import { CONTROLLER_NOT_READY_TEXT, DOC_STATE_TEXT, connectionDocState, controllerNotReadyError, frameFailureText, isNotSent, missingConnectionText, showsControllerBanner } from '../src/devtool/frameText';
+import type { ConnectionDocState, IDocGates } from '../src/devtool/frameText';
 import { askQuestion } from '../src/graph/ask';
 import { describeFailureOf } from '../src/graph/failures';
 import { OP, docKeyFor, routeDocKey } from '../src/devtool/protocol';
@@ -166,8 +167,8 @@ describe('T9 - docKey routing for every family', () => {
 		const frame = code(read('GraphDevToolFrame.tsx'));
 		assert.match(frame, /if \(route\.kind === 'landing'\) return <ConnectionsView \/>;/);
 		assert.match(frame, /if \(route\.kind === 'unknown'\) \{[\s\S]*?title=\{UNKNOWN_DOCUMENT_TITLE\}/);
-		assert.match(frame, /return <FrameConnectionDocument kind=\{route\.kind\} endpointKey=\{route\.key\} controllerReady=\{controllerReady\} \/>;/);
-		assert.match(frame, /<FrameBody route=\{frame\.route\} controllerReady=\{controllerReady\} \/>/);
+		assert.match(frame, /return <FrameConnectionDocument kind=\{route\.kind\} endpointKey=\{route\.key\} gates=\{gates\} \/>;/);
+		assert.match(frame, /<FrameBody route=\{frame\.route\} gates=\{gates\} \/>/);
 	});
 });
 
@@ -338,10 +339,69 @@ describe('what a frame says when it cannot reach the controller', () => {
 	});
 
 	it('a connection a document cannot find says why: no sidebar yet, still looking, left out of a capped list, or not listed', () => {
-		assert.equal(missingConnectionText('idle', 0, false).description, CONTROLLER_NOT_READY_TEXT);
-		assert.match(missingConnectionText('loading', 0, true).title, /Looking/);
-		assert.match(missingConnectionText('ready', 12, true).description, /too many connections/);
-		assert.match(missingConnectionText('ready', 0, true).description, /not running, or it belongs to another account/);
+		// No sidebar yet is decided before the list is looked at (F13), and says to open the sidebar.
+		assert.equal(connectionDocState({ host: true, summon: 'unanswered', signIn: 'pending', found: false, opened: false }), 'no-sidebar');
+		assert.match(DOC_STATE_TEXT['no-sidebar'].title, /^Open the Graph Explorer sidebar to connect$/);
+		assert.match(missingConnectionText('loading', 0).title, /Looking/);
+		assert.match(missingConnectionText('ready', 12).description, /too many connections/);
+		assert.match(missingConnectionText('ready', 0).description, /not running, or it belongs to another account/);
+	});
+});
+
+describe('F13 - what a connection document shows: the first state that applies wins', () => {
+	const base: IDocGates & { found: boolean; opened: boolean } = { host: true, summon: 'ready', signIn: 'signed-in', found: true, opened: false };
+	const state = (over: Partial<typeof base>): ConnectionDocState => connectionDocState({ ...base, ...over });
+
+	it('the order: host false, host unknown, summoning, unanswered, nobody signed in, then the list', () => {
+		assert.equal(state({ host: false, summon: 'unanswered', signIn: 'nobody', found: false }), 'not-connected', '1. the host says it is not connected');
+		assert.equal(state({ host: undefined, summon: 'unanswered', signIn: 'nobody', found: false }), 'waiting', '2. the host has not said yet: never "not connected"');
+		assert.equal(state({ summon: 'summoning', signIn: 'nobody', found: false }), 'starting', '3. the controller is being summoned: quiet');
+		assert.equal(state({ summon: 'unanswered', signIn: 'nobody', found: false }), 'no-sidebar', '4. nothing answered the summon');
+		assert.equal(state({ signIn: 'nobody' }), 'sign-in', '5. the controller vouches for nobody: wait for sign-in, not "not connected"');
+		assert.equal(state({ signIn: 'nobody', found: true, opened: true }), 'sign-in', 'even for a document that had opened');
+		assert.equal(state({ signIn: 'pending', found: false }), 'missing', '6. pending says nothing about the account: the list decides');
+		assert.equal(state({ signIn: 'pending', found: true }), 'open');
+		assert.equal(state({}), 'open');
+		assert.equal(state({ found: false }), 'missing');
+	});
+
+	it('a document that has opened stays on screen while its controller is summoned again (no unmount, so results survive); one that has not, waits', () => {
+		assert.equal(state({ summon: 'summoning', opened: true }), 'open');
+		assert.equal(state({ summon: 'unanswered', opened: true }), 'open');
+		assert.equal(state({ summon: 'summoning', opened: true, found: false }), 'starting', 'only while its connection is still listed');
+		assert.equal(state({ summon: 'summoning', opened: false }), 'starting');
+		assert.equal(state({ summon: 'unanswered', opened: false }), 'no-sidebar');
+		assert.equal(state({ host: false, opened: true }), 'not-connected', 'the host state still comes first');
+	});
+
+	it('the controller banner shows on an open document only once the summon went unanswered, never while it is summoning', () => {
+		assert.equal(showsControllerBanner('open', 'unanswered'), true);
+		assert.equal(showsControllerBanner('open', 'summoning'), false);
+		assert.equal(showsControllerBanner('open', 'ready'), false);
+		for (const other of ['not-connected', 'waiting', 'starting', 'no-sidebar', 'sign-in', 'missing'] as const) assert.equal(showsControllerBanner(other, 'unanswered'), false, other);
+	});
+
+	it('each state says one short title and one sentence, in the F2 style', () => {
+		assert.deepEqual(DOC_STATE_TEXT['not-connected'], { title: 'Not connected', description: 'Connect to a RocketRide server to open this document.' });
+		assert.deepEqual(DOC_STATE_TEXT.waiting, { title: 'Waiting for the server connection…', description: 'This document opens once the host reports the server connection.' });
+		assert.equal(DOC_STATE_TEXT.starting.title, 'Starting Graph Explorer…');
+		assert.match(DOC_STATE_TEXT.starting.description, /^[^.]+\.$/, 'one sentence');
+		assert.equal(DOC_STATE_TEXT['no-sidebar'].title, 'Open the Graph Explorer sidebar to connect');
+		assert.deepEqual(DOC_STATE_TEXT['sign-in'], { title: 'Waiting for sign-in', description: 'Sign in to RocketRide to open this document.' });
+		for (const [kind, text] of Object.entries(DOC_STATE_TEXT)) {
+			assert.doesNotMatch(`${text.title} ${text.description}`, /graph\.|Open Connections/, `${kind} names an op or the removed landing`);
+		}
+		assert.doesNotMatch(`${DOC_STATE_TEXT['sign-in'].title} ${DOC_STATE_TEXT['sign-in'].description}`, /Not connected/);
+	});
+
+	it('the frame decides through connectionDocState, and the banner sits on the open document alone (not above every route)', () => {
+		const frame = code(read('GraphDevToolFrame.tsx'));
+		const doc = frame.slice(frame.indexOf('const FrameConnectionDocument'));
+		assert.match(doc, /connectionDocState\(\{ host: gates\.host, summon: gates\.summon, signIn: gates\.signIn, found: endpoint !== null, opened: opened\.current \}\)/);
+		assert.match(doc, /showsControllerBanner\(state, gates\.summon\) && \(/);
+		const root = frame.slice(frame.indexOf('const FrameRoot'), frame.indexOf('export const FrameBody'));
+		assert.doesNotMatch(root, /<Banner/, 'no banner above every route');
+		assert.match(root, /const gates: IDocGates = \{ host, summon, signIn \};/);
 	});
 });
 
