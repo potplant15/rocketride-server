@@ -573,21 +573,25 @@ hold period. `createControllerSummon({ channel })` uses that on purpose.
   so a frame re-announces its own hints (such as `active`) once a controller is
   ready.
 
-**Grid layouts in a dev-tool frame** ([`gridPersistence.ts`](../../../apps/shared/src/explorer/devtool/gridPersistence.ts)).
+**Grid layouts: never hand Tabulator a stored object** ([`gridPersistence.ts`](../../../apps/shared/src/explorer/devtool/gridPersistence.ts)).
 A shell `DataGrid` with a `tableId` persists its layout (sort, columns, page)
 through the grid config channel, which the host answers from the active app's
-workspace prefs. In a dev-tool frame that app is the host (Rocket Builder), so
-the grid would write into the host's own bag.
+workspace prefs. The host hands a stored blob out by reference, and Tabulator's
+sort module rewrites the sorter list it reads in place, putting its live column
+object where the field name was. On #2625 `9bd5d931f`, prefs mutated that way
+freeze the page on the next workspace save: the SDK's message redaction walk
+never finishes on a Tabulator column. Once a sort is stored, any remount of the
+grid reads it again (a page switch, a re-run, a reload), so this hits a full app
+as surely as Rocket Builder.
 
-Give every frame grid `persistence={createSessionGridPersistence()}`, one per
-realm, instead. It keeps layouts in memory for the session, and stores and
-hands out plain-JSON copies.
-
-The copies are what matter. Tabulator's sort module rewrites the sorter list it
-reads in place, putting its live column object where the field name was. On
-#2625 `9bd5d931f`, a host blob mutated that way froze Rocket Builder on the
-next workspace save: the SDK's message redaction walk never finishes on a
-Tabulator column. The full app keeps its own prefs.
+So every explorer grid takes `persistence={env.gridPersistence}`, and both
+choices below store and hand out plain-JSON copies:
+- **A dev-tool frame** uses `createSessionGridPersistence()`, one per realm. Its
+  active app is the host (Rocket Builder), whose prefs a store tool must not
+  write, so layouts stay in memory for the session.
+- **A full app** uses `createCopyingGridPersistence(createMessageGridPersistence())`,
+  with the shell's own channel adapter passed in. Layouts stay in the app's own
+  prefs.
 
 **Retained state stays small** ([`state.ts`](../../../apps/shared/src/explorer/devtool/state.ts)).
 The cost of a publish is the whole state map. The sidebar peer republishes the

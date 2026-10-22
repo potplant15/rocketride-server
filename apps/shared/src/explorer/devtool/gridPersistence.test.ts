@@ -27,13 +27,40 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IDataGridPersistence } from 'shell';
-import { createSessionGridPersistence } from './gridPersistence';
+import { createCopyingGridPersistence, createSessionGridPersistence } from './gridPersistence';
 
 /** What Tabulator's sort module does to a persisted sorter list it is handed: it swaps each field for its live column. */
 function tabulatorSetSort(sorters: unknown): void {
 	const column = { field: 'name', table: {} as Record<string, unknown>, element: { tag: 'div' } };
 	column.table.columns = [column];
 	for (const item of sorters as Array<{ column: unknown }>) item.column = column;
+}
+
+/** The host's workspace prefs a grid config channel answers from. */
+interface IHostPrefs {
+	tableLayouts: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * The shell's grid config channel as the web host answers it: a read hands
+ * out the stored blob BY REFERENCE, and a write keeps the blob it is given.
+ *
+ * @param prefs - The host's prefs.
+ * @returns The channel.
+ */
+function hostChannel(prefs: IHostPrefs): IDataGridPersistence {
+	return {
+		read(tableId, type) {
+			const layout = prefs.tableLayouts[tableId];
+			return layout && type in layout ? layout[type] : false;
+		},
+		write(tableId, type, blob) {
+			prefs.tableLayouts[tableId] = { ...prefs.tableLayouts[tableId], [type]: blob };
+		},
+		clear(tableId) {
+			delete prefs.tableLayouts[tableId];
+		},
+	};
 }
 
 describe('createSessionGridPersistence', () => {
@@ -81,5 +108,47 @@ describe('createSessionGridPersistence', () => {
 		p.clear('t');
 		assert.equal(p.read('t', 'sort'), false);
 		assert.deepEqual(p.read('u', 'sort'), [{ column: 'id', dir: 'asc' }]);
+	});
+});
+
+describe('createCopyingGridPersistence (a full app over the shell\'s channel)', () => {
+	it('hands out copies of what the host stores: Tabulator rewriting them never reaches the host\'s prefs (the full-app freeze)', () => {
+		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [{ column: 'name', dir: 'asc' }] } } };
+		const p = createCopyingGridPersistence(hostChannel(prefs));
+		const handed = p.read('t', 'sort');
+		assert.deepEqual(handed, [{ column: 'name', dir: 'asc' }]);
+		tabulatorSetSort(handed);
+		assert.deepEqual(prefs.tableLayouts.t!.sort, [{ column: 'name', dir: 'asc' }], 'the host still holds plain JSON');
+		assert.doesNotThrow(() => JSON.stringify(prefs), 'so the next workspace save can serialize it');
+	});
+
+	it('writes reach the host as plain copies, so a later in-place rewrite of the written blob cannot reach it either', () => {
+		const prefs: IHostPrefs = { tableLayouts: {} };
+		const p = createCopyingGridPersistence(hostChannel(prefs));
+		const blob = [{ column: 'name', dir: 'desc' }];
+		p.write('t', 'sort', blob);
+		tabulatorSetSort(blob);
+		assert.deepEqual(prefs.tableLayouts.t!.sort, [{ column: 'name', dir: 'desc' }]);
+		assert.deepEqual(p.read('t', 'sort'), [{ column: 'name', dir: 'desc' }], 'and it reads back');
+	});
+
+	it('a blob that is not plain JSON never reaches the host, and nothing throws', () => {
+		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [{ column: 'name', dir: 'asc' }] } } };
+		const p = createCopyingGridPersistence(hostChannel(prefs));
+		const cyclic: Record<string, unknown> = { a: 1 };
+		cyclic.self = cyclic;
+		assert.doesNotThrow(() => p.write('t', 'sort', [cyclic]));
+		assert.deepEqual(prefs.tableLayouts.t!.sort, [{ column: 'name', dir: 'asc' }], 'the previous layout stays');
+		assert.doesNotThrow(() => JSON.stringify(prefs));
+	});
+
+	it('reports nothing where the host has nothing, per table and type; clear reaches the host', () => {
+		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [{ column: 'name', dir: 'asc' }] } } };
+		const p = createCopyingGridPersistence(hostChannel(prefs));
+		assert.equal(p.read('t', 'columns'), false);
+		assert.equal(p.read('u', 'sort'), false);
+		p.clear('t');
+		assert.equal('t' in prefs.tableLayouts, false);
+		assert.equal(p.read('t', 'sort'), false);
 	});
 });
