@@ -56,6 +56,7 @@
 import type { DevToolProps, ToolChannel, ToolControllerFn, ToolOpMap } from 'shell';
 import { ExplorerToolError } from 'shared/explorer';
 import type { IExplorerEndpoint, IGenerationTicket, IHistoryEntry, IInvokeOptions, IProbeResult, IToolSession } from 'shared/explorer';
+import { createSessionGridPersistence } from 'shared/explorer/devtool/gridPersistence';
 import { HOST_CONNECTION_TOPIC, createFrameCaller } from 'shared/explorer/devtool/frame';
 import type { IFrameCaller } from 'shared/explorer/devtool/frame';
 import { createFrameIdentityGuard, followSignIn } from 'shared/explorer/devtool/frameIdentity';
@@ -218,6 +219,9 @@ function asHistoryView(value: unknown): IGraphHistoryView {
 	const entries = field(value, 'entries');
 	return { entries: Array.isArray(entries) ? (entries as IHistoryEntry<'cypher'>[]) : [], recording: field(value, 'recording') !== false };
 }
+
+/** The session-only grid layouts every frame of this window shares (shared/explorer/devtool/gridPersistence). */
+const SESSION_GRIDS = createSessionGridPersistence();
 
 /**
  * Mount a Graph Explorer document frame.
@@ -451,6 +455,7 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 			const env: IGraphEnv = {
 				mount: 'frame',
 				ready,
+				gridPersistence: SESSION_GRIDS,
 				endpoints,
 				// An automatic refresh (quiet) says nothing when refused: at mount the controller may still be settling its
 				// identity, and the endpoints state says what happened.

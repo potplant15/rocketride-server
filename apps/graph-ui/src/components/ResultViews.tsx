@@ -39,6 +39,7 @@ import { columnGridTypes, columnKeys, rawView, toGridRows } from '../graph/resul
 import type { ReadQueryResult } from '../graph/types';
 import { describeValue } from '../graph/values';
 import { COPY_BLOCKED_NOTE } from '../graph/wording';
+import { useGraphEnv } from '../env';
 
 // =============================================================================
 // TABLE
@@ -76,6 +77,8 @@ export interface IResultTableProps {
  * @returns The table inside a card.
  */
 export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onRowOpen, meta }) => {
+	// Grid layouts: the env's (session-only copies in a dev-tool frame).
+	const env = useGraphEnv();
 	const rows = useMemo(() => toGridRows(result), [result]);
 	const columns = useMemo<GridColumnDefinition[]>(() => {
 		const keys = columnKeys(result.columns);
@@ -107,6 +110,7 @@ export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onR
 				columns={columns}
 				data={rows}
 				tableId={`graph-results-${tableKey}`}
+				persistence={env.gridPersistence}
 				paginate={false}
 				height="100%"
 				emptyTitle="No rows"

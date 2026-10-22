@@ -39,6 +39,7 @@
 // =============================================================================
 
 import { createContext, useContext, useSyncExternalStore } from 'react';
+import type { IDataGridPersistence } from 'shell';
 import type { IExplorerEndpoint, IHistoryEntry, IPrefsAccessor, IProbeResult, IToolSession } from 'shared/explorer';
 import type { IGraphEndpointsState, IGraphHistoryView } from './devtool/protocol';
 import type { IGraphPreview, PreviewAction } from './graph/previews';
@@ -125,6 +126,14 @@ export interface IGraphEnv {
 	prefs: IPrefsAccessor;
 	/** What the History panel says about where history is kept, true for this mount. */
 	historyPrivacyNote: string;
+	/**
+	 * Grid layouts (sort, columns, page). Unset in the full app and the
+	 * controller: grids answer from the app's own workspace prefs through the
+	 * shell's channel. A dev-tool frame sets the realm's session-only copies
+	 * (shared/explorer/devtool/gridPersistence), so its grids never write into
+	 * the host's prefs.
+	 */
+	gridPersistence?: IDataGridPersistence;
 }
 
 const GraphEnvContext = createContext<IGraphEnv | null>(null);

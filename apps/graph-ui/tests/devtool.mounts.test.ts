@@ -492,6 +492,36 @@ describe('F13 - what a connection document shows: the first state that applies w
 	});
 });
 
+describe('grid layouts in a dev-tool frame stay in the session, as copies; the full app keeps its prefs', () => {
+	it('a frame env hands its grids the realm\'s session persistence, which copies in and out', async () => {
+		const engine = vscodeRealm();
+		signInVsCode(engine.realm);
+		const mounted = mountController(engine.cm);
+		const { frame } = mountFrame(mounted.h, undefined);
+		try {
+			const grids = frame.env(true).gridPersistence;
+			assert.ok(grids, 'a frame never lets its grids answer from the host\'s workspace prefs');
+			assert.equal(frame.env(false).gridPersistence, grids, 'one per realm');
+			grids.write('graph-results-k', 'sort', [{ column: 'name', dir: 'asc' }]);
+			const handed = grids.read('graph-results-k', 'sort') as Array<{ column: unknown }>;
+			handed[0]!.column = { table: { rows: [] }, element: {} };
+			assert.deepEqual(grids.read('graph-results-k', 'sort'), [{ column: 'name', dir: 'asc' }], 'Tabulator rewriting what it read never reaches the stored layout');
+			grids.clear('graph-results-k');
+		} finally {
+			frame.dispose();
+			mounted.controller.dispose();
+		}
+	});
+
+	it('the results grid takes the env\'s persistence; the LOCAL env (full app, controller) sets none', () => {
+		const views = read('components/ResultViews.tsx');
+		assert.equal((views.match(/tableId=/g) ?? []).length, (views.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length);
+		assert.match(views, /persistence=\{env\.gridPersistence\}/);
+		assert.doesNotMatch(read('localEnv.ts'), /gridPersistence/);
+		assert.match(read('devtool/frame.ts'), /gridPersistence: SESSION_GRIDS,/);
+	});
+});
+
 describe('R11 - what cannot work in a dev-tool mount degrades visibly', () => {
 	it('the history note says where each mount keeps history', () => {
 		assert.match(APP_HISTORY_PRIVACY_NOTE, /workspace file on the server/);
