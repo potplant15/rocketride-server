@@ -197,7 +197,8 @@ describe('T12 - the full app (app:) runs on the LOCAL env', () => {
 			await env.refresh();
 			return env.endpoints.get().endpoints.map((e) => [e.key, e.pipelineName]);
 		};
-		const named = await discover([{ id: 't1', name: 'Shop Graph.Tools', projectId: 'proj-1', source: 'tools_1', runKind: 'dev', completed: false, state: 3 }]);
+		// listTasks's row for that run, with the run's display id built the way the server builds it.
+		const named = await discover([{ id: `${started.token.replace(/^tk_/, '').slice(0, 8)}.${started.source}`, name: 'Shop Graph.Tools', projectId: 'proj-1', source: 'tools_1', runKind: 'dev', completed: false, state: 3 }]);
 		const fallback = await discover(null);
 		assert.ok(named.length > 0);
 		assert.deepEqual(named.map(([, name]) => name), named.map(() => 'Shop Graph.Tools'));
@@ -517,12 +518,13 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 	const shell = (): Record<string, unknown> => createRequire(__filename)('shell') as Record<string, unknown>;
 
 	it('a frame env hands its grids the realm\'s session persistence, which copies in and out and never writes the host\'s prefs', async () => {
-		const host = installHostGridBridge(shell());
 		const engine = vscodeRealm();
 		signInVsCode(engine.realm);
 		const mounted = mountController(engine.cm);
 		const { frame } = mountFrame(mounted.h, undefined);
 		const { frame: other } = mountFrame(mounted.h, undefined);
+		// Installed once everything is mounted, so only the persistence calls see the stand-in document.
+		const host = installHostGridBridge(shell());
 		const grids = frame.env(true).gridPersistence;
 		try {
 			assert.equal(other.env(true).gridPersistence, grids, 'one store per realm: another frame of the realm shares it');
