@@ -20,9 +20,12 @@ import type { IDevToolHarness } from 'shared/explorer/devtool/testing';
 import { BUS_TOOL_MARGIN_MS, FRAME_OP_MARGIN_MS, SDK_TIMEOUT_SLACK_MS } from 'shared/explorer/devtool/timeouts';
 import { assertJsonSafe, manualNow } from 'shared/explorer/devtool/testing';
 import type { DevToolPeer } from 'shared/explorer/devtool/realm';
+import { createFrameCaller } from 'shared/explorer/devtool/frame';
+import { createDevToolHarness } from 'shared/explorer/devtool/testing';
 import { WRITE_REFUSED_TEXT } from '../src/devtool/controller';
 import type { IGraphFrame } from '../src/devtool/frame';
-import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, OP, SCHEMAS_STATE_BYTES, STATE, VERSIONS_STATE_BYTES, endpointsSnapshot, frameTimeoutFor, schemasSnapshot, versionsSnapshot } from '../src/devtool/protocol';
+import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, GRAPH_APP_ID, OP, SCHEMAS_STATE_BYTES, STATE, VERSIONS_STATE_BYTES, endpointsSnapshot, frameTimeoutFor, schemasSnapshot, versionsSnapshot } from '../src/devtool/protocol';
+import type { GraphOps } from '../src/devtool/protocol';
 import { createDataVersions } from '../src/graph/dataVersion';
 import { createSchemaStore } from '../src/graph/schemaStore';
 import { NEO4J_DIALECT, NEO4J_GRAPH, NEO4J_WRITABLE, graphRow, mountController, mountFrame, readOnlyNode, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
@@ -412,8 +415,8 @@ describe('T11 - no bulk result is retained state, and sizes are guarded', () => 
 	});
 });
 
-describe('T13 - a write held while no controller was subscribed, delivered after its deadline, is not executed', () => {
-	it('the frame has already given up; the remounted controller refuses it (control: an on-time held read runs)', async () => {
+describe('T13 - deadlines: an expired call never runs, on every path a call can wait', () => {
+	it('a write the PEER holds reaches a remount that keeps its host channel (rocket-ui caches one per tool); the frame has already given up and the controller refuses it (control: an on-time held read runs)', async () => {
 		const clock = manualNow(1_000_000);
 		const engine = vscodeRealm(undefined, (call) => (call.tool === 'dialect' ? NEO4J_WRITABLE : readOnlyNode(call)));
 		signInVsCode(engine.realm);
@@ -448,5 +451,35 @@ describe('T13 - a write held while no controller was subscribed, delivered after
 		assert.deepEqual(await onTime, { entries: [], recording: true }, 'the on-time held call ran on the remounted controller');
 		frame.dispose();
 		third.controller.dispose();
+	});
+
+	it('a call the PEER holds before a mount with a FRESH host channel (a first or summon-driven mount; VS Code builds one per mount) goes to that channel and is dropped: never answered, never refused; our frames, which wait for readiness, never put a call in the hold', async () => {
+		const engine = vscodeRealm();
+		signInVsCode(engine.realm);
+		const h = createDevToolHarness(GRAPH_APP_ID, { json: true });
+		h.setHostConnection(true);
+		const isCall = (value: unknown): boolean => (value as { __rrtool?: unknown } | null)?.__rrtool === 'call';
+		const heldCalls = (): number => h.wire.filter((entry) => entry.topic === `tool:${GRAPH_APP_ID}:toSidebar` && isCall(entry.value)).length;
+
+		// Our frames (the base caller's default) wait for readiness: nothing reaches the peer.
+		const waiting = createFrameCaller<GraphOps>({ peer: h.newFramePeer(), createToolController: shellProtocol.createToolController, createToolChannel: shellProtocol.createToolChannel });
+		await assert.rejects(waiting.callReply(OP.historyList, { key: 'k1|any' }, { timeoutMs: 60 }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'timeout' && /was not sent/.test(error.message));
+		assert.equal(heldCalls(), 0, 'a waiting frame posts no call');
+
+		// A caller that does not wait (no lane does) puts its call in the hold, which summons the controller.
+		const eager = createFrameCaller<GraphOps>({ peer: h.newFramePeer(), createToolController: shellProtocol.createToolController, createToolChannel: shellProtocol.createToolChannel, waitForController: false });
+		const held = eager.callReply(OP.historyList, { key: 'k1|any' }, { timeoutMs: 300 });
+		await settle();
+		assert.equal(heldCalls(), 1);
+		assert.ok(h.emitted.some((entry) => entry.op === 'host.mountToolSidebar'), 'the held call summoned the controller');
+
+		// The host mounts it as on a first mount: a NEW channel on the sidebar peer (mountController's default), then the controller.
+		const errors: string[] = [];
+		const mounted = mountController(engine.cm, { onError: (error, where) => errors.push(`${where}:${(error as { reason?: string }).reason ?? ''}`) }, h);
+		await assert.rejects(held, (error: unknown) => error instanceof ExplorerToolError && error.kind === 'timeout', 'a served call would have been answered at once');
+		assert.ok(!errors.some((entry) => entry.startsWith('refused')), 'and it never reached the controller: the host channel took it');
+		waiting.dispose();
+		eager.dispose();
+		mounted.controller.dispose();
 	});
 });
