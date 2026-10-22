@@ -532,8 +532,12 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		endpoints,
 		async resolve(connId) {
 			const record = await recordOf(connId, 'resolve');
-			await locate(record, 'resolve');
-			return endpointForConnection(record);
+			const found = await locate(record, 'resolve');
+			const endpoint = endpointForConnection(record);
+			// A pipeline connection is shown by its running pipeline's current
+			// name, not the one frozen into the record when it was saved; the
+			// key and everything else stay the record's.
+			return record.mode === 'pipeline' ? { ...endpoint, pipelineName: found.pipelineName } : endpoint;
 		},
 		keyOf: async (connId) => endpointKeyForConnection(await recordOf(connId, 'history')),
 		sessionFor,

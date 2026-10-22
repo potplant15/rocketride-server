@@ -612,7 +612,7 @@ describe('a frame whose controller is not mounted summons it (busPeer host.mount
 });
 
 // =============================================================================
-// GRID LAYOUTS — never into the host's prefs (the Rocket Builder freeze)
+// CONNECTION NAMES — #2625's readable name (listTasks), names only
 // =============================================================================
 
 describe('connection names: #2625\'s readable name from one listTasks, names only', () => {
@@ -640,6 +640,19 @@ describe('connection names: #2625\'s readable name from one listTasks, names onl
 		}
 	});
 
+	it('a saved connection is shown by the running pipeline\'s current name, not the one frozen into it when it was saved; its key stays the record\'s', async () => {
+		const r = await rig({ rows: [started], listed: [status] });
+		try {
+			assert.equal(PIPELINE.pipelineName, 'Pipeline A', 'the record was saved under another name');
+			const endpoint = await r.env.resolveEndpoint(PIPELINE);
+			assert.equal(endpoint.pipelineName, 'Shop Postgres.Tools');
+			assert.equal(endpoint.key, 'p1:s1:db_1');
+			assert.equal(endpoint.nodeName, PIPELINE.name, 'everything else is the record\'s');
+		} finally {
+			r.dispose();
+		}
+	});
+
 	it('without listTasks\'s name the endpoint falls back to the source component\'s name, with the same key', async () => {
 		const r = await rig({ rows: [started] });
 		try {
@@ -651,6 +664,10 @@ describe('connection names: #2625\'s readable name from one listTasks, names onl
 		}
 	});
 });
+
+// =============================================================================
+// GRID LAYOUTS — never into the host's prefs (the Rocket Builder freeze)
+// =============================================================================
 
 describe('grid layouts are copies everywhere: a frame keeps them in the session, the full app in its own prefs', () => {
 	/** The test runner's 'shell' module (stub-shell.cjs's one object). */
