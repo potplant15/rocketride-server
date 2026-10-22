@@ -53,12 +53,18 @@ Postgres.Tools"), is the task's status name, and only `listTasks` carries it.
 So discovery asks `listTasks` once, together with `getTasks()`, for the newest
 100 live tasks (`TASK_NAMES_REQUEST`), and uses it **for names only**. Which
 endpoints exist, and their keys and tokens, still come from `getTasks()`.
-- **Matching.** A `listTasks` row has no owner or team, so a name is matched on
-  project, source and run kind. Live rows that disagree name nothing.
+- **Matching.** A name matches exactly one run, by the run's display id,
+  built in memory the way the server builds it. A `listTasks` row has no owner
+  or team, so nothing else tells two teams' deployments of one project apart.
+- **Unnamed runs.** A run started without a task name, including every deploy,
+  has a status name made from its display id. That is not a readable name, so
+  it is ignored.
+- **Role maps.** A role map is named by its tools run only, so its label does
+  not change with which run anchors the connection.
 - **Waiting.** Discovery waits for the names at most `TASK_NAMES_TIMEOUT_MS`
   (10 s). The wait overlaps `getTasks()`, so the store's 30 s discovery bound
   stays the deadline.
-- **Failure.** A failure is logged once per client.
+- **Failure.** A failure is logged once per client, and the names fall back.
 - **Fallback.** A run `listTasks` does not name is named by its pipeline's
   name, then its source component's name, then its source id.
 
