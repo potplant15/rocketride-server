@@ -262,9 +262,13 @@ describe('the dev-tool sidebar lists connections as Rod\'s rows; the full app ke
 	it('under devtool: an uppercase "Connections" label with a Refresh header action, hand-built rows, and the list line; no SidebarMenu, no sectionLabel', () => {
 		const devtool = branch(sidebar(), 'devtool');
 		assert.match(devtool, /<span style=\{styles\.sectionLabel\}>Connections<\/span>/);
-		assert.match(devtool, /<button type="button" style=\{styles\.headerAction\} title="Refresh connections" aria-label="Refresh connections" disabled=\{!isConnected \|\| status === 'loading'\} onClick=\{[^\n]*\}>\s*<BxRefresh size=\{18\} \/>/);
+		// CE-7: aria-disabled, never `disabled`: a disabled button drops the keyboard focus to the page (and the cluster fades).
+		assert.match(sidebar(), /const refreshBlocked = !isConnected \|\| status === 'loading';/);
+		assert.match(devtool, /<button type="button" style=\{refreshBlocked \? styles\.headerActionBlocked : styles\.headerAction\} title="Refresh connections" aria-label="Refresh connections" aria-disabled=\{refreshBlocked\} onClick=\{[^\n]*\}>\s*<BxRefresh size=\{18\} \/>/);
+		assert.doesNotMatch(devtool, /\sdisabled=\{/, 'focus stays on the action while discovery runs');
 		assert.match(devtool, /<div style=\{styles\.headerActions\(paneHovered \|\| paneFocused\)\}>/, 'shown on hover and while focus is inside, so a keyboard reaches it');
-		assert.match(devtool, /onClick=\{\(\) => \{ if \(isConnected\) void env\.refresh\(\); \}\}/);
+		assert.match(devtool, /onClick=\{\(\) => \{ if \(!refreshBlocked\) void env\.refresh\(\); \}\}/, 'an activation while blocked does nothing');
+		assert.match(sidebar(), /headerActionBlocked: \{ \.\.\.commonStyles\.paneHeaderButton, opacity: 0\.4, cursor: 'default' \} as CSSProperties/, 'and looks unavailable');
 		assert.doesNotMatch(devtool, /<SidebarMenu|sectionLabel=/, 'the list is not a SidebarMenu (S2, S9)');
 		assert.match(devtool, /\{line && <div style=\{line\.tone === 'error' \? styles\.error : styles\.empty\}/);
 	});

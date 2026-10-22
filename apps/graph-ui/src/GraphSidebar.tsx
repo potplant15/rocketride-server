@@ -106,6 +106,8 @@ const styles = {
 	/** The platform's pane-header treatment (Explorer's): a hover-revealed cluster of 18px icon buttons. */
 	headerActions: commonStyles.paneHeaderActions,
 	headerAction: commonStyles.paneHeaderButton,
+	/** The same action while it cannot run (aria-disabled: it keeps the keyboard focus). */
+	headerActionBlocked: { ...commonStyles.paneHeaderButton, opacity: 0.4, cursor: 'default' } as CSSProperties,
 
 	/** One connection row (the compact list-row family). */
 	row: (active: boolean, hovered: boolean): CSSProperties => ({
@@ -236,6 +238,9 @@ const GraphSidebar: React.FC<IGraphSidebarProps> = ({ devtool = false }) => {
 	// The full app's menu: one entry that opens the Connections landing.
 	const menu: ViewMenu = useMemo(() => ({ entries: [{ id: 'connections', label: 'Connections', icon: <GraphIcon />, ...(endpoints.length > 0 ? { count: endpoints.length } : {}) }] }), [endpoints.length]);
 	const line = sidebarListLine(status, endpoints, error);
+	// Refresh cannot run while discovery runs or the realm is offline. It says so with aria-disabled and ignores the
+	// activation: a `disabled` button would drop the keyboard focus to the page, and the header cluster would fade.
+	const refreshBlocked = !isConnected || status === 'loading';
 
 	const select = (id: string): void => {
 		const chosen = id === 'connections' ? null : endpoints.find((e) => e.key === id) ?? null;
@@ -259,7 +264,7 @@ const GraphSidebar: React.FC<IGraphSidebarProps> = ({ devtool = false }) => {
 					<div style={styles.sectionHeader}>
 						<span style={styles.sectionLabel}>Connections</span>
 						<div style={styles.headerActions(paneHovered || paneFocused)}>
-							<button type="button" style={styles.headerAction} title="Refresh connections" aria-label="Refresh connections" disabled={!isConnected || status === 'loading'} onClick={() => { if (isConnected) void env.refresh(); }}>
+							<button type="button" style={refreshBlocked ? styles.headerActionBlocked : styles.headerAction} title="Refresh connections" aria-label="Refresh connections" aria-disabled={refreshBlocked} onClick={() => { if (!refreshBlocked) void env.refresh(); }}>
 								<BxRefresh size={18} />
 							</button>
 						</div>
