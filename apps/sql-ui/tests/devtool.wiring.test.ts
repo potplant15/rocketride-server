@@ -54,7 +54,7 @@ import type { PipelineBoundConnection, SavedSqlConnection } from '../src/connect
 import { lookupConnection } from '../src/connectionRecord';
 import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
 import type { ConnectionsState, HistoryState, SqlOps } from '../src/ops';
-import { attachSqlFrame, connectionDocState, directReleaseKey, routeDocKey, sqlChannel } from '../src/sqlFrame';
+import { attachSqlFrame, connectionDocState, directReleaseKey, frameGates, routeDocKey, sqlChannel } from '../src/sqlFrame';
 import { setActiveConnection } from '../src/navigation';
 import { SUMMON_EVENT, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
@@ -62,7 +62,7 @@ import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS } from '../src/sqlTimeouts';
 import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
 import { taskRow } from './support';
-import { DIRECT, PIPELINE, postgres, rig, toolRequests } from './devtoolRig';
+import { DIRECT, PIPELINE, manualTimers, postgres, rig, toolRequests } from './devtoolRig';
 
 const SRC = path.resolve(__dirname, '..', 'src');
 
@@ -102,30 +102,6 @@ function source(rel: string): string {
 	return fs.readFileSync(path.join(SRC, rel), 'utf8');
 }
 
-/** Timers a test runs by hand: `advance(ms)` fires what falls due, in order. */
-function manualTimers() {
-	let now = 0;
-	const due: Array<{ at: number; fn: () => void; live: boolean }> = [];
-	return {
-		schedule(fn: () => void, ms: number): () => void {
-			const entry = { at: now + ms, fn, live: true };
-			due.push(entry);
-			return () => { entry.live = false; };
-		},
-		advance(ms: number): void {
-			const until = now + ms;
-			for (;;) {
-				const next = due.filter((entry) => entry.live && entry.at <= until).sort((a, b) => a.at - b.at)[0];
-				if (!next) break;
-				next.live = false;
-				now = next.at;
-				next.fn();
-			}
-			now = until;
-		},
-	};
-}
-
 /**
  * Every source file reachable from one file through relative imports.
  *
@@ -148,6 +124,7 @@ function importGraph(entry: string): string[] {
 	visit(entry);
 	return [...seen].sort();
 }
+
 
 // =============================================================================
 // T1 — DESCRIPTOR AND MANIFEST
@@ -569,10 +546,24 @@ describe('a frame whose controller is not mounted summons it (busPeer host.mount
 		assert.equal(connectionDocState({ ...base, signedOut: true }), 'signed-out', 'then nobody signed in');
 		assert.equal(connectionDocState(base), 'not-connected');
 		const devTool = source('SqlDevTool.tsx');
-		assert.match(devTool, /const sidebarClosed = engineReady && !controllerReady && summon === 'unanswered';/);
-		assert.match(devTool, /const starting = engineReady && !controllerReady && summon !== 'unanswered';/);
-		assert.match(devTool, /const signedOut = engineReady && controllerReady && signIn === 'nobody';/);
-		assert.match(devTool, /const vouched = signIn === 'signed-in';/);
+		assert.match(devTool, /const gates = frameGates\(\{ host: hostConnection, controllerReady, summon, signIn \}\);/);
+		const up = { host: true, controllerReady: true, summon: 'ready' } as const;
+		assert.equal(frameGates({ ...up, signIn: 'nobody' }).signedOut, true);
+		assert.equal(frameGates({ ...up, signIn: 'pending' }).starting, true, 'a controller that has not said who is signed in yet is still starting, never "not connected"');
+		assert.equal(frameGates({ ...up, signIn: 'pending' }).signedOut, false);
+		assert.equal(frameGates({ host: true, controllerReady: false, summon: 'summoning', signIn: 'pending' }).starting, true);
+		assert.equal(frameGates({ host: true, controllerReady: false, summon: 'unanswered', signIn: 'pending' }).starting, false);
+		assert.equal(frameGates({ host: false, controllerReady: true, summon: 'ready', signIn: 'pending' }).starting, false);
+		// Every input a frame can be in maps to a state that never says "Not connected" while the host is connected.
+		for (const controllerReady of [true, false]) {
+			for (const summon of ['ready', 'summoning', 'unanswered'] as const) {
+				for (const signIn of ['pending', 'nobody', 'signed-in'] as const) {
+					const gates = frameGates({ host: true, controllerReady, summon, signIn });
+					const state = connectionDocState({ ready: gates.ready, sidebarClosed: gates.sidebarClosed, hostKnown: gates.hostKnown, summoning: gates.starting, signedOut: gates.signedOut, listStatus: 'ready', found: true, failed: false, opened: false });
+					assert.notEqual(state, 'not-connected', JSON.stringify({ controllerReady, summon, signIn }));
+				}
+			}
+		}
 		assert.match(devTool, /case 'starting':/);
 		assert.match(devTool, /case 'signed-out':\s*body = <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Waiting for sign-in"/);
 		assert.doesNotMatch(devTool, /followVouched/, 'the frame follows the base\'s followSignIn');
@@ -612,8 +603,10 @@ describe('T9 — docKey routing for every family', () => {
 		assert.equal(connectionDocState({ ...base, ready: true, hostKnown: true }), 'opening');
 		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
 		assert.match(devTool, /const hostConnection = useConnectionReady\(toolChannel\);/);
-		assert.match(devTool, /const engineReady = hostConnection === true;/);
-		assert.match(devTool, /hostKnown=\{hostConnection !== undefined\}/);
+		assert.equal(frameGates({ host: undefined, controllerReady: true, summon: 'ready', signIn: 'signed-in' }).hostKnown, false);
+		assert.equal(frameGates({ host: undefined, controllerReady: true, summon: 'ready', signIn: 'signed-in' }).ready, false, 'no snapshot yet gates like false');
+		assert.equal(frameGates({ host: false, controllerReady: true, summon: 'ready', signIn: 'signed-in' }).hostKnown, true);
+		assert.match(devTool, /hostKnown=\{gates\.hostKnown\}/);
 		assert.match(devTool, /case 'waiting':\s*body = <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Waiting for the server connection…"/);
 	});
 

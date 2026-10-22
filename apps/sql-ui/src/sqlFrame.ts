@@ -62,7 +62,8 @@ import { createFrameIdentityGuard } from 'shared/explorer/devtool/frameIdentity'
 import type { FrameResetReason } from 'shared/explorer/devtool/frameIdentity';
 import { channelFor, CONTROLLER_STATE_TOPIC } from 'shared/explorer/devtool/realm';
 import { createControllerSummon } from 'shared/explorer/devtool/summon';
-import type { IControllerSummon } from 'shared/explorer/devtool/summon';
+import type { IControllerSummon, SummonState } from 'shared/explorer/devtool/summon';
+import type { SignInState } from 'shared/explorer/devtool/frameIdentity';
 import { ExplorerToolError } from 'shared/explorer/errors';
 import type { DevToolPeer } from 'shared/explorer/devtool/realm';
 import { applyReplicaConnections, isDirectEndpointKey } from './connect';
@@ -135,6 +136,44 @@ export function routeDocKey(docKey: string | null | undefined): SqlDocRoute {
  */
 export function directReleaseKey(endpoint: SqlEndpoint | null): string | null {
 	return endpoint !== null && isDirectEndpointKey(endpoint.key) ? endpoint.key : null;
+}
+
+/** What a frame's documents may do and say. */
+export interface FrameGates {
+	/** The frame may call: the host is connected, the controller is ready and vouches for an account. */
+	ready: boolean;
+	/** The host has published `host:connection` (until then a document waits). */
+	hostKnown: boolean;
+	/** The summon was never answered (its grace ran out): say to open the sidebar. */
+	sidebarClosed: boolean;
+	/** The controller is being summoned, or is up but has not said who is signed in yet: say it is starting. */
+	starting: boolean;
+	/** The controller is up and vouches for no one: say it is waiting for sign-in. */
+	signedOut: boolean;
+}
+
+/**
+ * Turn what a frame follows into what its documents may do and say (rules
+ * F11-F13 of the dev-tool parity spec). With the host connected, no
+ * combination says "not connected": a controller that has not said who is
+ * signed in yet is still starting.
+ *
+ * @param input - What the frame follows.
+ * @param input.host - The host's `host:connection` (undefined before its first snapshot).
+ * @param input.controllerReady - The controller published a readiness nonce.
+ * @param input.summon - Where the frame's summon of its controller stands.
+ * @param input.signIn - What the controller says about the account.
+ * @returns The gates.
+ */
+export function frameGates(input: { host: boolean | undefined; controllerReady: boolean; summon: SummonState; signIn: SignInState }): FrameGates {
+	const engineReady = input.host === true;
+	return {
+		ready: engineReady && input.controllerReady && input.signIn === 'signed-in',
+		hostKnown: input.host !== undefined,
+		sidebarClosed: engineReady && !input.controllerReady && input.summon === 'unanswered',
+		starting: engineReady && (input.controllerReady ? input.signIn === 'pending' : input.summon !== 'unanswered'),
+		signedOut: engineReady && input.controllerReady && input.signIn === 'nobody',
+	};
 }
 
 /** What a connection document shows. */
@@ -231,7 +270,6 @@ function wireSqlDocumentHost(channel: TypedToolChannel<SqlStateMap, SqlEventMap>
 		lastActive = key;
 		channel.sendEvent('active', key);
 	};
-	pushActive();
 	const offActive = subscribeActiveConnection(pushActive);
 	const doc = typeof document !== 'undefined' ? document : null;
 	const onVisible = (): void => {
@@ -255,6 +293,9 @@ function wireSqlDocumentHost(channel: TypedToolChannel<SqlStateMap, SqlEventMap>
 		lastActive = undefined;
 		pushActive();
 	});
+	// The first announcement. A readiness already retained replayed above and
+	// announced once, so this is then a no-op.
+	pushActive();
 
 	return () => {
 		offConnections();

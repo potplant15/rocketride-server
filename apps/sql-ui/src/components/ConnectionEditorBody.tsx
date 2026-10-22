@@ -58,12 +58,21 @@ export const ConnectionEditorBody: React.FC<{
 	connId: string | null;
 	/** A dev-tool frame whose tool sidebar (its controller) is not open: an edit target cannot be read until it is. */
 	sidebarClosed?: boolean;
+	/** A dev-tool frame whose controller is starting (being summoned, or not yet saying who is signed in). */
+	starting?: boolean;
+	/** A dev-tool frame whose controller vouches for no one: nothing can be saved. */
+	signedOut?: boolean;
 	/** Close this editor document. */
 	onCloseSelf: () => void;
 	/** Open the workbench of a freshly added connection. */
 	onOpenSaved: (saved: SavedSqlConnection) => void;
-}> = ({ connId, sidebarClosed = false, onCloseSelf, onOpenSaved }) => {
+}> = ({ connId, sidebarClosed = false, starting = false, signedOut = false, onCloseSelf, onOpenSaved }) => {
 	const { record: editing, status } = useConnectionRecord(connId);
+
+	// Nobody to save for: say so before any form (a Save would only be refused).
+	if (signedOut) return <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Waiting for sign-in" description="Sign in to RocketRide to add or edit connections." /></div>;
+	// An edit target the starting sidebar has not shared yet is not "loading the list".
+	if (starting && connId && !editing) return <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Starting SQL Explorer…" description="The SQL Explorer sidebar is starting. This connection can be edited once it is ready." /></div>;
 
 	// An edit target that is not in the store yet (list still loading) or is
 	// gone (deleted elsewhere) must not silently become an ADD form.

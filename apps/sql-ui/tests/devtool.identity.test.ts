@@ -47,7 +47,7 @@ import type { HistoryEntry } from '../src/history/types';
 import { refreshSchema, schemaSnapshot } from '../src/schema/schemaStore';
 import { attachSqlController } from '../src/sqlController';
 import type { SqlControllerMount } from '../src/sqlController';
-import { SIDEBAR_CLOSED_TEXT, attachSqlFrame, connectionDocState, followControllerReady, followVouched, plainFrameError, sqlChannel } from '../src/sqlFrame';
+import { SIDEBAR_CLOSED_TEXT, attachSqlFrame, connectionDocState, followControllerReady, followVouched, frameGates, plainFrameError, sqlChannel } from '../src/sqlFrame';
 import { createRemoteSqlEnv } from '../src/sqlEnv';
 import { createRemoteHistory } from '../src/history/remoteHistory';
 import { SQL_OP_TIMEOUT_MS } from '../src/sqlTimeouts';
@@ -615,10 +615,17 @@ describe('T7 — a frame calls nothing on its own until the controller vouches f
 	it('a frame is ready (opening its connection, the first schema read, run and apply) only with the host connection, a ready controller AND a vouched account', () => {
 		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
 		assert.match(devTool, /const signIn = useSignIn\(toolChannel\);/);
-		assert.match(devTool, /const vouched = signIn === 'signed-in';/);
 		assert.match(devTool, /const controllerReady = useControllerReady\(toolChannel\);/);
-		assert.match(devTool, /const ready = engineReady && controllerReady && vouched;/);
-		assert.match(devTool, /createRemoteSqlEnv\(mount\.frame\.caller, ready,/);
+		assert.match(devTool, /const gates = frameGates\(\{ host: hostConnection, controllerReady, summon, signIn \}\);/);
+		assert.match(devTool, /createRemoteSqlEnv\(mount\.frame\.caller, gates\.ready,/);
+		// frameGates: ready needs all three.
+		const all = { host: true, controllerReady: true, summon: 'ready', signIn: 'signed-in' } as const;
+		assert.equal(frameGates(all).ready, true);
+		assert.equal(frameGates({ ...all, host: false }).ready, false);
+		assert.equal(frameGates({ ...all, host: undefined }).ready, false);
+		assert.equal(frameGates({ ...all, controllerReady: false }).ready, false);
+		assert.equal(frameGates({ ...all, signIn: 'nobody' }).ready, false);
+		assert.equal(frameGates({ ...all, signIn: 'pending' }).ready, false);
 		// The automatic calls are the ones gated on env.ready.
 		const doc = devTool.slice(devTool.indexOf('const SqlConnectionDocument'));
 		assert.match(doc, /if \(!env\.ready \|\| !conn\) return;/);
@@ -689,11 +696,20 @@ describe('a frame restored before its sidebar was opened says to open it, and ne
 		assert.equal(connectionDocState({ ...base, sidebarClosed: true, opened: true, failed: true }), 'no-sidebar');
 		assert.equal(connectionDocState({ ...base, sidebarClosed: false }), 'not-connected');
 		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
-		assert.match(devTool, /const sidebarClosed = engineReady && !controllerReady && summon === 'unanswered';/);
+		const down = { host: true, controllerReady: false, signIn: 'pending' } as const;
+		assert.equal(frameGates({ ...down, summon: 'unanswered' }).sidebarClosed, true, 'the summon was never answered');
+		assert.equal(frameGates({ ...down, summon: 'summoning' }).sidebarClosed, false, 'not inside the grace');
+		assert.equal(frameGates({ ...down, host: false, summon: 'unanswered' }).sidebarClosed, false, 'not while the host is down');
+		assert.match(devTool, /sidebarClosed=\{gates\.sidebarClosed\}/);
 		assert.match(devTool, /case 'no-sidebar':\s*body = <SidebarClosed \/>;/);
 		assert.match(devTool, /title="Open the SQL Explorer sidebar to connect"/);
 		const editor = fs.readFileSync(path.join(SRC, 'components', 'ConnectionEditorBody.tsx'), 'utf8');
 		assert.match(editor, /if \(sidebarClosed\) return /);
+		// The editor follows the same order (F13): nobody signed in, then a starting sidebar, then a closed one.
+		assert.match(editor, /if \(signedOut\) return <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Waiting for sign-in"/);
+		assert.match(editor, /if \(starting && connId && !editing\) return <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Starting SQL Explorer…"/);
+		assert.ok(editor.indexOf('if (signedOut)') < editor.indexOf('if (starting') && editor.indexOf('if (starting') < editor.indexOf('if (sidebarClosed)'));
+		assert.match(devTool, /sidebarClosed=\{gates\.sidebarClosed\}\s*starting=\{gates\.starting\}\s*signedOut=\{gates\.signedOut\}/);
 	});
 });
 
@@ -725,9 +741,9 @@ describe('T8 — with host:connection false, frames disable run/apply and reject
 	it('run and apply follow the host connection in frames, and the sidebar follows the shell\'s isConnected', () => {
 		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
 		assert.match(devTool, /const hostConnection = useConnectionReady\(toolChannel\);/);
-		assert.match(devTool, /const engineReady = hostConnection === true;/);
-		assert.match(devTool, /const ready = engineReady && controllerReady && vouched;/);
-		assert.match(devTool, /createRemoteSqlEnv\(mount\.frame\.caller, ready,/);
+		assert.match(devTool, /const gates = frameGates\(\{ host: hostConnection, controllerReady, summon, signIn \}\);/);
+		assert.match(devTool, /createRemoteSqlEnv\(mount\.frame\.caller, gates\.ready,/);
+		assert.equal(frameGates({ host: false, controllerReady: true, summon: 'ready', signIn: 'signed-in' }).ready, false, 'run and apply follow the host connection');
 		const query = fs.readFileSync(path.join(SRC, 'views', 'QueryView.tsx'), 'utf8');
 		assert.match(query, /const canRun = env\.ready && /);
 		const design = fs.readFileSync(path.join(SRC, 'views', 'TableDesignView.tsx'), 'utf8');

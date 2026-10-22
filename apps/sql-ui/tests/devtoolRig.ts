@@ -69,6 +69,42 @@ export function postgres(params: { tool: string }): unknown {
 	}
 }
 
+/** Timers a test runs by hand. */
+export interface IManualTimers {
+	/** A scheduler to hand to code under test. */
+	schedule(fn: () => void, ms: number): () => void;
+	/** Fire what falls due within `ms`, in order. */
+	advance(ms: number): void;
+}
+
+/**
+ * Timers a test runs by hand: `advance(ms)` fires what falls due, in order.
+ *
+ * @returns The timers.
+ */
+export function manualTimers(): IManualTimers {
+	let now = 0;
+	const due: Array<{ at: number; fn: () => void; live: boolean }> = [];
+	return {
+		schedule(fn, ms) {
+			const entry = { at: now + ms, fn, live: true };
+			due.push(entry);
+			return () => { entry.live = false; };
+		},
+		advance(ms) {
+			const until = now + ms;
+			for (;;) {
+				const next = due.filter((entry) => entry.live && entry.at <= until).sort((a, b) => a.at - b.at)[0];
+				if (!next) break;
+				next.live = false;
+				now = next.at;
+				next.fn();
+			}
+			now = until;
+		},
+	};
+}
+
 /** A controller, a frame on it, and everything recorded. */
 export interface IRig {
 	h: IDevToolHarness;
@@ -82,6 +118,8 @@ export interface IRig {
 	docs: { opened: Array<[string, string]>; closed: string[] };
 	frameCalls: Array<{ op: string; timeoutMs: number | undefined }>;
 	servers: { created: number; disposed: number };
+	/** The frame's summon timers (manual: a summon goes out only when a test advances them). */
+	timers: IManualTimers;
 	/** Remount the controller (the old one must be disposed first). */
 	remount(): SqlControllerMount;
 	dispose(): void;
@@ -129,12 +167,14 @@ export async function rig(opts: { saved?: SavedSqlConnection[]; rows?: IFakeTask
 	// before that the controller reads nothing from the engine (R7).
 	if (opts.activate !== false) engine.realm.activate(SQL_APP_ID);
 	h.setHostConnection(true);
-	const frame = attachSqlFrame({ peer: h.newFramePeer(), docKey: opts.docKey ?? 'c-pipe', documents, protocol, ...(opts.now ? { now: opts.now } : {}) });
+	// The frame's summon runs on manual timers, so no summon reaches the wire unless a test advances them.
+	const timers = manualTimers();
+	const frame = attachSqlFrame({ peer: h.newFramePeer(), docKey: opts.docKey ?? 'c-pipe', documents, protocol, summonSchedule: timers.schedule, ...(opts.now ? { now: opts.now } : {}) });
 	const history = createRemoteHistory({ caller: frame.caller, channel: sqlChannel(frame.channel), owner: frame.owner });
 	const env = createRemoteSqlEnv(frame.caller, true, frame.owner, history);
 	await settle();
 	const rigged: IRig = {
-		h, engine, spy, protocol, mount, frame, env, history, docs, frameCalls, servers,
+		h, engine, spy, protocol, mount, frame, env, history, docs, frameCalls, servers, timers,
 		remount: () => {
 			mount = attachSqlController(controllerOpts);
 			rigged.mount = mount;

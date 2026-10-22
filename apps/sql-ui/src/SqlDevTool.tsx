@@ -47,7 +47,7 @@ import { useConnectionRecord } from './connectionRecord';
 import type { SqlEndpoint } from './connect';
 import { setActiveConnection } from './navigation';
 import { SQL_TOOL_PROTOCOL, frameChannel } from './sqlBridge';
-import { attachSqlFrame, connectionDocState, directReleaseKey, followControllerReady, routeDocKey, sqlChannel } from './sqlFrame';
+import { attachSqlFrame, connectionDocState, directReleaseKey, followControllerReady, frameGates, routeDocKey, sqlChannel } from './sqlFrame';
 import { followSignIn } from 'shared/explorer/devtool/frameIdentity';
 import type { SignInState } from 'shared/explorer/devtool/frameIdentity';
 import type { IControllerSummon, SummonState } from 'shared/explorer/devtool/summon';
@@ -301,19 +301,14 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 	// snapshot. The gates treat that as not ready; the document says it is
 	// waiting rather than that the server is unreachable.
 	const hostConnection = useConnectionReady(toolChannel);
-	const engineReady = hostConnection === true;
 	const controllerReady = useControllerReady(toolChannel);
 	// While no controller is ready the frame summons one (F11); it says to open
 	// the sidebar only once the summon's grace ran out, "starting" before that.
 	const summon = useSummonState(mount?.frame.summon ?? null);
 	// The account (F12): 'nobody' says "waiting for sign-in", never "not connected".
 	const signIn = useSignIn(toolChannel);
-	const vouched = signIn === 'signed-in';
-	const ready = engineReady && controllerReady && vouched;
-	const sidebarClosed = engineReady && !controllerReady && summon === 'unanswered';
-	const starting = engineReady && !controllerReady && summon !== 'unanswered';
-	const signedOut = engineReady && controllerReady && signIn === 'nobody';
-	const env = useMemo(() => (mount ? createRemoteSqlEnv(mount.frame.caller, ready, mount.frame.owner, mount.history) : null), [mount, ready]);
+	const gates = frameGates({ host: hostConnection, controllerReady, summon, signIn });
+	const env = useMemo(() => (mount ? createRemoteSqlEnv(mount.frame.caller, gates.ready, mount.frame.owner, mount.history) : null), [mount, gates.ready]);
 	const onOpenError = useCallback((message: string) => sqlChannel(toolChannel).sendEvent('openError', message), [toolChannel]);
 
 	if (!env) return null;
@@ -323,13 +318,15 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 		body = (
 			<ConnectionEditorBody
 				connId={route.connId}
-				sidebarClosed={sidebarClosed}
+				sidebarClosed={gates.sidebarClosed}
+				starting={gates.starting}
+				signedOut={gates.signedOut}
 				onCloseSelf={() => { if (docKey) documents?.close(docKey); }}
 				onOpenSaved={(saved) => documents?.open(saved.id, saved.name)}
 			/>
 		);
 	} else if (route.kind === 'connection') {
-		body = <SqlConnectionDocument connId={route.connId} sidebarClosed={sidebarClosed} hostKnown={hostConnection !== undefined} starting={starting} signedOut={signedOut} onOpenError={onOpenError} />;
+		body = <SqlConnectionDocument connId={route.connId} sidebarClosed={gates.sidebarClosed} hostKnown={gates.hostKnown} starting={gates.starting} signedOut={gates.signedOut} onOpenError={onOpenError} />;
 	} else {
 		body = (
 			<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
