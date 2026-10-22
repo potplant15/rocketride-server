@@ -96,6 +96,15 @@ export interface IDocText {
 	description: string;
 }
 
+/** The generic frame (docKey undefined or ''): Rod's shape, one EmptyState; the connection list is the sidebar (F1). */
+export const LANDING_TEXT: IDocText = { title: 'Graph Explorer', description: 'Open a connection from the sidebar. Connections are the graph nodes of your running pipelines.' };
+
+/** Said by a frame whose docKey names no Graph Explorer document. */
+export const UNKNOWN_DOCUMENT_TITLE = 'Document not found';
+
+/** What the not-found document says under its title. */
+export const UNKNOWN_DOCUMENT_DESCRIPTION = 'This Graph Explorer document no longer exists. Pick a connection in the sidebar.';
+
 /** What a frame knows that decides a connection document's state before the connection list does. */
 export interface IDocGates {
 	/** The host's `host:connection`: undefined until it published one. */
@@ -161,8 +170,8 @@ export function missingConnectionText(status: EndpointStatus, omitted: number): 
 	if (omitted > 0) {
 		return {
 			title: 'This connection is not listed here',
-			description: `There are too many connections to send them all to this window (${omitted.toLocaleString('en-US')} left out), and this one may be among them; or its pipeline stopped. Open Connections from the sidebar.`,
+			description: `There are too many connections to send them all to this window (${omitted.toLocaleString('en-US')} left out), and this one may be among them; or its pipeline stopped. Pick a connection in the sidebar.`,
 		};
 	}
-	return { title: 'This connection is not listed', description: 'Its pipeline is not running, or it belongs to another account. Open Connections to see what is available.' };
+	return { title: 'This connection is not listed', description: 'Its pipeline is not running, or it belongs to another account. Pick a connection in the sidebar.' };
 }

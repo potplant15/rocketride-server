@@ -18,7 +18,7 @@ import { findToolFactoryImports } from 'shared/explorer/devtool/testing';
 import { makeGraphEndpointStore, makeGraphHistory } from '../src/adapters/explorer';
 import { remoteSession } from '../src/devtool/frame';
 import type { IGraphFrameOptions } from '../src/devtool/frame';
-import { CONTROLLER_NOT_READY_TEXT, DOC_STATE_TEXT, connectionDocState, controllerNotReadyError, frameFailureText, isNotSent, missingConnectionText, showsControllerBanner } from '../src/devtool/frameText';
+import { CONTROLLER_NOT_READY_TEXT, DOC_STATE_TEXT, LANDING_TEXT, UNKNOWN_DOCUMENT_DESCRIPTION, UNKNOWN_DOCUMENT_TITLE, connectionDocState, controllerNotReadyError, frameFailureText, isNotSent, missingConnectionText, showsControllerBanner } from '../src/devtool/frameText';
 import type { ConnectionDocState, IDocGates } from '../src/devtool/frameText';
 import { askQuestion } from '../src/graph/ask';
 import { describeFailureOf } from '../src/graph/failures';
@@ -165,8 +165,11 @@ describe('T9 - docKey routing for every family', () => {
 
 	it('the frame renders each route: the landing, a connection document, or the not-found empty state', () => {
 		const frame = code(read('GraphDevToolFrame.tsx'));
-		assert.match(frame, /if \(route\.kind === 'landing'\) return <ConnectionsView \/>;/);
-		assert.match(frame, /if \(route\.kind === 'unknown'\) \{[\s\S]*?title=\{UNKNOWN_DOCUMENT_TITLE\}/);
+		// Rod's generic frame (F1): one EmptyState, no landing list; the connection list lives in the sidebar.
+		assert.match(frame, /if \(route\.kind === 'landing'\) \{\s*return \(\s*<div style=\{styles\.center\}>\s*<EmptyState icon=\{<GraphIcon \/>\} title=\{LANDING_TEXT\.title\} description=\{LANDING_TEXT\.description\} \/>/);
+		assert.doesNotMatch(frame, /ConnectionsView/, 'the frame no longer imports the full app\'s landing');
+		assert.ok(!reachable('GraphDevToolFrame.tsx').includes('views/ConnectionsView.tsx'), 'no module a frame loads reaches it');
+		assert.match(frame, /if \(route\.kind === 'unknown'\) \{[\s\S]*?title=\{UNKNOWN_DOCUMENT_TITLE\} description=\{UNKNOWN_DOCUMENT_DESCRIPTION\}/);
 		assert.match(frame, /return <FrameConnectionDocument kind=\{route\.kind\} endpointKey=\{route\.key\} gates=\{gates\} \/>;/);
 		assert.match(frame, /<FrameBody route=\{frame\.route\} gates=\{gates\} \/>/);
 	});
@@ -345,6 +348,22 @@ describe('what a frame says when it cannot reach the controller', () => {
 		assert.match(missingConnectionText('loading', 0).title, /Looking/);
 		assert.match(missingConnectionText('ready', 12).description, /too many connections/);
 		assert.match(missingConnectionText('ready', 0).description, /not running, or it belongs to another account/);
+	});
+
+	it('frame texts point at the sidebar, never at the removed Connections landing (Rod\'s wording)', () => {
+		assert.deepEqual(LANDING_TEXT, { title: 'Graph Explorer', description: 'Open a connection from the sidebar. Connections are the graph nodes of your running pipelines.' });
+		assert.equal(UNKNOWN_DOCUMENT_TITLE, 'Document not found');
+		assert.equal(UNKNOWN_DOCUMENT_DESCRIPTION, 'This Graph Explorer document no longer exists. Pick a connection in the sidebar.');
+		for (const text of [missingConnectionText('ready', 12), missingConnectionText('ready', 0)]) {
+			assert.match(text.description, /Pick a connection in the sidebar\.$/);
+			assert.doesNotMatch(text.description, /Open Connections/);
+		}
+		assert.match(missingConnectionText('ready', 1).description, /too many connections/);
+	});
+
+	it('a frame document offers no "Open Connections" button: in a dev tool the sidebar is the list', () => {
+		const frame = code(read('GraphDevToolFrame.tsx'));
+		assert.doesNotMatch(frame, /Open Connections|kind: 'connections'|<Button/);
 	});
 });
 

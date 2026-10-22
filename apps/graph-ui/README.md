@@ -265,8 +265,10 @@ that nothing matches. Tokens and connection strings are never recorded.
 Graph Explorer also runs as a dev tool beside the pipeline editor, in VS Code
 and in the RocketRide workspace. There the sidebar lists your graph connections
 and shows the active connection's schema, and each workbench and write console
-opens as its own document. Everything that reaches the engine goes through the
-sidebar, which holds the tool's one connection; the documents hold none.
+opens as its own document. The tool's own page, with no document, only says to
+open a connection from the sidebar. Everything that reaches the engine goes
+through the sidebar, which holds the tool's one connection; the documents hold
+none.
 
 What is different there:
 
@@ -310,6 +312,14 @@ What is different there:
   pipeline restart, **Test connection**) keeps them, as in the full app.
 - When the signed-in user, organization or team changes, every open workbench
   and write console closes.
+- A document that cannot open yet says what it waits for: the server
+  connection ("Not connected", or "Waiting for the server connection…" before
+  the editor reports it), the sidebar ("Starting Graph Explorer…" while the
+  document asks the editor to open the sidebar by itself, then "Open the Graph
+  Explorer sidebar to connect" if nothing answers within a few seconds), or a
+  sign-in ("Waiting for sign-in"). A document that already showed its
+  workbench keeps it while the sidebar restarts, with a note to open the
+  sidebar if it does not come back.
 
 ## The write console
 

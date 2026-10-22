@@ -27,7 +27,7 @@
 // A thin React shell over devtool/frame.ts: it builds the frame in an effect
 // (disposed in the cleanup), follows `host:connection`, and routes the docKey:
 //
-//   undefined / ''    the landing (Connections)
+//   undefined / ''    the generic frame: one EmptyState (the sidebar is the list)
 //   workbench:<key>   that connection's workbench
 //   write:<key>       that connection's write console
 //   anything else     a "not found" empty state
@@ -37,19 +37,18 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Banner, Button, EmptyState } from 'shell';
+import { Banner, EmptyState } from 'shell';
 import type { DevToolProps } from 'shell';
 import { announcer } from './adapters/explorer';
 import RealmLiveRegion from './components/RealmLiveRegion';
 import { createGraphFrame } from './devtool/frame';
 import type { IGraphFrame } from './devtool/frame';
-import { CONTROLLER_NOT_READY_TEXT, DOC_STATE_TEXT, connectionDocState, frameFailureText, missingConnectionText, showsControllerBanner } from './devtool/frameText';
+import { CONTROLLER_NOT_READY_TEXT, DOC_STATE_TEXT, LANDING_TEXT, UNKNOWN_DOCUMENT_DESCRIPTION, UNKNOWN_DOCUMENT_TITLE, connectionDocState, frameFailureText, missingConnectionText, showsControllerBanner } from './devtool/frameText';
 import type { IDocGates } from './devtool/frameText';
 import type { DocRoute } from './devtool/protocol';
 import { FRAME_PROTOCOL } from './devtool/wiring';
 import { GraphEnvProvider, useGraphEndpoints, useGraphEnv, useReadable } from './env';
 import { GraphIcon } from './icons';
-import ConnectionsView from './views/ConnectionsView';
 import WorkbenchView from './views/WorkbenchView';
 import WriteConsoleView from './views/WriteConsoleView';
 
@@ -58,9 +57,6 @@ const styles = {
 	center: { display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center' } as CSSProperties,
 	notice: { padding: '8px 24px 0' } as CSSProperties,
 };
-
-/** Said by a frame whose docKey names no Graph Explorer document. */
-export const UNKNOWN_DOCUMENT_TITLE = 'This Graph Explorer document was not found';
 
 /**
  * The dev-tool frame: one document of the tool.
@@ -118,11 +114,17 @@ const FrameRoot: React.FC<{ frame: IGraphFrame }> = ({ frame }) => {
  * @returns The view.
  */
 export const FrameBody: React.FC<{ route: DocRoute; gates: IDocGates }> = ({ route, gates }) => {
-	if (route.kind === 'landing') return <ConnectionsView />;
+	if (route.kind === 'landing') {
+		return (
+			<div style={styles.center}>
+				<EmptyState icon={<GraphIcon />} title={LANDING_TEXT.title} description={LANDING_TEXT.description} />
+			</div>
+		);
+	}
 	if (route.kind === 'unknown') {
 		return (
 			<div style={styles.center}>
-				<EmptyState icon={<GraphIcon />} title={UNKNOWN_DOCUMENT_TITLE} description={`Nothing here is called "${route.docKey}". Open Connections from the sidebar to pick a connection.`} />
+				<EmptyState icon={<GraphIcon />} title={UNKNOWN_DOCUMENT_TITLE} description={UNKNOWN_DOCUMENT_DESCRIPTION} />
 			</div>
 		);
 	}
@@ -164,25 +166,9 @@ const FrameConnectionDocument: React.FC<{ kind: 'workbench' | 'write'; endpointK
 			</>
 		);
 	}
-	// ('open' always has its endpoint: connectionDocState says so only when the list holds it.)
-	if (state === 'missing' || state === 'open') {
-		const missing = missingConnectionText(status, omitted);
-		return (
-			<div style={styles.center}>
-				<EmptyState
-					icon={<GraphIcon />}
-					title={missing.title}
-					description={missing.description}
-					action={
-						<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
-							Open Connections
-						</Button>
-					}
-				/>
-			</div>
-		);
-	}
-	const text = DOC_STATE_TEXT[state];
+	// ('open' always has its endpoint: connectionDocState says so only when the list holds it.) No button: in a dev tool
+	// the sidebar is the connection list, and the text says to pick one there.
+	const text = state === 'missing' || state === 'open' ? missingConnectionText(status, omitted) : DOC_STATE_TEXT[state];
 	return (
 		<div style={styles.center}>
 			<EmptyState icon={<GraphIcon />} title={text.title} description={text.description} />
