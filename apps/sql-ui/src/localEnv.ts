@@ -30,6 +30,9 @@
 // bridge is straight calls too. Dev-tool frames never import this module.
 // =============================================================================
 
+import { createMessageGridPersistence } from 'shell';
+import type { IDataGridPersistence } from 'shell';
+import { createCopyingGridPersistence } from 'shared/explorer/devtool/gridPersistence';
 import { connectionEditorUri, connectionUri, getDocs } from './docs';
 import type { IPrefsAccessor } from 'shared/explorer/history/types';
 import { APP_PRIVACY_NOTICE } from './history/api';
@@ -53,6 +56,14 @@ export const LOCAL_HISTORY: SqlHistoryApi = {
 	clearForKey: (endpoint) => clearForKey(endpoint.key),
 	setRecording: (endpoint, on) => setRecording(endpoint.key, on),
 };
+
+/**
+ * The full app's grid layouts: its own workspace prefs, through the shell's
+ * grid config channel, but stored and handed out as plain-JSON copies, so
+ * Tabulator never rewrites a stored layout in place
+ * (shared/explorer/devtool/gridPersistence). The channel is made on first use.
+ */
+const APP_GRIDS: IDataGridPersistence = createCopyingGridPersistence(() => createMessageGridPersistence());
 
 /**
  * The core-backed environment (the full app).
@@ -87,6 +98,7 @@ export function createLocalSqlEnv(core: SqlCore, isConnected: boolean, serviceTi
 		deleteConnection: (conn) => core.deleteConnection(conn.id),
 		getConnection: (connId) => core.connection(connId),
 		serviceTitle,
+		gridPersistence: APP_GRIDS,
 	};
 }
 

@@ -104,13 +104,14 @@ export interface SqlEnv {
 	/** Small per-user switches (`sql.patternChecks`): workspace preferences in the full app, this session only in a dev-tool frame. */
 	prefs: IPrefsAccessor;
 	/**
-	 * Grid layouts (sort, columns, page). Unset in the full app: its grids
-	 * answer from the app's own workspace prefs through the shell's channel.
-	 * A dev-tool frame sets the realm's session-only copies
-	 * (shared/explorer/devtool/gridPersistence), so its grids never write into
-	 * the host's prefs.
+	 * Grid layouts (sort, columns, page), always as plain-JSON copies
+	 * (shared/explorer/devtool/gridPersistence): never the shell's bare
+	 * channel, which hands Tabulator the stored object to rewrite in place.
+	 * The full app keeps them in its own workspace prefs; a dev-tool frame,
+	 * in the realm's session only, so its grids never write into the host's
+	 * prefs.
 	 */
-	gridPersistence?: IDataGridPersistence;
+	gridPersistence: IDataGridPersistence;
 }
 
 /** A realm's session-only preferences (dev-tool frames): kept in memory, never written anywhere. */
