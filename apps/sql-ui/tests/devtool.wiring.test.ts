@@ -53,8 +53,9 @@ import { applyReplicaConnections, deleteSavedConnection, endpointForConnection, 
 import type { PipelineBoundConnection, SavedSqlConnection } from '../src/connect';
 import { lookupConnection } from '../src/connectionRecord';
 import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
-import type { ConnectionsState, HistoryState } from '../src/ops';
+import type { ConnectionsState, HistoryState, SqlOps } from '../src/ops';
 import { attachSqlFrame, connectionDocState, directReleaseKey, routeDocKey, sqlChannel } from '../src/sqlFrame';
+import { createFrameCaller } from 'shared/explorer/devtool/frame';
 import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS } from '../src/sqlTimeouts';
 import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
@@ -926,8 +927,8 @@ describe('a direct connection\'s temp pipeline is released when its document goe
 // T13 — DEADLINES
 // =============================================================================
 
-describe('T13 — a call held while no controller is subscribed and delivered after its deadline is not executed', () => {
-	it('the frame has already rejected it, and the remounted controller refuses it (control: an on-time held call runs)', async () => {
+describe('T13 — deadlines: an expired call never runs, on every path a call can wait', () => {
+	it('a call made while no controller is ready waits in the FRAME and is rejected unsent; a remounted controller never runs it (control: an on-time call waits and runs)', async () => {
 		const clock = manualNow(Date.now());
 		const r = await rig({ now: clock.now });
 		try {
@@ -953,6 +954,70 @@ describe('T13 — a call held while no controller is subscribed and delivered af
 			assert.equal(await onTime, 'postgres');
 		} finally {
 			r.dispose();
+		}
+	});
+
+	it('a call the PEER holds (sent while ready, the controller gone before delivery) reaches a remount that keeps its host channel (rocket-ui caches one per tool), whose deadline guard refuses it once expired (control: on time, it runs)', async () => {
+		const clock = manualNow(Date.now());
+		const refused: unknown[] = [];
+		const r = await rig({ now: clock.now, onRefused: (error) => refused.push(error) });
+		try {
+			await r.env.resolveEndpoint(PIPELINE);
+			const keysAsked = (): number => r.engine.ops().filter((op) => op === 'client.getEnvironmentKeys').length;
+			const before = keysAsked();
+			const late = r.frame.caller.callReply('sql.envKeys', {}, { timeoutMs: 40 });
+			r.mount.dispose();
+			await assert.rejects(late, (error: unknown) => error instanceof ExplorerToolError && error.kind === 'timeout');
+			clock.advance(5 * 60_000);
+			r.remount();
+			r.engine.realm.login(USER);
+			await settle();
+			assert.equal(keysAsked(), before, 'the expired call never ran');
+			assert.equal(refused.length, 1, 'it reached the controller, which refused it');
+
+			const onTime = r.frame.caller.callReply('sql.dialect', { connId: 'c-pipe' }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.dialect'] });
+			r.mount.dispose();
+			r.remount();
+			r.engine.realm.login(USER);
+			assert.equal(await onTime, 'postgres', 'an on-time held call ran on the remount');
+			assert.equal(refused.length, 1);
+		} finally {
+			r.dispose();
+		}
+	});
+
+	it('a call the PEER holds before a mount with a FRESH host channel (a first or summon-driven mount; VS Code builds one per mount) goes to that channel and is dropped: it never runs and never reaches the controller; our frames, which wait for readiness, never put a call in the hold', async () => {
+		resetSavedConnections({ force: true });
+		const h = createDevToolHarness(SQL_APP_ID, { json: true });
+		const engine = scriptedClientRealm(engineScript([PIPELINE], [taskRow('p1')], postgres, {}));
+		engine.realm.login(USER);
+		h.setHostConnection(true);
+		const isCall = (value: unknown): boolean => (value as { __rrtool?: unknown } | null)?.__rrtool === 'call';
+		const heldCalls = (): number => h.wire.filter((entry) => entry.topic === `tool:${SQL_APP_ID}:toSidebar` && isCall(entry.value)).length;
+
+		// Our frames (the base caller's default) wait for readiness: nothing reaches the peer.
+		const waiting = createFrameCaller<SqlOps>({ peer: h.newFramePeer(), createToolController: shellProtocol.createToolController, createToolChannel: shellProtocol.createToolChannel });
+		await assert.rejects(waiting.callReply('sql.envKeys', {}, { timeoutMs: 60 }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'timeout' && /was not sent/.test(error.message));
+		assert.equal(heldCalls(), 0, 'a waiting frame posts no call');
+
+		// A caller that does not wait (no lane does) puts its call in the hold, which summons the controller.
+		const eager = createFrameCaller<SqlOps>({ peer: h.newFramePeer(), createToolController: shellProtocol.createToolController, createToolChannel: shellProtocol.createToolChannel, waitForController: false });
+		const held = eager.callReply('sql.envKeys', {}, { timeoutMs: 300 });
+		await settle();
+		assert.equal(heldCalls(), 1);
+		assert.ok(h.emitted.some((entry) => entry.op === 'host.mountToolSidebar'), 'the held call summoned the controller');
+
+		// The host mounts it as on a first mount: a NEW channel on the sidebar peer, then the controller.
+		const refused: unknown[] = [];
+		const mount = attachSqlController({ peer: h.sidebarPeer, channel: shellProtocol.createToolChannel(h.sidebarPeer), cm: engine.cm, protocol: shellProtocol, focusTarget: null, onRefused: (error) => refused.push(error) });
+		try {
+			await assert.rejects(held, (error: unknown) => error instanceof ExplorerToolError && error.kind === 'timeout');
+			assert.equal(engine.ops().includes('client.getEnvironmentKeys'), false, 'the held call never ran');
+			assert.deepEqual(refused, [], 'and never reached the controller: the host channel took it');
+		} finally {
+			mount.dispose();
+			waiting.dispose();
+			eager.dispose();
 		}
 	});
 });
