@@ -619,7 +619,8 @@ describe('connection names: #2625\'s readable name from one listTasks, names onl
 	// A pipeline started with use(name='Shop Postgres') and no pipeline name:
 	// getTasks names it by its source id; listTasks by its status name.
 	const started = taskRow('p1', { name: 's1', pipeline: { project_id: 'p1', name: '', components: [{ id: 's1', provider: 'tools', name: 'Tools' }, { id: 'db_1', provider: 'db_postgres', name: 'Orders DB' }] } });
-	const status = { id: 't1', name: 'Shop Postgres.Tools', projectId: 'p1', source: 's1', runKind: 'dev', completed: false, state: 3 };
+	// listTasks's row for that run, with the run's display id built the way the server builds it.
+	const status = { id: `${started.token.replace(/^tk_/, '').slice(0, 8)}.${started.source}`, name: 'Shop Postgres.Tools', projectId: 'p1', source: 's1', runKind: 'dev', completed: false, state: 3 };
 
 	it('the controller\'s discovery names the endpoint "Shop Postgres.Tools", asking listTasks once over the bus with a named timeout', async () => {
 		const r = await rig({ rows: [started], listed: [status] });
