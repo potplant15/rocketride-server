@@ -35,7 +35,7 @@ const read = (file: string): string => fs.readFileSync(path.join(DIR, file), 'ut
 
 describe('the dev-tool deep entry', () => {
 	it('has the modules the lanes import', () => {
-		for (const name of ['activation.ts', 'busClient.ts', 'controller.ts', 'deadline.ts', 'frame.ts', 'frameIdentity.ts', 'identity.ts', 'prefs.ts', 'realm.ts', 'reply.ts', 'state.ts', 'summon.ts', 'testing.ts', 'timeouts.ts', 'watch.ts']) {
+		for (const name of ['activation.ts', 'busClient.ts', 'controller.ts', 'deadline.ts', 'frame.ts', 'frameIdentity.ts', 'identity.ts', 'prefs.ts', 'realm.ts', 'reply.ts', 'gridPersistence.ts', 'state.ts', 'summon.ts', 'testing.ts', 'timeouts.ts', 'watch.ts']) {
 			assert.ok(modules.includes(name), name);
 		}
 	});
