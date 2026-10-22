@@ -265,7 +265,12 @@ that nothing matches. Tokens and connection strings are never recorded.
 Graph Explorer also runs as a dev tool beside the pipeline editor, in VS Code
 and in the RocketRide workspace. There the sidebar lists your graph connections
 and shows the active connection's schema, and each workbench and write console
-opens as its own document. The tool's own page, with no document, only says to
+opens as its own document. A connection's row shows its state as a dot and,
+when it is not running, in words (**Checking**, **Stopped**, **Unreachable**,
+**No access**, **Needs upgrade**); its tooltip names the pipeline and says why
+it cannot be browsed. Click a row, or press Enter or Space on it, to open its
+workbench. **Refresh** is on the Connections header, and a line under the rows
+says when discovery is running, found nothing, or failed. The tool's own page, with no document, only says to
 open a connection from the sidebar. Everything that reaches the engine goes
 through the sidebar, which holds the tool's one connection; the documents hold
 none.

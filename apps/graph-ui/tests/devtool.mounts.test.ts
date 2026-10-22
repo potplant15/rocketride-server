@@ -248,6 +248,51 @@ describe('R6 - one wiring module; mounts built in effects', () => {
 	});
 });
 
+describe('the dev-tool sidebar lists connections as Rod\'s rows; the full app keeps its menu', () => {
+	const sidebar = (): string => code(read('GraphSidebar.tsx'));
+	/** The JSX the sidebar renders in one mount: the devtool branch or the full app's. */
+	const branch = (text: string, which: 'devtool' | 'app'): string => {
+		const start = text.indexOf('{devtool ? (');
+		const mid = text.indexOf(') : (', start);
+		const end = text.indexOf(')}', mid);
+		assert.ok(start > 0 && mid > start && end > mid, 'the premise: one devtool ? (...) : (...) switch');
+		return which === 'devtool' ? text.slice(start, mid) : text.slice(mid, end);
+	};
+
+	it('under devtool: an uppercase "Connections" label with a Refresh header action, hand-built rows, and the list line; no SidebarMenu, no sectionLabel', () => {
+		const devtool = branch(sidebar(), 'devtool');
+		assert.match(devtool, /<span style=\{styles\.sectionLabel\}>Connections<\/span>/);
+		assert.match(devtool, /<button type="button" style=\{styles\.headerAction\} title="Refresh connections" aria-label="Refresh connections" disabled=\{!isConnected \|\| status === 'loading'\} onClick=\{[^\n]*\}>\s*<BxRefresh size=\{18\} \/>/);
+		assert.match(devtool, /<div style=\{styles\.headerActions\(paneHovered \|\| paneFocused\)\}>/, 'shown on hover and while focus is inside, so a keyboard reaches it');
+		assert.match(devtool, /onClick=\{\(\) => \{ if \(isConnected\) void env\.refresh\(\); \}\}/);
+		assert.doesNotMatch(devtool, /<SidebarMenu|sectionLabel=/, 'the list is not a SidebarMenu (S2, S9)');
+		assert.match(devtool, /\{line && <div style=\{line\.tone === 'error' \? styles\.error : styles\.empty\}/);
+	});
+
+	it('a row is Rod\'s anatomy: role button, tabIndex, Enter/Space, tooltip and accessible name with the state, an icon slot, and a dot plus a text suffix', () => {
+		const devtool = branch(sidebar(), 'devtool');
+		const row = devtool.slice(devtool.indexOf('<div\n'), devtool.indexOf('</div>', devtool.indexOf('<div\n')));
+		for (const attr of [/role="button"/, /tabIndex=\{0\}/, /title=\{row\.tooltip\}/, /aria-label=\{row\.ariaLabel\}/, /onClick=\{\(\) => select\(e\.key\)\}/, /onKeyDown=\{\(event\) => \{ if \(event\.key === 'Enter' \|\| event\.key === ' '\) \{ event\.preventDefault\(\); select\(e\.key\); \} \}\}/]) {
+			assert.match(row, attr);
+		}
+		assert.match(row, /<span style=\{styles\.rowIcon\(active\)\}><GraphIcon \/><\/span>/);
+		assert.match(row, /<span style=\{styles\.rowLabel\}>\{row\.label\}<\/span>/);
+		assert.match(row, /\{row\.status !== null && <span style=\{styles\.rowStatus\}>\{row\.status\}<\/span>\}/, 'the state in words, not colour alone');
+		assert.match(row, /<span style=\{styles\.dot\(row\.variant\)\} aria-hidden="true" \/>/);
+		assert.match(sidebar(), /dot: \(variant: IBadge\['variant'\]\): CSSProperties => panelStyles\.dot\(DOT_COLOR\[variant\]\)/);
+	});
+
+	it('the full app keeps its menu exactly: the "Connections" entry with its count, under "Graph Explorer"', () => {
+		const app = branch(sidebar(), 'app');
+		assert.match(app, /<SidebarMenu menu=\{menu\} activeId=\{activeKey \? '' : 'connections'\} onSelect=\{select\} sectionLabel="Graph Explorer" \/>/);
+		assert.match(sidebar(), /const menu: ViewMenu = useMemo\(\(\) => \(\{ entries: \[\{ id: 'connections', label: 'Connections', icon: <GraphIcon \/>, \.\.\.\(endpoints\.length > 0 \? \{ count: endpoints\.length \} : \{\}\) \}\] \}\), \[endpoints\.length\]\);/);
+	});
+
+	it('the sidebar keeps its styles in `styles` (no inline style objects)', () => {
+		assert.doesNotMatch(sidebar(), /style=\{\{/);
+	});
+});
+
 describe('R7 - the sidebar opens documents only on a click', () => {
 	it('GraphSidebar calls openDocument and previews.request from its click handlers only, never from an effect', () => {
 		const sidebar = code(read('GraphSidebar.tsx'));
