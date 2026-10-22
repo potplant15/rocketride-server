@@ -47,7 +47,7 @@ test('the graph session is built from the connection key and refs, not from obje
 });
 
 test('every open drawer and dialog goes through the shell: no graph-ui code handles Escape or swallows key events above them', () => {
-	for (const file of ['components/InspectorPanel.tsx', 'components/HistoryPanel.tsx', 'components/RunSurface.tsx', 'views/ConnectionsView.tsx', 'components/ConnectionDrawer.tsx']) {
+	for (const file of ['components/InspectorPanel.tsx', 'components/HistoryPanel.tsx', 'components/RunSurface.tsx', 'views/ConnectionsView.tsx', 'components/ConnectionDrawer.tsx', 'views/WorkbenchView.tsx', 'views/WriteConsoleView.tsx']) {
 		const text = code(read(...file.split('/')));
 		assert.doesNotMatch(text, /stopPropagation/, `${file} stops event propagation`);
 		assert.doesNotMatch(text, /addEventListener\(\s*['"]key/, `${file} registers its own key listener`);
@@ -219,4 +219,44 @@ test('the connection drawer starts fresh for every card, and words its Test resu
 test('the connection drawer closes when the store forgets its card', () => {
 	const view = code(read('views', 'ConnectionsView.tsx'));
 	assert.ok(/useEffect\(\(\) => \{\s*const next = drawerKeyAfter\(drawerKey, endpoints\);\s*if \(next !== drawerKey\) setDrawerKey\(next\);\s*\}, \[drawerKey, endpoints\]\);/.test(view), 'an effect drops a key the store no longer lists');
+});
+
+// As a dev tool there is no Connections landing: the drawer (details, Test connection) opens inside the connection's
+// own document, anchored to it (DetailPanel `contained`), and the documents offer no "Open Connections". The full app
+// keeps its landing, its fixed drawer and its buttons.
+test('the connection drawer can be anchored to its document, and offers Open workbench only where it is not already in it', () => {
+	const drawer = code(read('components', 'ConnectionDrawer.tsx'));
+	assert.ok(/contained = false/.test(drawer), 'contained is opt-in: the full app\'s landing keeps its fixed drawer');
+	assert.ok(/<DetailPanel\s+contained=\{contained\}/.test(drawer), 'passed through to the shell\'s panel');
+	assert.ok(/\{onOpen && \(\s*<Button variant="primary" disabled=\{!view\.openable\} onClick=\{\(\) => onOpen\(endpoint\)\}>/.test(drawer), 'Open workbench only with an onOpen');
+	assert.ok(/useEffect\(\(\) => \{\s*if \(!open \|\| !testOnOpen \|\| !endpoint \|\| autoTested\.current\) return;\s*autoTested\.current = true;\s*void test\(endpoint\);\s*\}, \[open, testOnOpen\]\);/.test(drawer), 'a drawer opened by "Test connection" tests at once, once (StrictMode runs the effect twice)');
+	const landing = code(read('views', 'ConnectionsView.tsx'));
+	assert.ok(!/contained|testOnOpen/.test(landing), 'the full app\'s landing is unchanged');
+});
+
+test('in a dev-tool frame the workbench opens the drawer inside the document: a Details header action, and Test connection where it cannot be browsed', () => {
+	const view = code(read('views', 'WorkbenchView.tsx'));
+	assert.ok(/const inFrame = env\.mount === 'frame';/.test(view));
+	const header = view.slice(view.indexOf('<ContentHeader'), view.indexOf('{gate.mounted ?'));
+	assert.ok(/\{inFrame && \(\s*<Button variant="ghost" onClick=\{\(\) => setDrawer\('details'\)\}[^\n]*>\s*Details\s*<\/Button>/.test(header), 'a ghost Details action, frame only');
+	assert.ok(/\{writable && \(\s*<Button variant="ghost" onClick=\{openWrite\}/.test(header), 'Write console stays as it was');
+	assert.ok(/inFrame \? \(\s*<Button variant="primary" onClick=\{\(\) => setDrawer\('test'\)\}>\s*Test connection\s*<\/Button>\s*\) : \(\s*<Button variant="primary" onClick=\{\(\) => env\.openDocument\(\{ kind: 'connections' \}\)\}>\s*Open Connections\s*<\/Button>/.test(view), 'Test connection in a frame; the full app keeps Open Connections');
+	assert.ok(/<ConnectionDrawer\s+key=\{endpoint\.key\}\s+contained\s+open\s+endpoint=\{endpoint\}/.test(view), 'keyed on the connection, so a Test result never carries over; mounted only while open, so each opening starts fresh');
+	assert.ok(/\{inFrame && drawer !== null && \(/.test(view), 'the drawer exists in a frame only');
+	assert.ok(/testOnOpen=\{drawer === 'test'\}/.test(view));
+	assert.ok(/onTest=\{\(target\) => \(env\.ready \? env\.probe\(target\.key\) : Promise\.resolve\(null\)\)\}/.test(view), 'a probe that cannot run says "not tested"');
+	assert.ok(!/onOpen=/.test(view.slice(view.indexOf('<ConnectionDrawer'))), 'no Open workbench inside the workbench');
+});
+
+test('in a dev-tool frame the write console offers Test connection where it is unavailable, with Open workbench in its drawer', () => {
+	const view = code(read('views', 'WriteConsoleView.tsx'));
+	assert.ok(/const inFrame = env\.mount === 'frame';/.test(view));
+	assert.ok(/inFrame \? \(\s*<Button variant="primary" onClick=\{\(\) => setDrawer\('test'\)\}>\s*Test connection\s*<\/Button>\s*\) : \(\s*<Button variant="primary" onClick=\{\(\) => env\.openDocument\(\{ kind: 'connections' \}\)\}>\s*Open Connections\s*<\/Button>/.test(view));
+	assert.ok(/<ConnectionDrawer\s+key=\{endpoint\.key\}\s+contained\s+open\s+endpoint=\{endpoint\}/.test(view));
+	assert.ok(/onOpen=\{\(target\) => \{\s*setDrawer\(null\);\s*env\.openDocument\(\{ kind: 'workbench', endpoint: target \}\);\s*\}\}/.test(view), 'Open workbench closes the drawer first');
+	assert.ok(/\{inFrame && drawer !== null && \(/.test(view), 'the drawer exists in a frame only');
+	// DetailPanel `contained` anchors to the nearest positioned ancestor: the frame mount's root is that host.
+	const frame = code(read('GraphDevToolFrame.tsx'));
+	const root = /root: \{([^}]*)\} as CSSProperties/.exec(frame)?.[1] ?? '';
+	assert.ok(/position: 'relative'/.test(root) && /overflow: 'hidden'/.test(root), 'the frame root is positioned and clips, as DetailPanel contained needs');
 });

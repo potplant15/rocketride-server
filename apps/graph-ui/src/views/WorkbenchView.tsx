@@ -33,6 +33,11 @@
 // by its nonce, once, whenever it mounts, so the click that summoned a cold dev-tool
 // webview is not lost. A request waits while this connection has not answered its
 // check yet, instead of being dropped.
+//
+// As a dev tool there is no Connections landing: the connection drawer (what the
+// node reports, Test connection) opens inside this document, from a Details header
+// action and from Test connection where the connection cannot be browsed. The full
+// app keeps its landing, so its workbench is unchanged.
 // =============================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -47,6 +52,7 @@ import { previewFor } from '../graph/previews';
 import { GraphIcon } from '../icons';
 import { styles } from '../styles';
 import AskBar from '../components/AskBar';
+import ConnectionDrawer from '../components/ConnectionDrawer';
 import HistoryPanel from '../components/HistoryPanel';
 import RunSurface from '../components/RunSurface';
 import { createLoadSlot } from '../graph/loadSlot';
@@ -78,6 +84,9 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const gate = surfaceGate(view, opened.current);
 
 	const [historyOpen, setHistoryOpen] = useState(false);
+	// A dev-tool frame opens the connection drawer here (null: closed; 'test': opened by Test connection, which tests).
+	const inFrame = env.mount === 'frame';
+	const [drawer, setDrawer] = useState<'details' | 'test' | null>(null);
 	// One slot for the life of the document: the surface takes each request once (see loadSlot.ts).
 	const [slot] = useState(createLoadSlot);
 	const [loadSeq, setLoadSeq] = useState(0);
@@ -130,10 +139,19 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 				title={view.title}
 				subtitle={subtitle}
 				actions={
-					writable ? (
-						<Button variant="ghost" onClick={openWrite} title="Open the console that can change data. It asks before it sends a statement that looks like a write.">
-							Write console
-						</Button>
+					inFrame || writable ? (
+						<>
+							{inFrame && (
+								<Button variant="ghost" onClick={() => setDrawer('details')} title="What the node reports about itself, and Test connection.">
+									Details
+								</Button>
+							)}
+							{writable && (
+								<Button variant="ghost" onClick={openWrite} title="Open the console that can change data. It asks before it sends a statement that looks like a write.">
+									Write console
+								</Button>
+							)}
+						</>
 					) : undefined
 				}
 			/>
@@ -155,9 +173,15 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 					title={endpoint.state === 'ready' ? 'This connection cannot be browsed yet' : 'This connection is not available'}
 					description={view.blocked ?? 'The connection has not answered yet.'}
 					action={
-						<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
-							Open Connections
-						</Button>
+						inFrame ? (
+							<Button variant="primary" onClick={() => setDrawer('test')}>
+								Test connection
+							</Button>
+						) : (
+							<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
+								Open Connections
+							</Button>
+						)
 					}
 				/>
 			)}
@@ -176,6 +200,18 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 				}}
 				announce={(text) => announcer.announce(text)}
 			/>
+			{inFrame && drawer !== null && (
+				<ConnectionDrawer
+					key={endpoint.key}
+					contained
+					open
+					endpoint={endpoint}
+					probe={probe}
+					testOnOpen={drawer === 'test'}
+					onTest={(target) => (env.ready ? env.probe(target.key) : Promise.resolve(null))}
+					onClose={() => setDrawer(null)}
+				/>
+			)}
 		</div>
 	);
 };

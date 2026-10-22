@@ -35,6 +35,9 @@
 // that can write only where this console is meant to). rocketride_graph has no
 // account to choose: it connects as the role that owns the RocketRide database,
 // so for it the boundary is whether the node allows execute at all.
+//
+// As a dev tool, where the console is unavailable Test connection opens the
+// connection drawer inside this document (the full app keeps Open Connections).
 // =============================================================================
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
@@ -47,6 +50,7 @@ import { canWrite, engineText, parseDialect, targetText } from '../graph/dialect
 import { WRITE_CONSOLE_BANNER, rerunAnnouncement } from '../graph/writeConfirm';
 import { GraphIcon } from '../icons';
 import { styles } from '../styles';
+import ConnectionDrawer from '../components/ConnectionDrawer';
 import HistoryPanel from '../components/HistoryPanel';
 import RunSurface from '../components/RunSurface';
 import { createLoadSlot } from '../graph/loadSlot';
@@ -84,6 +88,9 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 	const gate = surfaceGate({ openable: allowed, blocked: allowed ? null : unavailable }, opened.current);
 
 	const [historyOpen, setHistoryOpen] = useState(false);
+	// A dev-tool frame opens the connection drawer here, from Test connection (which tests at once).
+	const inFrame = env.mount === 'frame';
+	const [drawer, setDrawer] = useState<'test' | null>(null);
 	// One slot for the life of the document: the surface takes each request once (see loadSlot.ts).
 	const [slot] = useState(createLoadSlot);
 	const [loadSeq, setLoadSeq] = useState(0);
@@ -112,9 +119,15 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 					title="The write console is not available for this connection"
 					description={endpoint.state !== 'ready' ? (view.blocked ?? 'This connection is not available.') : writeUnavailableText(dialect?.allowExecute === true, dialect !== null && dialect.capabilities.execute_shape_graph === true)}
 					action={
-						<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
-							Open Connections
-						</Button>
+						inFrame ? (
+							<Button variant="primary" onClick={() => setDrawer('test')}>
+								Test connection
+							</Button>
+						) : (
+							<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
+								Open Connections
+							</Button>
+						)
 					}
 				/>
 			)}
@@ -134,6 +147,22 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 				}}
 				announce={(text) => announcer.announce(text)}
 			/>
+			{inFrame && drawer !== null && (
+				<ConnectionDrawer
+					key={endpoint.key}
+					contained
+					open
+					endpoint={endpoint}
+					probe={probe}
+					testOnOpen={drawer === 'test'}
+					onTest={(target) => (env.ready ? env.probe(target.key) : Promise.resolve(null))}
+					onOpen={(target) => {
+						setDrawer(null);
+						env.openDocument({ kind: 'workbench', endpoint: target });
+					}}
+					onClose={() => setDrawer(null)}
+				/>
+			)}
 		</div>
 	);
 };
