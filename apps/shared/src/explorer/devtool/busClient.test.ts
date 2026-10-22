@@ -28,6 +28,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ConnectionManager } from 'shell';
 import { createToolSession, DEFAULT_TOOL_TIMEOUTS } from '../connect/session';
+import { TASK_NAMES_REQUEST, TASK_NAMES_TIMEOUT_MS } from '../connect/discovery';
 import { codedError } from '../connect/testing';
 import type { IExplorerEndpoint } from '../types';
 import { busRequest, createBusExplorerClient, getBusExplorerClient } from './busClient';
@@ -37,6 +38,7 @@ import {
 	FRAME_OP_MARGIN_MS,
 	GET_TASK_PIPELINE_TIMEOUT_MS,
 	GET_TASKS_TIMEOUT_MS,
+	LIST_TASKS_TIMEOUT_MS,
 	MAX_TIMER_MS,
 	MONITOR_TIMEOUT_MS,
 	SDK_TIMEOUT_SLACK_MS,
@@ -120,11 +122,13 @@ describe('createBusExplorerClient — every request carries an explicit timeoutM
 		const { cm, requests } = spyBus((op) => (op === 'client.getTasks' ? [] : { components: [] }));
 		const client = createBusExplorerClient(cm);
 		await client.getTasks();
+		await client.listTasks?.(TASK_NAMES_REQUEST);
 		await client.getTaskPipeline('tk');
 		await client.addMonitor?.({ token: '*' }, ['task']);
 		await client.removeMonitor?.({ token: '*' }, ['task']);
 		assert.deepEqual(requests.map((r) => [r.op, r.params, r.opts?.timeoutMs]), [
 			['client.getTasks', {}, GET_TASKS_TIMEOUT_MS],
+			['client.listTasks', TASK_NAMES_REQUEST, LIST_TASKS_TIMEOUT_MS],
 			['client.getTaskPipeline', { token: 'tk' }, GET_TASK_PIPELINE_TIMEOUT_MS],
 			['client.addMonitor', { key: { token: '*' }, types: ['task'] }, MONITOR_TIMEOUT_MS],
 			['client.removeMonitor', { key: { token: '*' }, types: ['task'] }, MONITOR_TIMEOUT_MS],
@@ -143,6 +147,10 @@ describe('createBusExplorerClient — every request carries an explicit timeoutM
 			const ms = r.opts?.timeoutMs;
 			assert.ok(typeof ms === 'number' && Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_MS, `${r.op}: ${ms}`);
 		}
+	});
+
+	it('listTasks goes over the bus\'s existing client.listTasks op, and the bus gives up when discovery stops waiting for names', () => {
+		assert.equal(LIST_TASKS_TIMEOUT_MS, TASK_NAMES_TIMEOUT_MS);
 	});
 
 	it('getTasks refuses an answer that is not a list (a protocol error, not an empty discovery)', async () => {

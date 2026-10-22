@@ -28,18 +28,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { IDataGridPersistence } from 'shell';
 import { createCopyingGridPersistence, createSessionGridPersistence } from './gridPersistence';
-
-/** What Tabulator's sort module does to a persisted sorter list it is handed: it swaps each field for its live column. */
-function tabulatorSetSort(sorters: unknown): void {
-	const column = { field: 'name', table: {} as Record<string, unknown>, element: { tag: 'div' } };
-	column.table.columns = [column];
-	for (const item of sorters as Array<{ column: unknown }>) item.column = column;
-}
-
-/** The host's workspace prefs a grid config channel answers from. */
-interface IHostPrefs {
-	tableLayouts: Record<string, Record<string, unknown>>;
-}
+import { tabulatorSetSort } from './testing';
+import type { IGridHostPrefs as IHostPrefs } from './testing';
 
 /**
  * The shell's grid config channel as the web host answers it: a read hands
@@ -154,6 +144,14 @@ describe('createCopyingGridPersistence (a full app over the shell\'s channel)', 
 		p.write('t', 'columns', []);
 		p.clear('u');
 		assert.equal(made, 1);
+	});
+
+	it('reads a stored blob that is not plain JSON as nothing, never as the object itself', () => {
+		const cyclic: Record<string, unknown> = { column: 'name' };
+		cyclic.self = cyclic;
+		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [cyclic] } } };
+		const p = createCopyingGridPersistence(() => hostChannel(prefs));
+		assert.equal(p.read('t', 'sort'), false);
 	});
 
 	it('reports nothing where the host has nothing, per table and type; clear reaches the host', () => {

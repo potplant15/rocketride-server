@@ -46,6 +46,28 @@ project id is `pipeline.project_id`; the row has no `projectId` field.
 `pipeline.components` is read from the row; `getTaskPipeline(token)` is a
 bounded fallback only when a row carries none.
 
+**Names come from one `listTasks` call.** `getTasks()` names a run by its
+pipeline's `name`, or by its source id when the pipeline has none. The readable
+name #2625 shows, `{task name}.{source component name}` (for example "Shop
+Postgres.Tools"), is the task's status name, and only `listTasks` carries it.
+So discovery asks `listTasks` once, together with `getTasks()`, for the newest
+100 live tasks (`TASK_NAMES_REQUEST`), and uses it **for names only**. Which
+endpoints exist, and their keys and tokens, still come from `getTasks()`.
+- **Matching.** A name matches exactly one run, by the run's display id,
+  built in memory the way the server builds it. A `listTasks` row has no owner
+  or team, so nothing else tells two teams' deployments of one project apart.
+- **Unnamed runs.** A run started without a task name, including every deploy,
+  has a status name made from its display id. That is not a readable name, so
+  it is ignored.
+- **Role maps.** A role map is named by its tools run only, so its label does
+  not change with which run anchors the connection.
+- **Waiting.** Discovery waits for the names at most `TASK_NAMES_TIMEOUT_MS`
+  (10 s). The wait overlaps `getTasks()`, so the store's 30 s discovery bound
+  stays the deadline.
+- **Failure.** A failure is logged once per client, and the names fall back.
+- **Fallback.** A run `listTasks` does not name is named by its pipeline's
+  name, then its source component's name, then its source id.
+
 The server scopes a user-owned run by its owner, so `getTasks()` still returns
 the caller's own runs from an organization they have switched away from, with
 their tokens. Discovery drops a row, before grouping and before its token
@@ -375,6 +397,7 @@ its own bus timeout, and none relies on the bus's 120 s default
 | `client.tool` with an SDK `timeout` | `timeout + BUS_TOOL_MARGIN_MS` (5 s) |
 | `client.tool` the session left unbounded (`timeoutMs: null`) | `UNBOUNDED_TOOL_TIMEOUT_MS` (24 h; a delay above 2^31-1 ms fires at once) |
 | `client.getTasks`, `client.getTaskPipeline` | 30 s each |
+| `client.listTasks` (discovery's names) | `LIST_TASKS_TIMEOUT_MS` (10 s, discovery's own wait for it) |
 | `client.addMonitor`, `client.removeMonitor` | 15 s |
 | anything else (`fs*`, `use`, `getEnvironmentKeys`) | `busRequest(cm, op, params, timeoutMs)`; the timeout is required |
 
@@ -574,25 +597,41 @@ hold period. `createControllerSummon({ channel })` uses that on purpose.
   ready.
 
 **Grid layouts: never hand Tabulator a stored object** ([`gridPersistence.ts`](../../../apps/shared/src/explorer/devtool/gridPersistence.ts)).
-A shell `DataGrid` with a `tableId` persists its layout (sort, columns, page)
-through the grid config channel, which the host answers from the active app's
-workspace prefs. The host hands a stored blob out by reference, and Tabulator's
-sort module rewrites the sorter list it reads in place, putting its live column
-object where the field name was. On #2625 `9bd5d931f`, prefs mutated that way
-freeze the page on the next workspace save: the SDK's message redaction walk
-never finishes on a Tabulator column. Once a sort is stored, any remount of the
-grid reads it again (a page switch, a re-run, a reload), so this hits a full app
-as surely as Rocket Builder.
+A shell `DataGrid` with a `tableId` persists its layout through the grid config
+channel. That covers Tabulator's sort, columns and page blobs, and DataGrid's
+own display and format blobs. The host answers from the active app's workspace
+prefs.
+
+On #2625 `9bd5d931f` this freezes the page:
+1. The host hands a stored blob out by reference.
+2. Tabulator's sort module rewrites the sorter list it reads in place, putting
+   its live column object where the field name was. That list is the workspace
+   store's own object, so the column is now in the prefs.
+3. Only a later sort write would replace it, and the web host's bridge merges
+   each write over the prefs it saw at its last render. So a write of another
+   blob in the same pass keeps the rewritten list, and can even undo a sort
+   write.
+4. The next workspace save never finishes: the SDK's message redaction walk
+   does not end on a Tabulator column.
+
+Once a sort is stored, any remount of the grid reads it again (a page switch, a
+re-run, a reload). So this hits a full app as surely as Rocket Builder.
 
 So every explorer grid takes `persistence={env.gridPersistence}`, and both
 choices below store and hand out plain-JSON copies:
 - **A dev-tool frame** uses `createSessionGridPersistence()`, one per realm. Its
-  active app is the host (Rocket Builder), whose prefs a store tool must not
-  write, so layouts stay in memory for the session.
-- **A full app** uses `createCopyingGridPersistence(createMessageGridPersistence)`,
+  active app is the host, whose prefs a store tool must not write, so layouts
+  stay in memory. In Rocket Builder that is until the page reloads. In VS Code
+  each document is its own panel and realm, so it is as long as that panel.
+- **A full app** uses `createCopyingGridPersistence(() => createMessageGridPersistence())`,
   passing in the shell's own channel factory. The adapter is made on first use,
-  so building an env never touches the shell. Layouts stay in the app's own
-  prefs.
+  so building an env never touches the shell, and a test can stand in a
+  channel first. Layouts stay in the app's own prefs.
+
+Tests use `installHostGridBridge` and `tabulatorSetSort` from
+[`devtool/testing.ts`](../../../apps/shared/src/explorer/devtool/testing.ts): the
+real channel behind a stand-in `document` whose bridge answers by reference, as
+the web host's does.
 
 **Retained state stays small** ([`state.ts`](../../../apps/shared/src/explorer/devtool/state.ts)).
 The cost of a publish is the whole state map. The sidebar peer republishes the
