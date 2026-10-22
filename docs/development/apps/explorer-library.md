@@ -573,6 +573,22 @@ hold period. `createControllerSummon({ channel })` uses that on purpose.
   so a frame re-announces its own hints (such as `active`) once a controller is
   ready.
 
+**Grid layouts in a dev-tool frame** ([`gridPersistence.ts`](../../../apps/shared/src/explorer/devtool/gridPersistence.ts)).
+A shell `DataGrid` with a `tableId` persists its layout (sort, columns, page)
+through the grid config channel, which the host answers from the active app's
+workspace prefs. In a dev-tool frame that app is the host (Rocket Builder), so
+the grid would write into the host's own bag.
+
+Give every frame grid `persistence={createSessionGridPersistence()}`, one per
+realm, instead. It keeps layouts in memory for the session, and stores and
+hands out plain-JSON copies.
+
+The copies are what matter. Tabulator's sort module rewrites the sorter list it
+reads in place, putting its live column object where the field name was. On
+#2625 `9bd5d931f`, a host blob mutated that way froze Rocket Builder on the
+next workspace save: the SDK's message redaction walk never finishes on a
+Tabulator column. The full app keeps its own prefs.
+
 **Retained state stays small** ([`state.ts`](../../../apps/shared/src/explorer/devtool/state.ts)).
 The cost of a publish is the whole state map. The sidebar peer republishes the
 WHOLE map on every publish, and the VS Code bridge posts it to every frame
