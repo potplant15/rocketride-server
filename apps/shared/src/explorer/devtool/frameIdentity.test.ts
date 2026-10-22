@@ -26,8 +26,8 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createFrameIdentityGuard, IDENTITY_STATE_TOPIC, publishIdentityState } from './frameIdentity';
-import type { FrameResetReason } from './frameIdentity';
+import { createFrameIdentityGuard, followSignIn, IDENTITY_STATE_TOPIC, publishIdentityState } from './frameIdentity';
+import type { FrameResetReason, SignInState } from './frameIdentity';
 import { createIdentityTracker } from './identity';
 import { account, assertJsonSafe, createDevToolHarness, createFakeClientRealm, createFakeSocketlessRealm, settle, shellProtocol } from './testing';
 
@@ -273,3 +273,35 @@ describe('T7, the frame half, over a socketless realm (review finding 3)', () =>
 	});
 });
 
+describe('followSignIn — what a frame may say about the account', () => {
+	it("'pending' until the controller publishes, 'nobody' for its settled null, 'signed-in' for a fingerprint", async () => {
+		const h = createDevToolHarness('tool.signin', { json: true });
+		const frameChannel = shellProtocol.createToolChannel(h.newFramePeer());
+		const seen: SignInState[] = [];
+		const off = followSignIn(frameChannel, (state) => seen.push(state));
+		await settle();
+		assert.deepEqual(seen, ['pending'], 'no identity published yet: nothing is known, so nothing is claimed');
+		const controller = shellProtocol.createToolChannel(h.sidebarPeer);
+		controller.publishState(IDENTITY_STATE_TOPIC, { fingerprint: null });
+		await settle();
+		controller.publishState(IDENTITY_STATE_TOPIC, { fingerprint: 'u1|o1|t1' });
+		await settle();
+		controller.publishState(IDENTITY_STATE_TOPIC, { fingerprint: 'u1|o1|t1' });
+		await settle();
+		assert.deepEqual(seen, ['pending', 'nobody', 'signed-in'], 'told on changes only');
+		off();
+		controller.publishState(IDENTITY_STATE_TOPIC, { fingerprint: null });
+		await settle();
+		assert.equal(seen.length, 3, 'nothing after unsubscribe');
+	});
+
+	it('a malformed snapshot is not a sign-in', async () => {
+		const h = createDevToolHarness('tool.signin2', { json: true });
+		const seen: SignInState[] = [];
+		const off = followSignIn(shellProtocol.createToolChannel(h.newFramePeer()), (state) => seen.push(state));
+		shellProtocol.createToolChannel(h.sidebarPeer).publishState(IDENTITY_STATE_TOPIC, { fingerprint: '' });
+		await settle();
+		assert.deepEqual(seen, ['pending', 'nobody']);
+		off();
+	});
+});
