@@ -438,6 +438,15 @@ describe('F13 - what a connection document shows: the first state that applies w
 		assert.equal(state({ host: false, opened: true }), 'not-connected', 'the host state still comes first');
 	});
 
+	it('CE-3: nobody signed in wins over that: an open document whose summon is in a gap waits for sign-in instead of showing the workbench again', () => {
+		assert.equal(state({ summon: 'summoning', signIn: 'nobody', opened: true }), 'sign-in');
+		assert.equal(state({ summon: 'unanswered', signIn: 'nobody', opened: true }), 'sign-in');
+		assert.equal(state({ summon: 'summoning', signIn: 'pending', opened: true }), 'open', 'pending says nothing about the account: the document stays');
+		assert.equal(state({ summon: 'unanswered', signIn: 'signed-in', opened: true }), 'open');
+		assert.equal(state({ summon: 'summoning', signIn: 'nobody', opened: true, found: false }), 'starting', 'not on screen (its connection is not listed): the F13 order as for any document');
+		assert.equal(state({ summon: 'summoning', signIn: 'nobody', opened: false }), 'starting', 'a document that never opened keeps the F13 order');
+	});
+
 	it('the controller banner shows on an open document only once the summon went unanswered, never while it is summoning', () => {
 		assert.equal(showsControllerBanner('open', 'unanswered'), true);
 		assert.equal(showsControllerBanner('open', 'summoning'), false);

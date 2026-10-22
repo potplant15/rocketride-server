@@ -44,6 +44,8 @@
 // controller is summoned again (3 and 4): unmounting it would drop its
 // results and graph. Its calls wait for the controller meanwhile, and once
 // the summon goes unanswered a banner above it says to open the sidebar.
+// Except when nobody is signed in: then it waits for sign-in (5) like any
+// document, so a signed-out user never sees the workbench again.
 // =============================================================================
 
 import { ExplorerToolError, readErrorMessage } from 'shared/explorer';
@@ -138,7 +140,7 @@ export const DOC_STATE_TEXT: Record<Exclude<ConnectionDocState, 'missing' | 'ope
 export function connectionDocState(input: IDocGates & { found: boolean; opened: boolean }): ConnectionDocState {
 	if (input.host === false) return 'not-connected';
 	if (input.host === undefined) return 'waiting';
-	if (input.summon !== 'ready' && input.opened && input.found) return 'open';
+	if (input.summon !== 'ready' && input.opened && input.found) return input.signIn === 'nobody' ? 'sign-in' : 'open';
 	if (input.summon === 'summoning') return 'starting';
 	if (input.summon === 'unanswered') return 'no-sidebar';
 	if (input.signIn === 'nobody') return 'sign-in';

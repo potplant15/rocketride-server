@@ -328,7 +328,8 @@ What is different there:
   Explorer sidebar to connect" if nothing answers within a few seconds), or a
   sign-in ("Waiting for sign-in"). A document that already showed its
   workbench keeps it while the sidebar restarts, with a note to open the
-  sidebar if it does not come back.
+  sidebar if it does not come back; after a sign-out it waits for sign-in
+  instead.
 
 ## The write console
 

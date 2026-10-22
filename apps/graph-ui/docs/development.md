@@ -81,9 +81,10 @@ live here.
   connection false, not yet published, the summon's quiet grace, an
   unanswered summon, nobody signed in, then the list's own loading, omitted
   and not-listed texts. A document that has already shown its view keeps it
-  while its controller is summoned again. The frame re-announces `active` on
-  each readiness nonce, because the summon event takes busPeer's single
-  retained slot.
+  while its controller is summoned again, except when nobody is signed in:
+  then it waits for sign-in like any other document. The frame re-announces
+  `active` on each readiness nonce, because the summon event takes busPeer's
+  single retained slot.
 - As a dev tool there is no Connections landing: the generic frame is one
   EmptyState, the sidebar lists the connections (`GraphSidebar` under
   `devtool`; wording in `graph/connections.ts`: `connectionRow`,
