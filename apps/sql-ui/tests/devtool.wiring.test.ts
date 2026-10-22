@@ -44,7 +44,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { ExplorerToolError } from 'shared/explorer/errors';
-import { assertJsonSafe, assertSidebarSubscribers, createDevToolHarness, findToolFactoryImports, manualNow, settle, shellProtocol, spyPeer } from 'shared/explorer/devtool/testing';
+import { assertJsonSafe, assertSidebarSubscribers, createDevToolHarness, findToolFactoryImports, installHostGridBridge, manualNow, settle, shellProtocol, spyPeer, tabulatorSetSort } from 'shared/explorer/devtool/testing';
 import { BUS_TOOL_MARGIN_MS, FRAME_OP_MARGIN_MS, GET_TASKS_TIMEOUT_MS, LIST_TASKS_TIMEOUT_MS, MAX_TIMER_MS, SDK_TIMEOUT_SLACK_MS, UNBOUNDED_TOOL_TIMEOUT_MS } from 'shared/explorer/devtool/timeouts';
 import { TASK_NAMES_REQUEST } from 'shared/explorer/connect/discovery';
 import { DEFAULT_RETRY_WINDOW_MS } from 'shared/explorer/connect/session';
@@ -66,8 +66,6 @@ import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from '../
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
 import { taskRow } from './support';
 import { DIRECT, PIPELINE, manualTimers, postgres, rig, toolRequests } from './devtoolRig';
-import { GRID_CONFIG_CLEAR, GRID_CONFIG_GET, GRID_CONFIG_SET, createMessageGridPersistence } from '../../../packages/shell/src/components/data-grid/gridConfigChannel';
-import type { IGridConfigClearDetail, IGridConfigGetDetail, IGridConfigSetDetail } from '../../../packages/shell/src/components/data-grid/gridConfigChannel';
 import { createLocalSqlEnv } from '../src/localEnv';
 import type { SqlCore } from '../src/sqlCore';
 
@@ -107,56 +105,6 @@ function retained(posts: unknown[]): Map<string, unknown> {
  */
 function source(rel: string): string {
 	return fs.readFileSync(path.join(SRC, rel), 'utf8');
-}
-
-/** What Tabulator's sort module does to a persisted sorter list it is handed: it swaps each field for its live column. */
-function tabulatorSetSort(sorters: unknown): void {
-	const column = { field: 'name', table: {} as Record<string, unknown>, element: { tag: 'div' } };
-	column.table.columns = [column];
-	for (const item of sorters as Array<{ column: unknown }>) item.column = column;
-}
-
-/** A host's workspace prefs, as far as the grid config channel reads them. */
-interface IGridHostPrefs {
-	tableLayouts: Record<string, Record<string, unknown>>;
-}
-
-/**
- * Rocket Builder's grid config bridge (the web shell's WorkspaceContext) on a
- * stand-in `document`: a get answers with the stored layout BY REFERENCE, and
- * a set keeps the blob it is given. While installed, the test runner's inert
- * 'shell' stub also carries the real channel factory, so an env that makes its
- * channel on first use gets the real one.
- *
- * @returns The host's prefs, and how to uninstall.
- */
-function installHostGridBridge(): { prefs: IGridHostPrefs; uninstall(): void } {
-	const prefs: IGridHostPrefs = { tableLayouts: {} };
-	const doc = new EventTarget();
-	doc.addEventListener(GRID_CONFIG_GET, (event) => {
-		const detail = (event as CustomEvent<IGridConfigGetDetail>).detail;
-		detail.reply(prefs.tableLayouts[detail.tableId]);
-	});
-	doc.addEventListener(GRID_CONFIG_SET, (event) => {
-		const detail = (event as CustomEvent<IGridConfigSetDetail>).detail;
-		prefs.tableLayouts[detail.tableId] = { ...prefs.tableLayouts[detail.tableId], [detail.type]: detail.blob };
-	});
-	doc.addEventListener(GRID_CONFIG_CLEAR, (event) => {
-		delete prefs.tableLayouts[(event as CustomEvent<IGridConfigClearDetail>).detail.tableId];
-	});
-	const global = globalThis as { document?: unknown };
-	const before = global.document;
-	global.document = doc;
-	const shell = createRequire(__filename)('shell') as Record<string, unknown>;
-	const factory = shell.createMessageGridPersistence;
-	shell.createMessageGridPersistence = createMessageGridPersistence;
-	return {
-		prefs,
-		uninstall() {
-			global.document = before;
-			shell.createMessageGridPersistence = factory;
-		},
-	};
 }
 
 /**
@@ -704,46 +652,51 @@ describe('connection names: #2625\'s readable name from one listTasks, names onl
 });
 
 describe('grid layouts are copies everywhere: a frame keeps them in the session, the full app in its own prefs', () => {
-	it('a frame env hands every grid the realm\'s session persistence, which copies in and out', async () => {
+	/** The test runner's 'shell' module (stub-shell.cjs's one object). */
+	const shell = (): Record<string, unknown> => createRequire(__filename)('shell') as Record<string, unknown>;
+
+	it('a frame env hands every grid the realm\'s session persistence, which copies in and out and never writes the host\'s prefs', async () => {
+		const host = installHostGridBridge(shell());
 		const r = await rig({ docKey: 'c-pipe' });
 		try {
 			const grids = r.env.gridPersistence;
-			assert.ok(grids, 'a frame never lets its grids answer from the host\'s workspace prefs');
 			const again = createRemoteSqlEnv(r.frame.caller, true, r.frame.owner, r.history);
-			assert.equal(again.gridPersistence, grids, 'one per realm: layouts survive a document and a tab switch');
-			grids.write('sql-overview-tables', 'sort', [{ column: 'name', dir: 'asc' }]);
-			const handed = grids.read('sql-overview-tables', 'sort') as Array<{ column: unknown }>;
-			handed[0]!.column = { table: { rows: [] }, element: {} };
-			assert.deepEqual(grids.read('sql-overview-tables', 'sort'), [{ column: 'name', dir: 'asc' }], 'Tabulator rewriting what it read never reaches the stored layout');
-			grids.clear('sql-overview-tables');
+			assert.equal(again.gridPersistence, grids, 'one store per realm: in Rocket Builder every document of the page shares it');
+			grids.write('sql-frame-probe', 'sort', [{ column: 'name', dir: 'asc' }]);
+			tabulatorSetSort(grids.read('sql-frame-probe', 'sort'));
+			assert.deepEqual(grids.read('sql-frame-probe', 'sort'), [{ column: 'name', dir: 'asc' }], 'Tabulator rewriting what it read never reaches the stored layout');
+			assert.deepEqual(host.prefs.tableLayouts, {}, 'the host\'s prefs are never written');
 		} finally {
+			r.env.gridPersistence.clear('sql-frame-probe');
 			r.dispose();
+			host.uninstall();
 		}
 	});
 
-	it('every grid with a tableId takes the env\'s persistence', () => {
-		for (const rel of ['panels/OverviewPanel.tsx', 'views/InsightsPanel.tsx', 'views/TableDataView.tsx', 'views/QueryView.tsx']) {
+	it('every grid with a tableId, in any source file, takes the env\'s persistence', () => {
+		const files = (fs.readdirSync(SRC, { recursive: true }) as string[]).filter((rel) => /\.tsx?$/.test(rel));
+		const persisted = files.filter((rel) => /tableId=/.test(source(rel)));
+		assert.ok(persisted.length >= 4, persisted.join(', '));
+		for (const rel of persisted) {
 			const text = source(rel);
-			const grids = (text.match(/tableId=/g) ?? []).length;
-			assert.ok(grids > 0, rel);
-			assert.equal((text.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length, grids, `${rel}: every persisted grid`);
+			assert.equal((text.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length, (text.match(/tableId=/g) ?? []).length, `${rel}: every persisted grid`);
 		}
 		assert.match(source('sqlEnv.ts'), /gridPersistence: SESSION_GRIDS,/);
 	});
 
 	it('the full app keeps layouts in its own prefs through the shell\'s channel, but hands Tabulator copies (the full-app freeze)', () => {
-		const host = installHostGridBridge();
+		const host = installHostGridBridge(shell());
 		try {
 			// #2625's channel alone hands a grid the host's own stored object.
 			// This is what put a Tabulator column into the prefs and froze the save.
 			host.prefs.tableLayouts['probe'] = { sort: [{ column: 'name', dir: 'asc' }] };
-			tabulatorSetSort(createMessageGridPersistence().read('probe', 'sort'));
+			tabulatorSetSort(host.bareChannel().read('probe', 'sort'));
 			assert.throws(() => JSON.stringify(host.prefs), /circular/i, '#2625\'s channel hands out the host\'s object');
 			delete host.prefs.tableLayouts['probe'];
 
 			const env = createLocalSqlEnv({} as SqlCore, true, () => undefined, { getPref: () => undefined, setPref: () => undefined });
 			const grids = env.gridPersistence;
-			assert.ok(grids, 'the full app\'s grids never get the bare channel');
+			assert.notEqual(grids, SESSION_GRIDS, 'the full app\'s layouts are not a frame\'s session ones');
 			host.prefs.tableLayouts['sql-overview-tables'] = { sort: [{ column: 'name', dir: 'asc' }] };
 			const handed = grids.read('sql-overview-tables', 'sort');
 			assert.deepEqual(handed, [{ column: 'name', dir: 'asc' }], 'the stored layout is read from the app\'s prefs');
@@ -755,7 +708,6 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 			grids.write('sql-overview-tables', 'sort', blob);
 			tabulatorSetSort(blob);
 			assert.deepEqual(host.prefs.tableLayouts['sql-overview-tables'], { sort: [{ column: 'name', dir: 'desc' }] }, 'a write reaches the prefs as a plain copy');
-			assert.notEqual(grids, SESSION_GRIDS, 'and stays there, unlike a frame\'s');
 		} finally {
 			host.uninstall();
 		}

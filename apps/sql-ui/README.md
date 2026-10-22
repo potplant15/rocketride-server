@@ -610,13 +610,15 @@ these differences:
   "Starting SQL Explorer…" meanwhile. Only if no sidebar answers within a few
   seconds does it ask you to open it. A document that is already open stays
   open, with run and apply disabled, while the sidebar is closed. While
-  nobody is signed in, a document says it is waiting for sign-in.
+  nobody is signed in, a document says it is waiting for sign-in. With
+  several hundred saved connections, the sidebar shares only part of the
+  list with documents, and a document asks the sidebar for its own
+  connection when it is not in that part.
 - **Grid layouts are kept for the session.** In a dev tool, a grid's sort,
-  column widths and page size last until the window reloads. They are never
-  written into the host's own preferences (the full app keeps them in its
-  workspace preferences). With several hundred saved connections, the
-  sidebar shares only part of the list with documents, and a document asks
-  the sidebar for its own connection when it is not in that part.
+  column widths and page size are kept in memory: in rocket-ui until the
+  page reloads, in VS Code until the document's panel closes. They are
+  never written into the host's own preferences (the full app keeps them in
+  its workspace preferences).
 - **Account changes close documents.** A document opened under one account
   closes itself when another account signs in, and forgets the schema it was
   showing; while nobody can be vouched for (signed out, connection dropped) it
