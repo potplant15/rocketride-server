@@ -847,6 +847,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 								columns={columns}
 								data={rows}
 								tableId="sql-query-results"
+								persistence={env.gridPersistence}
 								paginate={false}
 								height="100%"
 								emptyTitle="No rows"

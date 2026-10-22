@@ -55,6 +55,7 @@ import { lookupConnection } from '../src/connectionRecord';
 import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
 import type { ConnectionsState, HistoryState, SqlOps } from '../src/ops';
 import { attachSqlFrame, connectionDocState, directReleaseKey, frameGates, routeDocKey, sqlChannel } from '../src/sqlFrame';
+import { createRemoteSqlEnv } from '../src/sqlEnv';
 import { setActiveConnection } from '../src/navigation';
 import { SUMMON_EVENT, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
@@ -603,6 +604,40 @@ describe('a frame whose controller is not mounted summons it (busPeer host.mount
 		assert.match(devTool, /case 'starting':/);
 		assert.match(devTool, /case 'signed-out':\s*body = <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Waiting for sign-in"/);
 		assert.doesNotMatch(devTool, /followVouched/, 'the frame follows the base\'s followSignIn');
+	});
+});
+
+// =============================================================================
+// GRID LAYOUTS — never into the host's prefs (the Rocket Builder freeze)
+// =============================================================================
+
+describe('grid layouts in a dev-tool frame stay in the session, as copies; the full app keeps its prefs', () => {
+	it('a frame env hands every grid the realm\'s session persistence, which copies in and out', async () => {
+		const r = await rig({ docKey: 'c-pipe' });
+		try {
+			const grids = r.env.gridPersistence;
+			assert.ok(grids, 'a frame never lets its grids answer from the host\'s workspace prefs');
+			const again = createRemoteSqlEnv(r.frame.caller, true, r.frame.owner, r.history);
+			assert.equal(again.gridPersistence, grids, 'one per realm: layouts survive a document and a tab switch');
+			grids.write('sql-overview-tables', 'sort', [{ column: 'name', dir: 'asc' }]);
+			const handed = grids.read('sql-overview-tables', 'sort') as Array<{ column: unknown }>;
+			handed[0]!.column = { table: { rows: [] }, element: {} };
+			assert.deepEqual(grids.read('sql-overview-tables', 'sort'), [{ column: 'name', dir: 'asc' }], 'Tabulator rewriting what it read never reaches the stored layout');
+			grids.clear('sql-overview-tables');
+		} finally {
+			r.dispose();
+		}
+	});
+
+	it('every grid with a tableId takes the env\'s persistence; the LOCAL env (full app) sets none, so the app\'s own prefs answer', () => {
+		for (const rel of ['panels/OverviewPanel.tsx', 'views/InsightsPanel.tsx', 'views/TableDataView.tsx', 'views/QueryView.tsx']) {
+			const text = source(rel);
+			const grids = (text.match(/tableId=/g) ?? []).length;
+			assert.ok(grids > 0, rel);
+			assert.equal((text.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length, grids, `${rel}: every persisted grid`);
+		}
+		assert.doesNotMatch(source('localEnv.ts'), /gridPersistence/);
+		assert.match(source('sqlEnv.ts'), /gridPersistence: SESSION_GRIDS,/);
 	});
 });
 

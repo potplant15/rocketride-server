@@ -275,6 +275,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 						remoteSort
 						onLoadError={handleLoadError}
 						tableId={`sql-data-${endpoint.provider}`}
+						persistence={env.gridPersistence}
 						height="100%"
 						emptyTitle="No rows"
 						emptyDescription="The table is empty (or nothing matches the current search/filters)."

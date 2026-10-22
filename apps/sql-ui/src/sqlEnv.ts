@@ -51,7 +51,9 @@ import { createContext, useContext } from 'react';
 import { ExplorerToolError } from 'shared/explorer/errors';
 import type { IGenerationTicket } from 'shared/explorer/generation';
 import type { IFrameCaller } from 'shared/explorer/devtool/frame';
+import { createSessionGridPersistence } from 'shared/explorer/devtool/gridPersistence';
 import type { JsonValue } from 'shared/explorer/devtool/reply';
+import type { IDataGridPersistence } from 'shell';
 import type { SqlOps } from './ops';
 import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SqlSession, SavedSqlConnection, SqlDialect } from './connect';
 import { SQL_OP_TIMEOUT_MS } from './sqlTimeouts';
@@ -101,6 +103,14 @@ export interface SqlEnv {
 	history: SqlHistoryApi;
 	/** Small per-user switches (`sql.patternChecks`): workspace preferences in the full app, this session only in a dev-tool frame. */
 	prefs: IPrefsAccessor;
+	/**
+	 * Grid layouts (sort, columns, page). Unset in the full app: its grids
+	 * answer from the app's own workspace prefs through the shell's channel.
+	 * A dev-tool frame sets the realm's session-only copies
+	 * (shared/explorer/devtool/gridPersistence), so its grids never write into
+	 * the host's prefs.
+	 */
+	gridPersistence?: IDataGridPersistence;
 }
 
 /** A realm's session-only preferences (dev-tool frames): kept in memory, never written anywhere. */
@@ -111,6 +121,9 @@ export const SESSION_PREFS: IPrefsAccessor = {
 	getPref: (key) => sessionPrefValues.get(key),
 	setPref: (key, value) => { sessionPrefValues.set(key, value); },
 };
+
+/** The session-only grid layouts every dev-tool frame of this window shares. */
+export const SESSION_GRIDS: IDataGridPersistence = createSessionGridPersistence();
 
 const SqlEnvContext = createContext<SqlEnv | null>(null);
 
@@ -221,6 +234,7 @@ export function createRemoteSqlEnv(caller: IFrameCaller<SqlOps>, ready: boolean,
 	return {
 		history,
 		prefs: SESSION_PREFS,
+		gridPersistence: SESSION_GRIDS,
 		ready,
 		getSession: (endpoint) => remoteSession(caller, endpoint),
 		resolveEndpoint: (conn) => caller.callReply('sql.resolveEndpoint', { connId: conn.id }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.resolveEndpoint'] }),

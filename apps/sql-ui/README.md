@@ -610,7 +610,11 @@ these differences:
   "Starting SQL Explorer…" meanwhile. Only if no sidebar answers within a few
   seconds does it ask you to open it. A document that is already open stays
   open, with run and apply disabled, while the sidebar is closed. While
-  nobody is signed in, a document says it is waiting for sign-in. With several hundred saved connections, the
+  nobody is signed in, a document says it is waiting for sign-in.
+- **Grid layouts are kept for the session.** In a dev tool, a grid's sort,
+  column widths and page size last until the window reloads. They are never
+  written into the host's own preferences (the full app keeps them in its
+  workspace preferences). With several hundred saved connections, the
   sidebar shares only part of the list with documents, and a document asks
   the sidebar for its own connection when it is not in that part.
 - **Account changes close documents.** A document opened under one account
