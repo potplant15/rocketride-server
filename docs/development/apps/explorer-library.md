@@ -591,25 +591,39 @@ hold period. `createControllerSummon({ channel })` uses that on purpose.
   ready.
 
 **Grid layouts: never hand Tabulator a stored object** ([`gridPersistence.ts`](../../../apps/shared/src/explorer/devtool/gridPersistence.ts)).
-A shell `DataGrid` with a `tableId` persists its layout (sort, columns, page)
-through the grid config channel, which the host answers from the active app's
-workspace prefs. The host hands a stored blob out by reference, and Tabulator's
-sort module rewrites the sorter list it reads in place, putting its live column
-object where the field name was. On #2625 `9bd5d931f`, prefs mutated that way
-freeze the page on the next workspace save: the SDK's message redaction walk
-never finishes on a Tabulator column. Once a sort is stored, any remount of the
-grid reads it again (a page switch, a re-run, a reload), so this hits a full app
-as surely as Rocket Builder.
+A shell `DataGrid` with a `tableId` persists its layout through the grid config
+channel. That covers Tabulator's sort, columns and page blobs, and DataGrid's
+own display and format blobs. The host answers from the active app's workspace
+prefs.
+
+On #2625 `9bd5d931f` this freezes the page:
+1. The host hands a stored blob out by reference.
+2. Tabulator's sort module rewrites the sorter list it reads in place, putting
+   its live column object where the field name was.
+3. The web host's bridge merges each later write over the prefs it saw at its
+   last render. So a write in the same pass puts the rewritten list back into
+   the prefs.
+4. The next workspace save never finishes: the SDK's message redaction walk
+   does not end on a Tabulator column.
+
+Once a sort is stored, any remount of the grid reads it again (a page switch, a
+re-run, a reload). So this hits a full app as surely as Rocket Builder.
 
 So every explorer grid takes `persistence={env.gridPersistence}`, and both
 choices below store and hand out plain-JSON copies:
 - **A dev-tool frame** uses `createSessionGridPersistence()`, one per realm. Its
-  active app is the host (Rocket Builder), whose prefs a store tool must not
-  write, so layouts stay in memory for the session.
-- **A full app** uses `createCopyingGridPersistence(createMessageGridPersistence)`,
+  active app is the host, whose prefs a store tool must not write, so layouts
+  stay in memory. In Rocket Builder that is until the page reloads. In VS Code
+  each document is its own panel and realm, so it is as long as that panel.
+- **A full app** uses `createCopyingGridPersistence(() => createMessageGridPersistence())`,
   passing in the shell's own channel factory. The adapter is made on first use,
-  so building an env never touches the shell. Layouts stay in the app's own
-  prefs.
+  so building an env never touches the shell, and a test can stand in a
+  channel first. Layouts stay in the app's own prefs.
+
+Tests use `installHostGridBridge` and `tabulatorSetSort` from
+[`devtool/testing.ts`](../../../apps/shared/src/explorer/devtool/testing.ts): the
+real channel behind a stand-in `document` whose bridge answers by reference, as
+the web host's does.
 
 **Retained state stays small** ([`state.ts`](../../../apps/shared/src/explorer/devtool/state.ts)).
 The cost of a publish is the whole state map. The sidebar peer republishes the
