@@ -73,6 +73,23 @@ live here.
   "disconnected" reset only clears data caches for the time a frame is still
   mounted. VS Code also unmounts the controller, which remounts with fresh
   stores; frames announce themselves to it on its new readiness nonce.
+- A frame summons a controller that is not ready with the base's
+  `createControllerSummon` (one reserved non-op event, never a call) and
+  follows `followSignIn`; both are disposed with the frame. What a connection
+  document shows is decided by `connectionDocState` in
+  `src/devtool/frameText.ts`, the first state that applies winning: host
+  connection false, not yet published, the summon's quiet grace, an
+  unanswered summon, nobody signed in, then the list's own loading, omitted
+  and not-listed texts. A document that has already shown its view keeps it
+  while its controller is summoned again. The frame re-announces `active` on
+  each readiness nonce, because the summon event takes busPeer's single
+  retained slot.
+- As a dev tool there is no Connections landing: the generic frame is one
+  EmptyState, the sidebar lists the connections (`GraphSidebar` under
+  `devtool`; wording in `graph/connections.ts`: `connectionRow`,
+  `rowStatusText`, `sidebarListLine`), and the connection drawer opens inside a
+  connection's document (`ConnectionDrawer contained`). The full app keeps
+  `ConnectionsView` as its `CONNECTIONS_URI` document and its menu entry.
 - Retained state: the base guard keeps each snapshot under 64 KiB and the
   whole republished map under 128 KiB. The controller's `shrink` hook degrades
   `endpoints`, `schemas` and `dataVersions` through the protocol's own cuts
@@ -91,7 +108,9 @@ live here.
   with its state are pinned by reading the source (`tests/graph.wiring.test.ts`).
 - The dev-tool suites (`tests/devtool.*.test.ts`) run the controller and frames
   over the shell's real bus peer, op lane and channel, with every payload
-  carried as JSON as VS Code does (`tests/support/devtool.ts`).
+  carried as JSON as VS Code does (`tests/support/devtool.ts`). `mountFrame`
+  runs each frame's summon on manual timers (`timers.advance(ms)`), so a suite
+  sees a summon only when it moves time on.
 - `tests/fixtures/v1/live/` holds answers captured from the real node tools on
   Neo4j, FalkorDB and Apache AGE; `tests/fixtures/provisional/` is hand-modelled
   and kept for the cases the live set does not cover.
