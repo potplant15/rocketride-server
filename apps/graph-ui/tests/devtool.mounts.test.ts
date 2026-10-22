@@ -11,6 +11,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fakeWorld } from 'shared/explorer/connect/testing';
@@ -34,12 +35,64 @@ import { ExplorerToolError } from 'shared/explorer';
 import { createRegionClaims } from '../src/realmRegion';
 import { createLocalGraphEnv } from '../src/localEnv';
 import { graphRow, mountController, mountFrame, readOnlyNode, signInVsCode, until, vscodeRealm } from './support/devtool';
+import { GRID_CONFIG_CLEAR, GRID_CONFIG_GET, GRID_CONFIG_SET, createMessageGridPersistence } from '../../../packages/shell/src/components/data-grid/gridConfigChannel';
+import type { IGridConfigClearDetail, IGridConfigGetDetail, IGridConfigSetDetail } from '../../../packages/shell/src/components/data-grid/gridConfigChannel';
 
 const APP = path.resolve(__dirname, '..');
 const SRC = path.join(APP, 'src');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 /** Source without comments. */
 const code = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/.*$/gm, '');
+
+/** What Tabulator's sort module does to a persisted sorter list it is handed: it swaps each field for its live column. */
+function tabulatorSetSort(sorters: unknown): void {
+	const column = { field: 'name', table: {} as Record<string, unknown>, element: { tag: 'div' } };
+	column.table.columns = [column];
+	for (const item of sorters as Array<{ column: unknown }>) item.column = column;
+}
+
+/** A host's workspace prefs, as far as the grid config channel reads them. */
+interface IGridHostPrefs {
+	tableLayouts: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * The web shell's grid config bridge (WorkspaceContext) on a stand-in
+ * `document`: a get answers with the stored layout BY REFERENCE, and a set
+ * keeps the blob it is given. While installed, the test runner's inert 'shell'
+ * stub also carries the real channel factory, so an env that makes its
+ * channel on first use gets the real one.
+ *
+ * @returns The host's prefs, and how to uninstall.
+ */
+function installHostGridBridge(): { prefs: IGridHostPrefs; uninstall(): void } {
+	const prefs: IGridHostPrefs = { tableLayouts: {} };
+	const doc = new EventTarget();
+	doc.addEventListener(GRID_CONFIG_GET, (event) => {
+		const detail = (event as CustomEvent<IGridConfigGetDetail>).detail;
+		detail.reply(prefs.tableLayouts[detail.tableId]);
+	});
+	doc.addEventListener(GRID_CONFIG_SET, (event) => {
+		const detail = (event as CustomEvent<IGridConfigSetDetail>).detail;
+		prefs.tableLayouts[detail.tableId] = { ...prefs.tableLayouts[detail.tableId], [detail.type]: detail.blob };
+	});
+	doc.addEventListener(GRID_CONFIG_CLEAR, (event) => {
+		delete prefs.tableLayouts[(event as CustomEvent<IGridConfigClearDetail>).detail.tableId];
+	});
+	const global = globalThis as { document?: unknown };
+	const before = global.document;
+	global.document = doc;
+	const shell = createRequire(__filename)('shell') as Record<string, unknown>;
+	const factory = shell.createMessageGridPersistence;
+	shell.createMessageGridPersistence = createMessageGridPersistence;
+	return {
+		prefs,
+		uninstall() {
+			global.document = before;
+			shell.createMessageGridPersistence = factory;
+		},
+	};
+}
 
 /**
  * Every source file reachable from an entry through relative imports (the module graph of one mount).
@@ -492,7 +545,7 @@ describe('F13 - what a connection document shows: the first state that applies w
 	});
 });
 
-describe('grid layouts in a dev-tool frame stay in the session, as copies; the full app keeps its prefs', () => {
+describe('grid layouts are copies everywhere: a frame keeps them in the session, the full app in its own prefs', () => {
 	it('a frame env hands its grids the realm\'s session persistence, which copies in and out', async () => {
 		const engine = vscodeRealm();
 		signInVsCode(engine.realm);
@@ -513,12 +566,43 @@ describe('grid layouts in a dev-tool frame stay in the session, as copies; the f
 		}
 	});
 
-	it('the results grid takes the env\'s persistence; the LOCAL env (full app, controller) sets none', () => {
+	it('the results grid takes the env\'s persistence', () => {
 		const views = read('components/ResultViews.tsx');
 		assert.equal((views.match(/tableId=/g) ?? []).length, (views.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length);
 		assert.match(views, /persistence=\{env\.gridPersistence\}/);
-		assert.doesNotMatch(read('localEnv.ts'), /gridPersistence/);
 		assert.match(read('devtool/frame.ts'), /gridPersistence: SESSION_GRIDS,/);
+	});
+
+	it('the full app keeps layouts in its own prefs through the shell\'s channel, but hands Tabulator copies; the controller never writes the host\'s prefs', () => {
+		const host = installHostGridBridge();
+		try {
+			// #2625's channel alone hands a grid the host's own stored object.
+			// This is what put a Tabulator column into the prefs and froze the save.
+			host.prefs.tableLayouts['probe'] = { sort: [{ column: 'name', dir: 'asc' }] };
+			tabulatorSetSort(createMessageGridPersistence().read('probe', 'sort'));
+			assert.throws(() => JSON.stringify(host.prefs), /circular/i, '#2625\'s channel hands out the host\'s object');
+			delete host.prefs.tableLayouts['probe'];
+
+			const options = (mount: 'app' | 'controller') => ({ mount, ready: true, client: null, stores: { endpoints: makeGraphEndpointStore({ debounceMs: 0 }), schemas: createSchemaStore(), dataVersions: createDataVersions(), history: makeGraphHistory(0), previews: createPreviewStore() }, activeConnection: { get: () => null, subscribe: () => () => undefined }, openDocument: () => undefined, prefs: memoryPrefs(), historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE });
+			const grids = createLocalGraphEnv(options('app')).gridPersistence;
+			assert.ok(grids, 'the full app\'s grids never get the bare channel');
+			host.prefs.tableLayouts['graph-results-k'] = { sort: [{ column: 'name', dir: 'asc' }] };
+			const handed = grids.read('graph-results-k', 'sort');
+			assert.deepEqual(handed, [{ column: 'name', dir: 'asc' }], 'the stored layout is read from the app\'s prefs');
+			tabulatorSetSort(handed);
+			assert.doesNotThrow(() => JSON.stringify(host.prefs), 'so the next workspace save can serialize them');
+			const blob = [{ column: 'name', dir: 'desc' }];
+			grids.write('graph-results-k', 'sort', blob);
+			tabulatorSetSort(blob);
+			assert.deepEqual(host.prefs.tableLayouts['graph-results-k'], { sort: [{ column: 'name', dir: 'desc' }] }, 'a write reaches the prefs as a plain copy');
+
+			const controller = createLocalGraphEnv(options('controller')).gridPersistence;
+			assert.ok(controller && controller !== grids);
+			controller.write('graph-controller-k', 'sort', [{ column: 'name', dir: 'asc' }]);
+			assert.equal('graph-controller-k' in host.prefs.tableLayouts, false, 'a dev-tool controller keeps any layout in the session');
+		} finally {
+			host.uninstall();
+		}
 	});
 });
 

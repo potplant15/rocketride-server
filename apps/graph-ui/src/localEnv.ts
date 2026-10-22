@@ -32,7 +32,10 @@
 // error's code; in a VS Code webview the bus bridge carries messages only.
 // =============================================================================
 
+import { createMessageGridPersistence } from 'shell';
+import type { IDataGridPersistence } from 'shell';
 import type { IEndpointStore, IExplorerClient, IHistoryEntry, IHistoryStore, IPrefsAccessor } from 'shared/explorer';
+import { createCopyingGridPersistence, createSessionGridPersistence } from 'shared/explorer/devtool/gridPersistence';
 import { loadConnectionSchema } from './adapters/actions';
 import { countWrite } from './graph/dataVersion';
 import type { IDataVersions } from './graph/dataVersion';
@@ -65,6 +68,17 @@ export interface ILocalGraphEnvOptions {
 	/** Override discovery (the controller gates it on identity and activation). */
 	refresh?: IGraphEnv['refresh'];
 }
+
+/**
+ * The full app's grid layouts: its own workspace prefs, through the shell's
+ * grid config channel, but stored and handed out as plain-JSON copies, so
+ * Tabulator never rewrites a stored layout in place
+ * (shared/explorer/devtool/gridPersistence). The channel is made on first use.
+ */
+const APP_GRIDS: IDataGridPersistence = createCopyingGridPersistence(() => createMessageGridPersistence());
+
+/** The controller's: a dev-tool mount never writes the host's prefs, so any layout stays in the session (it renders no grid today). */
+const CONTROLLER_GRIDS: IDataGridPersistence = createSessionGridPersistence();
 
 const NO_LABELS: readonly string[] = [];
 
@@ -173,6 +187,7 @@ export function createLocalGraphEnv(opts: ILocalGraphEnvOptions): IGraphEnv {
 			consume: (nonce) => stores.previews.consume(nonce),
 		},
 		activeConnection: opts.activeConnection,
+		gridPersistence: opts.mount === 'app' ? APP_GRIDS : CONTROLLER_GRIDS,
 		openDocument: opts.openDocument,
 		prefs: opts.prefs,
 		historyPrivacyNote: opts.historyPrivacyNote,

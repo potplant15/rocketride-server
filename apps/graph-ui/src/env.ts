@@ -127,13 +127,14 @@ export interface IGraphEnv {
 	/** What the History panel says about where history is kept, true for this mount. */
 	historyPrivacyNote: string;
 	/**
-	 * Grid layouts (sort, columns, page). Unset in the full app and the
-	 * controller: grids answer from the app's own workspace prefs through the
-	 * shell's channel. A dev-tool frame sets the realm's session-only copies
-	 * (shared/explorer/devtool/gridPersistence), so its grids never write into
-	 * the host's prefs.
+	 * Grid layouts (sort, columns, page), always as plain-JSON copies
+	 * (shared/explorer/devtool/gridPersistence): never the shell's bare
+	 * channel, which hands Tabulator the stored object to rewrite in place.
+	 * The full app keeps them in its own workspace prefs; a dev-tool mount
+	 * (frame or controller), in the realm's session only, so its grids never
+	 * write into the host's prefs.
 	 */
-	gridPersistence?: IDataGridPersistence;
+	gridPersistence: IDataGridPersistence;
 }
 
 const GraphEnvContext = createContext<IGraphEnv | null>(null);
