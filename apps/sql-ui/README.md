@@ -604,11 +604,13 @@ these differences:
   is reported as possibly still running (there is no way to cancel it). An
   action taken while the connection is down is not sent at all. The sidebar
   reads nothing from the engine (your saved connections, your history file,
-  the running pipelines) until you open it or a document asks it something.
-  A document
-  restored before the SQL Explorer sidebar was opened asks you to open it; a
-  document that is already open stays open, with run and apply disabled,
-  while the sidebar is closed. With several hundred saved connections, the
+  the running pipelines) until it is opened: when you select the tool, or
+  when a document needs it. A document restored before the SQL Explorer
+  sidebar was opened asks the host to open the sidebar for it, and says
+  "Starting SQL Explorer…" meanwhile. Only if no sidebar answers within a few
+  seconds does it ask you to open it. A document that is already open stays
+  open, with run and apply disabled, while the sidebar is closed. While
+  nobody is signed in, a document says it is waiting for sign-in. With several hundred saved connections, the
   sidebar shares only part of the list with documents, and a document asks
   the sidebar for its own connection when it is not in that part.
 - **Account changes close documents.** A document opened under one account

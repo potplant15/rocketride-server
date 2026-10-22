@@ -42,6 +42,7 @@ import path from 'node:path';
 import { DEFAULT_RETRY_WINDOW_MS } from 'shared/explorer/connect/session';
 import { historyPrefsPath } from 'shared/explorer/devtool/prefs';
 import { UNBOUNDED_TOOL_TIMEOUT_MS } from 'shared/explorer/devtool/timeouts';
+import { SUMMON_GRACE_MS } from 'shared/explorer/devtool/summon';
 import { DATABASE_PROVIDERS } from '../src/connect';
 import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS, STATEMENT_WAIT_PAD_MS } from '../src/connect/tools';
 import { MAX_WATCHED_HISTORY_KEYS } from '../src/sqlController';
@@ -59,6 +60,15 @@ describe('README claims', () => {
 	it('says the picker offers your own development runs only, as the code filters', () => {
 		assert.match(prose, /finds the database nodes in the pipelines you are running yourself \(your own development runs\)/);
 		assert.match(core, /\.filter\(\(endpoint\) => endpoint\.legacyKey !== null && endpoint\.state !== 'stopped'\)/);
+	});
+
+	it('says a restored document asks the host for the sidebar, says it is starting, and asks you only after a few seconds', () => {
+		const devTool = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'SqlDevTool.tsx'), 'utf8');
+		assert.match(prose, /asks the host to open the sidebar for it, and says "Starting SQL Explorer…" meanwhile\. Only if no sidebar answers within a few seconds does it ask you to open it\./);
+		assert.match(devTool, /title="Starting SQL Explorer…"/);
+		assert.ok(SUMMON_GRACE_MS <= 10_000, 'a few seconds');
+		assert.match(prose, /While nobody is signed in, a document says it is waiting for sign-in\./);
+		assert.match(devTool, /title="Waiting for sign-in"/);
 	});
 
 	it('states the waits the code names', () => {
