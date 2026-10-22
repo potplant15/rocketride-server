@@ -24,12 +24,13 @@
 // EXPLORER DISCOVERY — role-aware, owner-aware, token-contained
 // =============================================================================
 
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { discoverToolEndpoints, mapWithConcurrency, readTaskRow } from './discovery';
+import { TASK_NAMES_REQUEST, TASK_NAMES_TIMEOUT_MS, discoverToolEndpoints, mapWithConcurrency, readTaskRow } from './discovery';
+import type { IDiscoveredEndpoint, IDiscoveryOptions } from './discovery';
 import { fakeWorld, row } from './testing';
 import { SINGLE_TOOLS_ROLE, VECTOR_ROLES } from '../types';
-import type { IExplorerIdentity, IRoleSpec } from '../types';
+import type { IExplorerClient, IExplorerIdentity, IRoleSpec } from '../types';
 import { legacyKeyFromKey, parseEndpointKey } from '../keys';
 
 const DB = new Set(['db_postgres', 'db_mysql']);
@@ -352,6 +353,185 @@ describe('discoverToolEndpoints — role map (Vector\'s ingest_1 / chat_1 / tool
 
 	it('ignores a project none of whose running sources fills a role', async () => {
 		assert.deepEqual(await discoverVector([vec('other_1')]), []);
+	});
+});
+
+// =============================================================================
+// READABLE NAMES (one listTasks per discovery, names only)
+// =============================================================================
+
+/**
+ * A live `listTasks` row as the server sends it (rrext_list_tasks): the task
+ * status name is `{task name}.{source component name}`.
+ *
+ * @param over - Fields to override.
+ * @returns The row.
+ */
+function listed(over: Record<string, unknown> = {}): Record<string, unknown> {
+	return { id: 'task-1', name: 'Shop Postgres.Tools', projectId: 'proj-1', source: 'tools_1', runKind: 'dev', completed: false, state: 3, ...over };
+}
+
+/**
+ * A getTasks row the way a live engine sends it for a pipeline started with
+ * `use(name='Shop Postgres')` and no top-level pipeline name: its `name` is
+ * the source id.
+ *
+ * @param over - Fields to override.
+ * @returns The row.
+ */
+function unnamed(over: Partial<ReturnType<typeof row>> = {}): ReturnType<typeof row> {
+	return row({ name: 'tools_1', pipeline: { project_id: 'proj-1', components: [{ id: 'tools_1', provider: 'tools', name: 'Tools' }, { id: 'db_1', provider: 'db_postgres', name: 'Shop Postgres' }] }, ...over });
+}
+
+/**
+ * Discover with a client whose `listTasks` answers through `answer`.
+ *
+ * @param rows - The getTasks rows.
+ * @param answer - The listTasks behaviour (may throw, or never settle); null = the client has no listTasks.
+ * @param options - Discovery options over the single-role SQL spec.
+ * @returns The found endpoints, the world, and every listTasks request.
+ */
+async function discoverNamed(rows: ReturnType<typeof row>[], answer: ((req: unknown) => Promise<unknown>) | null, options: Partial<IDiscoveryOptions> = {}) {
+	const world = fakeWorld(rows);
+	const requests: unknown[] = [];
+	if (answer) {
+		(world.client as IExplorerClient).listTasks = (req: unknown) => {
+			requests.push(req);
+			return answer(req);
+		};
+	}
+	const found = await discoverToolEndpoints(world.client, { providers: DB, roles: SINGLE_TOOLS_ROLE, ...options });
+	return { world, found, requests };
+}
+
+/** The listTasks envelope. */
+const page = (rows: Record<string, unknown>[]) => async () => ({ rows, total: rows.length, page: 1, pageSize: 100 });
+
+/**
+ * Everything discovery decides except the display name, keyed and sorted by key.
+ *
+ * @param found - Discovered endpoints.
+ * @returns The comparable view.
+ */
+function withoutNames(found: IDiscoveredEndpoint[]): unknown[] {
+	return found
+		.map((f) => ({ ...f, endpoint: { ...f.endpoint, pipelineName: '(name)' } }))
+		.sort((a, b) => a.endpoint.key.localeCompare(b.endpoint.key));
+}
+
+describe('discoverToolEndpoints — readable names (one listTasks per discovery, names only)', () => {
+	it('names a covered row the way #2625 does: listTasks\'s `{task name}.{source component name}`, from ONE request', async () => {
+		const { found, requests } = await discoverNamed([unnamed()], page([listed()]));
+		assert.equal(found[0]!.endpoint.pipelineName, 'Shop Postgres.Tools');
+		assert.deepEqual(requests, [TASK_NAMES_REQUEST]);
+		assert.deepEqual(TASK_NAMES_REQUEST, { page_size: 100, filters: { completed: 'false' }, sort: [{ field: 'startTime', dir: 'desc' }] }, 'the newest 100 live tasks (the server pages at 100)');
+	});
+
+	it('falls back to the pipeline name, then the source component\'s name, then the source id, where listTasks does not cover a row', async () => {
+		const no = await discoverNamed([unnamed()], null);
+		assert.equal(no.found[0]!.endpoint.pipelineName, 'Tools', 'no listTasks at all: the source component\'s name');
+		const other = await discoverNamed([unnamed()], page([listed({ projectId: 'proj-2' })]));
+		assert.equal(other.found[0]!.endpoint.pipelineName, 'Tools', 'listTasks names another project only');
+		const named = await discoverNamed([unnamed({ pipeline: { project_id: 'proj-1', name: 'Orders pipeline', components: [{ id: 'tools_1', provider: 'tools', name: 'Tools' }, { id: 'db_1', provider: 'db_postgres' }] } })], page([]));
+		assert.equal(named.found[0]!.endpoint.pipelineName, 'Orders pipeline', 'a pipeline name comes first');
+		const bare = await discoverNamed([unnamed({ pipeline: { project_id: 'proj-1', components: [{ id: 'tools_1', provider: 'tools' }, { id: 'db_1', provider: 'db_postgres' }] } })], page([]));
+		assert.equal(bare.found[0]!.endpoint.pipelineName, 'tools_1', 'no names anywhere: the source id');
+	});
+
+	it('takes a name only from a live row of the same project, source and run kind, and only when the live rows agree on it', async () => {
+		for (const [what, rows] of [
+			['a completed row', [listed({ completed: true })]],
+			['a stopping row', [listed({ state: 4 })]],
+			['a deploy run of the same project', [listed({ runKind: 'deploy' })]],
+			['another source', [listed({ source: 'tools_2' })]],
+			['two live rows that disagree', [listed(), listed({ id: 'task-2', name: 'Other run.Tools' })]],
+		] as const) {
+			const { found } = await discoverNamed([unnamed()], page([...rows]));
+			assert.equal(found[0]!.endpoint.pipelineName, 'Tools', what);
+		}
+		const agree = await discoverNamed([unnamed()], page([listed(), listed({ id: 'task-2' }), listed({ id: 'old', name: 'Old.Tools', completed: true })]));
+		assert.equal(agree.found[0]!.endpoint.pipelineName, 'Shop Postgres.Tools', 'live rows that agree, a completed one ignored');
+	});
+
+	it('falls back when listTasks throws, answers something unusable, or never answers within its own timeout, and discovery still resolves', async () => {
+		const warn = mock.method(console, 'warn', () => undefined);
+		try {
+			for (const [what, answer] of [
+				['throws at once', () => { throw new Error('no listTasks here'); }],
+				['rejects', async () => { throw new Error('denied'); }],
+				['answers undefined', async () => undefined],
+				['answers rows that are not a list', async () => ({ rows: 'x' })],
+			] as const) {
+				const { found } = await discoverNamed([unnamed()], answer as (req: unknown) => Promise<unknown>);
+				assert.equal(found[0]!.endpoint.pipelineName, 'Tools', what);
+			}
+			const started = Date.now();
+			const hung = await discoverNamed([unnamed()], () => new Promise(() => undefined), { taskNamesTimeoutMs: 20 });
+			assert.equal(hung.found[0]!.endpoint.pipelineName, 'Tools', 'a listTasks that never answers');
+			assert.ok(Date.now() - started < 2_000, 'it waits only its own timeout');
+			assert.ok(TASK_NAMES_TIMEOUT_MS > 0 && TASK_NAMES_TIMEOUT_MS <= 10_000, 'a third of the store\'s 30 s discovery bound, at most');
+		} finally {
+			warn.mock.restore();
+		}
+	});
+
+	it('logs a listTasks failure once per client, not once per discovery', async () => {
+		const warn = mock.method(console, 'warn', () => undefined);
+		try {
+			const world = fakeWorld([unnamed()]);
+			(world.client as IExplorerClient).listTasks = async () => { throw new Error('denied'); };
+			await discoverToolEndpoints(world.client, { providers: DB, roles: SINGLE_TOOLS_ROLE });
+			await discoverToolEndpoints(world.client, { providers: DB, roles: SINGLE_TOOLS_ROLE });
+			assert.equal(warn.mock.callCount(), 1);
+		} finally {
+			warn.mock.restore();
+		}
+	});
+
+	it('starts listTasks with getTasks, so a slow listTasks overlaps the list call instead of following it', async () => {
+		const world = fakeWorld([unnamed()]);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		world.getTasksImpl = async () => {
+			await gate;
+			return world.rows.map((r) => ({ ...r })) as unknown as Array<Record<string, unknown>>;
+		};
+		let asked = 0;
+		(world.client as IExplorerClient).listTasks = async () => {
+			asked += 1;
+			return { rows: [listed()] };
+		};
+		const discovery = discoverToolEndpoints(world.client, { providers: DB, roles: SINGLE_TOOLS_ROLE });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(asked, 1, 'asked before getTasks answered');
+		release();
+		assert.equal((await discovery)[0]!.endpoint.pipelineName, 'Shop Postgres.Tools');
+	});
+
+	it('never changes which endpoints are found, their keys, tokens or states: names only', async () => {
+		const rows = [
+			unnamed(),
+			unnamed({ runKind: 'deploy', ownerKind: 'team', ownerId: 'team-1' }),
+			unnamed({ source: 'tools_2', pipeline: { project_id: 'proj-2', name: 'Zeta', components: [{ id: 'db_9', provider: 'db_mysql' }, { id: 'db_2', provider: 'db_postgres' }] } }),
+			unnamed({ ownerId: 'u2', pipeline: null }),
+		];
+		const plain = await discoverNamed(rows, null);
+		const covered = await discoverNamed(rows, page([listed(), listed({ id: 'd', runKind: 'deploy', name: 'Deploy.Tools' }), listed({ id: 'z', projectId: 'proj-2', source: 'tools_2', name: 'Aaa first.Tools' })]));
+		const warn = mock.method(console, 'warn', () => undefined);
+		const failing = await discoverNamed(rows, async () => { throw new Error('denied'); }).finally(() => warn.mock.restore());
+		assert.ok(plain.found.length >= 4);
+		assert.notDeepEqual(covered.found.map((f) => f.endpoint.pipelineName).sort(), plain.found.map((f) => f.endpoint.pipelineName).sort(), 'listTasks was read: the names differ');
+		assert.deepEqual(withoutNames(covered.found), withoutNames(plain.found));
+		assert.deepEqual(withoutNames(failing.found), withoutNames(plain.found));
+		assert.equal(covered.world.getTasksCalls, 1);
+	});
+
+	it('names a role-map connection by its anchor (the tools row)', async () => {
+		const vecRow = (source: string) => row({ source, name: 'vp-src', pipeline: { project_id: 'vp', components: [{ id: 'vec_1', provider: 'rocketride_vector', name: 'Store' }] } });
+		const world = fakeWorld([vecRow('ingest_1'), vecRow('tools_1')]);
+		(world.client as IExplorerClient).listTasks = page([listed({ projectId: 'vp', source: 'ingest_1', name: 'Vec.Ingest' }), listed({ projectId: 'vp', source: 'tools_1', name: 'Vec.Tools' })]);
+		const found = await discoverToolEndpoints(world.client, { providers: VECTOR, roles: VECTOR_ROLES });
+		assert.equal(found[0]!.endpoint.pipelineName, 'Vec.Tools');
 	});
 });
 

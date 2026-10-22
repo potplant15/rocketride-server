@@ -46,6 +46,22 @@ project id is `pipeline.project_id`; the row has no `projectId` field.
 `pipeline.components` is read from the row; `getTaskPipeline(token)` is a
 bounded fallback only when a row carries none.
 
+**Names come from one `listTasks` call.** `getTasks()` names a run by its
+pipeline's `name`, or by its source id when the pipeline has none. The readable
+name #2625 shows, `{task name}.{source component name}` (for example "Shop
+Postgres.Tools"), is the task's status name, and only `listTasks` carries it.
+So discovery asks `listTasks` once, together with `getTasks()`, for the newest
+100 live tasks (`TASK_NAMES_REQUEST`), and uses it **for names only**. Which
+endpoints exist, and their keys and tokens, still come from `getTasks()`.
+- **Matching.** A `listTasks` row has no owner or team, so a name is matched on
+  project, source and run kind. Live rows that disagree name nothing.
+- **Waiting.** Discovery waits for the names at most `TASK_NAMES_TIMEOUT_MS`
+  (10 s). The wait overlaps `getTasks()`, so the store's 30 s discovery bound
+  stays the deadline.
+- **Failure.** A failure is logged once per client.
+- **Fallback.** A run `listTasks` does not name is named by its pipeline's
+  name, then its source component's name, then its source id.
+
 The server scopes a user-owned run by its owner, so `getTasks()` still returns
 the caller's own runs from an organization they have switched away from, with
 their tokens. Discovery drops a row, before grouping and before its token
@@ -375,6 +391,7 @@ its own bus timeout, and none relies on the bus's 120 s default
 | `client.tool` with an SDK `timeout` | `timeout + BUS_TOOL_MARGIN_MS` (5 s) |
 | `client.tool` the session left unbounded (`timeoutMs: null`) | `UNBOUNDED_TOOL_TIMEOUT_MS` (24 h; a delay above 2^31-1 ms fires at once) |
 | `client.getTasks`, `client.getTaskPipeline` | 30 s each |
+| `client.listTasks` (discovery's names) | `LIST_TASKS_TIMEOUT_MS` (10 s, discovery's own wait for it) |
 | `client.addMonitor`, `client.removeMonitor` | 15 s |
 | anything else (`fs*`, `use`, `getEnvironmentKeys`) | `busRequest(cm, op, params, timeoutMs)`; the timeout is required |
 

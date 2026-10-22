@@ -47,6 +47,7 @@ import type { IExplorerClient } from '../types';
 import {
 	GET_TASK_PIPELINE_TIMEOUT_MS,
 	GET_TASKS_TIMEOUT_MS,
+	LIST_TASKS_TIMEOUT_MS,
 	MONITOR_TIMEOUT_MS,
 	assertTimeoutMs,
 	busToolTimeoutMs,
@@ -89,6 +90,9 @@ export function createBusExplorerClient(cm: IExplorerBus): IExplorerClient {
 			const rows = await busRequest(cm, 'client.getTasks', {}, GET_TASKS_TIMEOUT_MS);
 			if (!Array.isArray(rows)) throw new Error('client.getTasks answered with something that is not a list of tasks.');
 			return rows as Array<Record<string, unknown>>;
+		},
+		async listTasks(req) {
+			return busRequest(cm, 'client.listTasks', req, LIST_TASKS_TIMEOUT_MS);
 		},
 		async getTaskPipeline(token) {
 			const pipeline = await busRequest(cm, 'client.getTaskPipeline', { token }, GET_TASK_PIPELINE_TIMEOUT_MS);
