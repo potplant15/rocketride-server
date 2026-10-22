@@ -114,7 +114,7 @@ describe('createSessionGridPersistence', () => {
 describe('createCopyingGridPersistence (a full app over the shell\'s channel)', () => {
 	it('hands out copies of what the host stores: Tabulator rewriting them never reaches the host\'s prefs (the full-app freeze)', () => {
 		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [{ column: 'name', dir: 'asc' }] } } };
-		const p = createCopyingGridPersistence(hostChannel(prefs));
+		const p = createCopyingGridPersistence(() => hostChannel(prefs));
 		const handed = p.read('t', 'sort');
 		assert.deepEqual(handed, [{ column: 'name', dir: 'asc' }]);
 		tabulatorSetSort(handed);
@@ -124,7 +124,7 @@ describe('createCopyingGridPersistence (a full app over the shell\'s channel)', 
 
 	it('writes reach the host as plain copies, so a later in-place rewrite of the written blob cannot reach it either', () => {
 		const prefs: IHostPrefs = { tableLayouts: {} };
-		const p = createCopyingGridPersistence(hostChannel(prefs));
+		const p = createCopyingGridPersistence(() => hostChannel(prefs));
 		const blob = [{ column: 'name', dir: 'desc' }];
 		p.write('t', 'sort', blob);
 		tabulatorSetSort(blob);
@@ -134,7 +134,7 @@ describe('createCopyingGridPersistence (a full app over the shell\'s channel)', 
 
 	it('a blob that is not plain JSON never reaches the host, and nothing throws', () => {
 		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [{ column: 'name', dir: 'asc' }] } } };
-		const p = createCopyingGridPersistence(hostChannel(prefs));
+		const p = createCopyingGridPersistence(() => hostChannel(prefs));
 		const cyclic: Record<string, unknown> = { a: 1 };
 		cyclic.self = cyclic;
 		assert.doesNotThrow(() => p.write('t', 'sort', [cyclic]));
@@ -142,9 +142,23 @@ describe('createCopyingGridPersistence (a full app over the shell\'s channel)', 
 		assert.doesNotThrow(() => JSON.stringify(prefs));
 	});
 
+	it('makes its inner persistence on first use, once, never at creation (an env is built where no shell runs)', () => {
+		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [{ column: 'name', dir: 'asc' }] } } };
+		let made = 0;
+		const p = createCopyingGridPersistence(() => {
+			made++;
+			return hostChannel(prefs);
+		});
+		assert.equal(made, 0);
+		p.read('t', 'sort');
+		p.write('t', 'columns', []);
+		p.clear('u');
+		assert.equal(made, 1);
+	});
+
 	it('reports nothing where the host has nothing, per table and type; clear reaches the host', () => {
 		const prefs: IHostPrefs = { tableLayouts: { t: { sort: [{ column: 'name', dir: 'asc' }] } } };
-		const p = createCopyingGridPersistence(hostChannel(prefs));
+		const p = createCopyingGridPersistence(() => hostChannel(prefs));
 		assert.equal(p.read('t', 'columns'), false);
 		assert.equal(p.read('u', 'sort'), false);
 		p.clear('t');

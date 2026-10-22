@@ -589,8 +589,9 @@ choices below store and hand out plain-JSON copies:
 - **A dev-tool frame** uses `createSessionGridPersistence()`, one per realm. Its
   active app is the host (Rocket Builder), whose prefs a store tool must not
   write, so layouts stay in memory for the session.
-- **A full app** uses `createCopyingGridPersistence(createMessageGridPersistence())`,
-  with the shell's own channel adapter passed in. Layouts stay in the app's own
+- **A full app** uses `createCopyingGridPersistence(createMessageGridPersistence)`,
+  passing in the shell's own channel factory. The adapter is made on first use,
+  so building an env never touches the shell. Layouts stay in the app's own
   prefs.
 
 **Retained state stays small** ([`state.ts`](../../../apps/shared/src/explorer/devtool/state.ts)).

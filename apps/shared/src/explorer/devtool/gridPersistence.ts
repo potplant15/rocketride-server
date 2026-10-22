@@ -43,7 +43,7 @@
 //     (§3.5), so frames keep layouts in memory for the session, one per
 //     realm. They survive tab switches and documents, not a reload.
 //   - createCopyingGridPersistence: a full app, over the shell's own channel
-//     (`createMessageGridPersistence()` from 'shell', passed in: this library
+//     (`createMessageGridPersistence` from 'shell', passed in: this library
 //     imports no 'shell' values here). Layouts stay in the app's own prefs.
 // =============================================================================
 
@@ -68,22 +68,27 @@ function jsonCopy(value: unknown): unknown {
  * Wrap a grid persistence so that it only ever stores and hands out plain-JSON
  * copies (see the header). A read of nothing stays false.
  *
- * @param inner - The persistence that stores the layouts (a full app: the
- *   shell's `createMessageGridPersistence()`).
+ * The wrapped persistence is made on first use, once, the way DataGrid makes
+ * its own default, so building an env never touches the shell.
+ *
+ * @param makeInner - Makes the persistence that stores the layouts (a full
+ *   app: the shell's `createMessageGridPersistence`).
  * @returns The wrapped persistence.
  */
-export function createCopyingGridPersistence(inner: IDataGridPersistence): IDataGridPersistence {
+export function createCopyingGridPersistence(makeInner: () => IDataGridPersistence): IDataGridPersistence {
+	let made: IDataGridPersistence | null = null;
+	const inner = (): IDataGridPersistence => (made ??= makeInner());
 	return {
 		read(tableId, type) {
-			const stored = inner.read(tableId, type);
+			const stored = inner().read(tableId, type);
 			return stored === false ? false : (jsonCopy(stored) ?? false);
 		},
 		write(tableId, type, data) {
 			const copy = jsonCopy(data);
-			if (copy !== undefined) inner.write(tableId, type, copy);
+			if (copy !== undefined) inner().write(tableId, type, copy);
 		},
 		clear(tableId) {
-			inner.clear(tableId);
+			inner().clear(tableId);
 		},
 	};
 }
@@ -96,7 +101,7 @@ export function createCopyingGridPersistence(inner: IDataGridPersistence): IData
  */
 export function createSessionGridPersistence(): IDataGridPersistence {
 	const layouts = new Map<string, DataGridLayout>();
-	return createCopyingGridPersistence({
+	return createCopyingGridPersistence(() => ({
 		read(tableId, type) {
 			const layout = layouts.get(tableId);
 			return layout && type in layout ? layout[type] : false;
@@ -107,5 +112,5 @@ export function createSessionGridPersistence(): IDataGridPersistence {
 		clear(tableId) {
 			layouts.delete(tableId);
 		},
-	});
+	}));
 }
