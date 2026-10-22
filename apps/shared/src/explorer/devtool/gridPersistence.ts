@@ -21,28 +21,30 @@
 // SOFTWARE.
 
 // =============================================================================
-// EXPLORER DEV TOOL — GRID LAYOUTS IN A DEV-TOOL MOUNT (session only)
+// EXPLORER DEV TOOL — GRID LAYOUTS: never hand Tabulator a stored object
 // =============================================================================
 //
 // A shell DataGrid with a `tableId` and no `persistence` prop persists its
 // layout (Tabulator's sort, columns, page blobs) through the grid config
-// channel, which the HOST answers from the active app's workspace prefs. In a
-// dev-tool frame the active app is the host (Rocket Builder), so a store
-// tool's grids would write into the host's own bag: store tools get no prefs
-// of their own (§3.5), and this is the same leak `usePrefs` would be.
+// channel, which the HOST answers from the active app's workspace prefs. The
+// host answers a read with the stored blob BY REFERENCE, and Tabulator's sort
+// module rewrites a persisted sorter list in place, swapping each field name
+// for its live column object (its table, DOM elements, functions). So the
+// prefs end up holding a Tabulator column, and on #2625 9bd5d931f the next
+// workspace save sends it through the SDK's message redaction walk, which
+// never finishes on it: the page freezes. A remount reads the blob again, so
+// a page switch, a re-run or a reload is enough once a sort is stored.
 //
-// It is also how Rocket Builder froze (#2625 9bd5d931f). The host answers a
-// read with the stored blob by reference; Tabulator's sort module rewrites a
-// persisted sorter list in place, swapping each field name for its live
-// column object; so the host's prefs end up holding a Tabulator column (its
-// table, DOM elements, functions). The next workspace save sends that object
-// through the SDK's message redaction walk, which never finishes on it.
-//
-// So frames give their grids this persistence instead: one per realm, in
-// memory, for the session. It stores and hands out COPIES (plain JSON), so
+// Both factories here hand Tabulator COPIES (plain JSON) and store copies, so
 // nothing Tabulator does to what it read can reach what is stored, and a blob
-// that is not plain JSON is not stored at all. Layouts survive tab switches
-// and documents in the session, not a reload; the full app keeps its prefs.
+// that is not plain JSON is not stored at all:
+//   - createSessionGridPersistence: a dev-tool frame. Its active app is the
+//     host (Rocket Builder), and store tools get no prefs of their own
+//     (§3.5), so frames keep layouts in memory for the session, one per
+//     realm. They survive tab switches and documents, not a reload.
+//   - createCopyingGridPersistence: a full app, over the shell's own channel
+//     (`createMessageGridPersistence` from 'shell', passed in: this library
+//     imports no 'shell' values here). Layouts stay in the app's own prefs.
 // =============================================================================
 
 import type { DataGridLayout, IDataGridPersistence } from 'shell';
@@ -63,6 +65,35 @@ function jsonCopy(value: unknown): unknown {
 }
 
 /**
+ * Wrap a grid persistence so that it only ever stores and hands out plain-JSON
+ * copies (see the header). A read of nothing stays false.
+ *
+ * The wrapped persistence is made on first use, once, the way DataGrid makes
+ * its own default, so building an env never touches the shell.
+ *
+ * @param makeInner - Makes the persistence that stores the layouts (a full
+ *   app: the shell's `createMessageGridPersistence`).
+ * @returns The wrapped persistence.
+ */
+export function createCopyingGridPersistence(makeInner: () => IDataGridPersistence): IDataGridPersistence {
+	let made: IDataGridPersistence | null = null;
+	const inner = (): IDataGridPersistence => (made ??= makeInner());
+	return {
+		read(tableId, type) {
+			const stored = inner().read(tableId, type);
+			return stored === false ? false : (jsonCopy(stored) ?? false);
+		},
+		write(tableId, type, data) {
+			const copy = jsonCopy(data);
+			if (copy !== undefined) inner().write(tableId, type, copy);
+		},
+		clear(tableId) {
+			inner().clear(tableId);
+		},
+	};
+}
+
+/**
  * A DataGrid persistence for dev-tool frames: in memory for the session,
  * copies in and out (see the header).
  *
@@ -70,19 +101,16 @@ function jsonCopy(value: unknown): unknown {
  */
 export function createSessionGridPersistence(): IDataGridPersistence {
 	const layouts = new Map<string, DataGridLayout>();
-	return {
+	return createCopyingGridPersistence(() => ({
 		read(tableId, type) {
 			const layout = layouts.get(tableId);
-			if (!layout || !(type in layout)) return false;
-			return jsonCopy(layout[type]) ?? false;
+			return layout && type in layout ? layout[type] : false;
 		},
 		write(tableId, type, data) {
-			const copy = jsonCopy(data);
-			if (copy === undefined) return;
-			layouts.set(tableId, { ...layouts.get(tableId), [type]: copy });
+			layouts.set(tableId, { ...layouts.get(tableId), [type]: data });
 		},
 		clear(tableId) {
 			layouts.delete(tableId);
 		},
-	};
+	}));
 }
