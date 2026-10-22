@@ -71,8 +71,11 @@ export const ConnectionEditorBody: React.FC<{
 
 	// Nobody to save for: say so before any form (a Save would only be refused).
 	if (signedOut) return <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Waiting for sign-in" description="Sign in to RocketRide to add or edit connections." /></div>;
-	// An edit target the starting sidebar has not shared yet is not "loading the list".
-	if (starting && connId && !editing) return <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Starting SQL Explorer…" description="The SQL Explorer sidebar is starting. This connection can be edited once it is ready." /></div>;
+	// An edit target the starting sidebar has not shared yet is not "loading the
+	// list"; the add form waits too (its Save would wait for the sidebar).
+	if (starting && (!connId || !editing)) return <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Starting SQL Explorer…" description="The SQL Explorer sidebar is starting. This connection can be edited once it is ready." /></div>;
+
+	if (sidebarClosed && !connId) return <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Open the SQL Explorer sidebar to connect" description="The sidebar saves your connections. A connection can be added once the sidebar is open." /></div>;
 
 	// An edit target that is not in the store yet (list still loading) or is
 	// gone (deleted elsewhere) must not silently become an ADD form.

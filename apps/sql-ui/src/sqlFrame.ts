@@ -148,7 +148,7 @@ export interface FrameGates {
 	sidebarClosed: boolean;
 	/** The controller is being summoned, or is up but has not said who is signed in yet: say it is starting. */
 	starting: boolean;
-	/** The controller is up and vouches for no one: say it is waiting for sign-in. */
+	/** The controller vouches for no one (its retained identity): say it is waiting for sign-in. */
 	signedOut: boolean;
 }
 
@@ -172,7 +172,9 @@ export function frameGates(input: { host: boolean | undefined; controllerReady: 
 		hostKnown: input.host !== undefined,
 		sidebarClosed: engineReady && !input.controllerReady && input.summon === 'unanswered',
 		starting: engineReady && (input.controllerReady ? input.signIn === 'pending' : input.summon !== 'unanswered'),
-		signedOut: engineReady && input.controllerReady && input.signIn === 'nobody',
+		// From the controller's retained identity alone: it outlives a remount, so a
+		// summon gap does not bring an open document back to a signed-out user.
+		signedOut: engineReady && input.signIn === 'nobody',
 	};
 }
 
@@ -199,10 +201,14 @@ export function connectionDocState(input: { ready: boolean; sidebarClosed?: bool
 	// An open document stays open (run and apply are disabled) while its
 	// controller is being summoned or never answered; one that has not opened
 	// says it is starting, then (after the summon's grace) to open the sidebar.
-	if (input.sidebarClosed === true) return input.opened && !input.failed ? 'open' : 'no-sidebar';
+	// ...unless nobody is signed in: its view was already replaced, so a summon
+	// gap must not bring it back.
+	const keepOpen = input.opened && !input.failed && input.signedOut !== true;
+	const signedOutOpen = input.signedOut === true && input.opened;
+	if (input.sidebarClosed === true) return keepOpen ? 'open' : signedOutOpen ? 'signed-out' : 'no-sidebar';
 	if (!input.ready) {
 		if (input.hostKnown === false) return 'waiting';
-		if (input.summoning === true) return input.opened && !input.failed ? 'open' : 'starting';
+		if (input.summoning === true) return keepOpen ? 'open' : signedOutOpen ? 'signed-out' : 'starting';
 		if (input.signedOut === true) return 'signed-out';
 		return 'not-connected';
 	}
@@ -258,11 +264,13 @@ function wireSqlDocumentHost(channel: TypedToolChannel<SqlStateMap, SqlEventMap>
 	// snapshot never overwrites it there.
 	const offConnections = channel.onState('connections', (snapshot) => applyReplicaConnections(snapshot));
 
-	// Announce this realm's active endpoint — on change, and again whenever
-	// the document becomes visible: in VS Code each connection is its own
-	// webview panel, and switching editor tabs changes nothing INSIDE either
-	// document, so the newly fronted panel re-announces itself. (Hosts with
-	// activeDocKey override this signal; it remains the fallback.)
+	// Announce this realm's active endpoint — on change, again whenever the
+	// document becomes visible (in VS Code each connection is its own webview
+	// panel, and switching editor tabs changes nothing INSIDE either document,
+	// so the newly fronted panel re-announces itself), and to every controller
+	// that becomes ready (below). Never unconditionally at attach: with no
+	// controller nobody hears it, and a ready one gets it from its readiness.
+	// (Hosts with activeDocKey override this signal; it remains the fallback.)
 	let lastActive: string | null | undefined;
 	const pushActive = (): void => {
 		const key = getActiveConnection();
@@ -290,12 +298,13 @@ function wireSqlDocumentHost(channel: TypedToolChannel<SqlStateMap, SqlEventMap>
 		if (nonce === lastNonce) return;
 		lastNonce = nonce;
 		if (nonce === null) return;
+		// A realm with no active connection has nothing to say to a new
+		// controller (a null would clear the highlight another realm set).
+		const key = getActiveConnection();
+		if (key === null) return;
 		lastActive = undefined;
 		pushActive();
 	});
-	// The first announcement. A readiness already retained replayed above and
-	// announced once, so this is then a no-op.
-	pushActive();
 
 	return () => {
 		offConnections();

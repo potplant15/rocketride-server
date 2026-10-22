@@ -707,8 +707,10 @@ describe('a frame restored before its sidebar was opened says to open it, and ne
 		assert.match(editor, /if \(sidebarClosed\) return /);
 		// The editor follows the same order (F13): nobody signed in, then a starting sidebar, then a closed one.
 		assert.match(editor, /if \(signedOut\) return <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Waiting for sign-in"/);
-		assert.match(editor, /if \(starting && connId && !editing\) return <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Starting SQL Explorer…"/);
+		assert.match(editor, /if \(starting && \(!connId \|\| !editing\)\) return <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Starting SQL Explorer…"/);
 		assert.ok(editor.indexOf('if (signedOut)') < editor.indexOf('if (starting') && editor.indexOf('if (starting') < editor.indexOf('if (sidebarClosed)'));
+		// CE-6: the add form follows the summon states too.
+		assert.match(editor, /if \(sidebarClosed && !connId\) return <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Open the SQL Explorer sidebar to connect"/);
 		assert.match(devTool, /sidebarClosed=\{gates\.sidebarClosed\}\s*starting=\{gates\.starting\}\s*signedOut=\{gates\.signedOut\}/);
 	});
 });

@@ -490,15 +490,46 @@ describe('T6 — the sidebar mount posts nothing but retained state and opens no
 // =============================================================================
 
 describe('a frame whose controller is not mounted summons it (busPeer host.mountToolSidebar, #2625 9bd5d931f)', () => {
-	it('a SQL frame announces `active` as its document wiring attaches, and that held event summons the controller once', async () => {
+	it('a SQL frame with no controller summons it once, on purpose; it announces `active` only to a controller that is ready (once per readiness), never unconditionally at attach', async () => {
 		resetSavedConnections({ force: true });
 		const h = createDevToolHarness(SQL_APP_ID, { json: true });
-		const frame = attachSqlFrame({ peer: h.newFramePeer(), docKey: 'c-pipe', protocol: shellProtocol });
+		const timers = manualTimers();
+		const frame = attachSqlFrame({ peer: h.newFramePeer(), docKey: 'c-pipe', protocol: shellProtocol, summonSchedule: timers.schedule });
+		const actives = (): number => h.wire.filter((entry) => entry.transient && (entry.value as { name?: unknown } | null)?.name === 'active').length;
 		try {
+			await settle();
+			assert.equal(actives(), 0, 'nothing is announced at attach');
+			assert.equal(h.emitted.length, 0, 'and nothing is summoned before the settle');
+			timers.advance(SUMMON_SETTLE_MS);
 			await settle();
 			assert.deepEqual(h.emitted.filter((e) => e.op === 'host.mountToolSidebar'), [{ op: 'host.mountToolSidebar', params: { appId: SQL_APP_ID } }]);
 		} finally {
 			frame.dispose();
+		}
+	});
+
+	it('a frame attached while its controller is up announces `active` exactly once (CE-5), and a landing realm never re-announces a null key on a new readiness (CE-4)', async () => {
+		resetSavedConnections({ force: true });
+		setActiveConnection('p1:s1:db_1');
+		const r = await rig({ docKey: 'c-pipe' });
+		const announced = (from: number, key: string | null): number => r.h.wire.slice(from).filter((entry) => {
+			const value = entry.value as { name?: unknown; payload?: unknown } | null;
+			return entry.transient && value?.name === 'active' && value.payload === key;
+		}).length;
+		try {
+			await settle();
+			assert.equal(announced(0, 'p1:s1:db_1'), 1, 'the realm wiring, made while the controller is up, announces once');
+			setActiveConnection(null);
+			await settle();
+			const before = r.h.wire.length;
+			r.mount.dispose();
+			r.remount();
+			r.engine.realm.login(USER);
+			await settle();
+			assert.equal(announced(before, null), 0, 'a realm with no active connection says nothing to a new controller');
+		} finally {
+			r.dispose();
+			setActiveConnection(null);
 		}
 	});
 
@@ -545,6 +576,11 @@ describe('a frame whose controller is not mounted summons it (busPeer host.mount
 		assert.equal(connectionDocState({ ...base, sidebarClosed: true }), 'no-sidebar', 'then one that never answered');
 		assert.equal(connectionDocState({ ...base, signedOut: true }), 'signed-out', 'then nobody signed in');
 		assert.equal(connectionDocState(base), 'not-connected');
+		// CE-3: nobody signed in wins over keeping an open document through a summon gap.
+		assert.equal(connectionDocState({ ...base, opened: true, summoning: true, signedOut: true }), 'signed-out');
+		assert.equal(connectionDocState({ ...base, opened: true, sidebarClosed: true, signedOut: true }), 'signed-out');
+		assert.equal(connectionDocState({ ...base, opened: true, summoning: true }), 'open', 'signed in, it stays open');
+		assert.equal(frameGates({ host: true, controllerReady: false, summon: 'summoning', signIn: 'nobody' }).signedOut, true, 'from the retained identity alone');
 		const devTool = source('SqlDevTool.tsx');
 		assert.match(devTool, /const gates = frameGates\(\{ host: hostConnection, controllerReady, summon, signIn \}\);/);
 		const up = { host: true, controllerReady: true, summon: 'ready' } as const;
