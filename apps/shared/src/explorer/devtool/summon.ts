@@ -42,9 +42,13 @@
 //     nothing.
 //   - Sent only after SUMMON_SETTLE_MS without a nonce, so a frame whose
 //     controller is already up (its retained readiness replays on subscribe)
-//     sends nothing. Re-sent at SUMMON_RETRY_MS while no nonce arrives:
-//     rocket-ui arms a tool's sidebar peer only once its pinned-tool list is
-//     known, and a live signal sent before that is lost.
+//     sends nothing. Re-sent at SUMMON_RETRY_MS while no nonce arrives. That
+//     helps one case only: rocket-ui arms a tool's sidebar peer once its
+//     pinned-tool list is known, and a live signal sent before that is lost.
+//     It does not help a peer that is armed but whose host has no handler for
+//     `host.mountToolSidebar` (rocket-ui's collapsed sidebar unmounts the
+//     chrome that handles it): busPeer then latches its once-per-hold summon
+//     until a controller subscribes, and the re-sends are only held.
 //   - Not sent while the host says it is disconnected: no controller can mount
 //     then (the hosts render a "Connect …" status in its place).
 //   - A GRACE: `state()` is 'summoning' until SUMMON_GRACE_MS have passed in
@@ -79,8 +83,10 @@ export const SUMMON_GRACE_MS = 5_000;
 /**
  * Where the summon stands:
  *
- *   ready        the controller published a readiness nonce;
- *   summoning    no nonce yet, still inside the grace (or the host is disconnected);
+ *   ready        a readiness nonce is held (it can outlive a host disconnect;
+ *                callers check the host connection first);
+ *   summoning    no nonce, still inside the grace, or no nonce while the host
+ *                is disconnected (the grace waits for the host);
  *   unanswered   the grace passed without a nonce: say to open the sidebar.
  */
 export type SummonState = 'ready' | 'summoning' | 'unanswered';
