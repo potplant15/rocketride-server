@@ -238,6 +238,25 @@ describe('T12 - the full app (app:) runs on the LOCAL env', () => {
 		assert.match(app, /historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE/);
 	});
 
+	it('names a connection the way #2625 does: listTasks\'s status name, else the source component\'s name; keys unchanged', async () => {
+		// A pipeline started with use(name='Shop Graph') and no pipeline name: getTasks names it by its source id.
+		const started = graphRow({ name: 'tools_1', pipeline: { project_id: 'proj-1', components: [{ id: 'tools_1', provider: 'tools', name: 'Tools' }, ...(graphRow().pipeline?.components ?? []).filter((c) => c.id !== 'tools_1')] } });
+		const discover = async (listed: Record<string, unknown>[] | null) => {
+			const world = fakeWorld([started], readOnlyNode);
+			if (listed) world.client.listTasks = async () => ({ rows: listed, total: listed.length, page: 1, pageSize: 100 });
+			const stores = { endpoints: makeGraphEndpointStore({ debounceMs: 0 }), schemas: createSchemaStore(), dataVersions: createDataVersions(), history: makeGraphHistory(0), previews: createPreviewStore() };
+			const env = createLocalGraphEnv({ mount: 'app', ready: true, client: world.client, stores, activeConnection: { get: () => null, subscribe: () => () => undefined }, openDocument: () => undefined, prefs: memoryPrefs(), historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE });
+			await env.refresh();
+			return env.endpoints.get().endpoints.map((e) => [e.key, e.pipelineName]);
+		};
+		const named = await discover([{ id: 't1', name: 'Shop Graph.Tools', projectId: 'proj-1', source: 'tools_1', runKind: 'dev', completed: false, state: 3 }]);
+		const fallback = await discover(null);
+		assert.ok(named.length > 0);
+		assert.deepEqual(named.map(([, name]) => name), named.map(() => 'Shop Graph.Tools'));
+		assert.deepEqual(fallback.map(([, name]) => name), fallback.map(() => 'Tools'));
+		assert.deepEqual(named.map(([key]) => key), fallback.map(([key]) => key), 'names only');
+	});
+
 	it('the LOCAL env does what the full app did: discovery, a counted write, history, previews taken once, documents', async () => {
 		const world = fakeWorld([graphRow()], readOnlyNode);
 		const stores = { endpoints: makeGraphEndpointStore({ debounceMs: 0 }), schemas: createSchemaStore(), dataVersions: createDataVersions(), history: makeGraphHistory(0), previews: createPreviewStore() };

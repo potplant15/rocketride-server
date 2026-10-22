@@ -101,6 +101,9 @@ function withEngine(base: object, world: IFakeWorld): IEngineRealm {
 		switch (op) {
 			case 'client.getTasks':
 				return world.client.getTasks();
+			case 'client.listTasks':
+				// An engine's task list: what the world's client lists, or an empty page.
+				return world.client.listTasks ? world.client.listTasks(p) : { rows: [], total: 0, page: 1, pageSize: 100 };
 			case 'client.getTaskPipeline':
 				return world.client.getTaskPipeline(p.token as string);
 			case 'client.tool':
