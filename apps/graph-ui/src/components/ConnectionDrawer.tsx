@@ -34,12 +34,12 @@
 // anchored to the document), without "Open workbench" inside the workbench.
 // =============================================================================
 
-import React, { useEffect, useRef, useState } from 'react';
-import { Banner, Button, DetailPanel, LabelValue, Section, StatusBadge } from 'shell';
+import React, { useEffect, useRef } from 'react';
+import { Button, DetailPanel } from 'shell';
 import type { IExplorerEndpoint, IProbeResult } from 'shared/explorer';
-import { connectionView, testResultText } from '../graph/connections';
-import type { ITestResult } from '../graph/connections';
+import { connectionView } from '../graph/connections';
 import { GraphIcon } from '../icons';
+import { ConnectionDetailsBody, useConnectionTest } from './ConnectionDetails';
 
 /** Props. */
 export interface IConnectionDrawerProps {
@@ -64,20 +64,9 @@ export interface IConnectionDrawerProps {
  * @returns The drawer, or nothing while closed.
  */
 export const ConnectionDrawer: React.FC<IConnectionDrawerProps> = ({ open, endpoint, probe, onTest, onOpen, onClose, contained = false, testOnOpen = false }) => {
-	const [testing, setTesting] = useState(false);
 	// The host keys this drawer on the card it shows, so a result never carries over to another connection.
-	const [tested, setTested] = useState<ITestResult | null>(null);
+	const { testing, tested, test } = useConnectionTest(onTest);
 	const autoTested = useRef(false);
-
-	const test = async (target: IExplorerEndpoint): Promise<void> => {
-		setTesting(true);
-		try {
-			const result = await onTest(target);
-			setTested(testResultText(result));
-		} finally {
-			setTesting(false);
-		}
-	};
 
 	// Opened by "Test connection": test at once, once per drawer (a document mounts a fresh one for every opening; the
 	// ref keeps StrictMode's second effect run from sending a second probe).
@@ -112,31 +101,7 @@ export const ConnectionDrawer: React.FC<IConnectionDrawerProps> = ({ open, endpo
 				</>
 			}
 		>
-			<Section label="Status">
-				<StatusBadge variant={view.badge.variant}>{view.badge.label}</StatusBadge>
-				{view.blocked && (
-					<div style={{ marginTop: 12 }}>
-						<Banner variant={endpoint.state === 'ready' ? 'warning' : 'info'}>{view.blocked}</Banner>
-					</div>
-				)}
-				{tested && <div style={{ marginTop: 12 }}><Banner variant={tested.variant}>{tested.text}</Banner></div>}
-			</Section>
-			<Section label="Connection">
-				{view.details.map((row) => (
-					<LabelValue key={row.label} label={row.label}>
-						{row.value}
-					</LabelValue>
-				))}
-			</Section>
-			{view.notes.length > 0 && (
-				<Section label="What to know">
-					{view.notes.map((note) => (
-						<div key={note} style={{ fontSize: 12.5, color: 'var(--rr-text-secondary)', lineHeight: 1.5, marginBottom: 8 }}>
-							{note}
-						</div>
-					))}
-				</Section>
-			)}
+			<ConnectionDetailsBody endpoint={endpoint} probe={probe} tested={tested} />
 		</DetailPanel>
 	);
 };

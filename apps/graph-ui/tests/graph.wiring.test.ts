@@ -210,8 +210,24 @@ test('closing a group goes through the shell\'s dirty-close policy (requestClose
 test('the connection drawer starts fresh for every card, and words its Test result through testResultText', () => {
 	const view = code(read('views', 'ConnectionsView.tsx'));
 	assert.ok(/<ConnectionDrawer\s+key=\{drawerKey \?\? ''\}/.test(view), 'the drawer is keyed on the card it shows');
+	// The Test step is shared by the drawer and the dev-tool documents' inline panel (components/ConnectionDetails.tsx).
+	const details = code(read('components', 'ConnectionDetails.tsx'));
+	assert.ok(/setTested\(testResultText\(result\)\)/.test(details), 'a missing result is not read as a failed probe');
+	assert.ok(/useConnectionTest\(onTest\)/.test(code(read('components', 'ConnectionDrawer.tsx'))), 'the drawer tests through it');
+});
+
+// One body and one Test step for both places that show a connection's details: the full app's drawer (a DetailPanel
+// over the window) and a dev-tool document's inline panel.
+test('the connection details (Status, Connection, What to know, the Test result) are one component the drawer renders', () => {
+	const details = code(read('components', 'ConnectionDetails.tsx'));
+	assert.ok(/export function useConnectionTest\(/.test(details));
+	assert.ok(/export const ConnectionDetailsBody: React\.FC<IConnectionDetailsBodyProps>/.test(details));
+	for (const label of ['Status', 'Connection', 'What to know']) assert.ok(details.includes(`<Section label="${label}">`), label);
+	assert.ok(/\{tested && <div style=\{styles\.notice\}><Banner variant=\{tested\.variant\}>\{tested\.text\}<\/Banner><\/div>\}/.test(details), 'the Test result in the Status section');
+	assert.doesNotMatch(details, /DetailPanel|addEventListener|style=\{\{/, 'a body only: no overlay, no listener, styles in `styles`');
 	const drawer = code(read('components', 'ConnectionDrawer.tsx'));
-	assert.ok(/setTested\(testResultText\(result\)\)/.test(drawer), 'a missing result is not read as a failed probe');
+	assert.ok(/<ConnectionDetailsBody endpoint=\{endpoint\} probe=\{probe\} tested=\{tested\} \/>/.test(drawer));
+	assert.doesNotMatch(drawer, /<Section /, 'the drawer renders no section of its own');
 });
 
 // A store reset (sign-out, change of identity) left the drawer open on its key, so it could reopen by itself with the
