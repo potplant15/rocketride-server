@@ -558,9 +558,11 @@ hold period. `createControllerSummon({ channel })` uses that on purpose.
 
 - **What it sends.** A frame whose controller has published no readiness nonce
   sends one `devtool:summon` event once `SUMMON_SETTLE_MS` have passed. It
-  re-sends at `SUMMON_RETRY_MS` while no nonce arrives (rocket-ui arms a tool's
-  sidebar peer late), and sends nothing while the host says it is
-  disconnected.
+  re-sends at `SUMMON_RETRY_MS` while no nonce arrives, and sends nothing
+  while the host says it is disconnected. The re-sends help only a sidebar
+  peer that rocket-ui arms late. A peer whose host has no mount handler (a
+  collapsed rocket-ui sidebar) latches busPeer's one summon per hold, and the
+  re-sends are only held; the frame then says to open the sidebar.
 - **It is an event, never a call.** On the summon-driven mount, a call held in
   the peer is delivered into the host channel and dropped. No controller
   listens for the event, so its replays do nothing.
