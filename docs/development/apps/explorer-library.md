@@ -605,10 +605,12 @@ prefs.
 On #2625 `9bd5d931f` this freezes the page:
 1. The host hands a stored blob out by reference.
 2. Tabulator's sort module rewrites the sorter list it reads in place, putting
-   its live column object where the field name was.
-3. The web host's bridge merges each later write over the prefs it saw at its
-   last render. So a write in the same pass puts the rewritten list back into
-   the prefs.
+   its live column object where the field name was. That list is the workspace
+   store's own object, so the column is now in the prefs.
+3. Only a later sort write would replace it, and the web host's bridge merges
+   each write over the prefs it saw at its last render. So a write of another
+   blob in the same pass keeps the rewritten list, and can even undo a sort
+   write.
 4. The next workspace save never finishes: the SDK's message redaction walk
    does not end on a Tabulator column.
 

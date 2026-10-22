@@ -30,11 +30,13 @@
 // from the active app's workspace prefs. The host answers a read with the
 // stored blob BY REFERENCE, and Tabulator's sort module rewrites a persisted
 // sorter list in place, swapping each field name for its live column object
-// (its table, DOM elements, functions). The web host's bridge then merges each
-// later write over the prefs it saw at its last render, so a write in the same
-// pass (a columns save after the layout) puts that rewritten list back into
-// the prefs. On #2625 9bd5d931f the next workspace save sends it through the
-// SDK's message redaction walk, which never finishes on it: the page freezes.
+// (its table, DOM elements, functions). That list is the workspace store's own
+// object, so the column now sits in the prefs until a sort write replaces it,
+// and the web host's bridge merges each write over the prefs it saw at its
+// last render, so a write of another blob in the same pass (a columns save
+// after the layout) keeps the rewritten list, and can even undo a sort write.
+// On #2625 9bd5d931f the next workspace save sends the prefs through the SDK's
+// message redaction walk, which never finishes on a column: the page freezes.
 // A remount reads the blob again, so a page switch, a re-run or a reload is
 // enough once a sort is stored.
 //
