@@ -34,10 +34,11 @@
 // webview is not lost. A request waits while this connection has not answered its
 // check yet, instead of being dropped.
 //
-// As a dev tool there is no Connections landing: the connection drawer (what the
-// node reports, Test connection) opens inside this document, from a Details header
-// action and from Test connection where the connection cannot be browsed. The full
-// app keeps its landing, so its workbench is unchanged.
+// As a dev tool there is no Connections landing: the connection details (what the
+// node reports, Test connection) show inline in this document, under its header
+// (ConnectionDetailsPanel, never a drawer), toggled by a Details header action and
+// opened, with a test, by Test connection where the connection cannot be browsed.
+// The full app keeps its landing, so its workbench is unchanged.
 // =============================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -46,13 +47,14 @@ import type { IExplorerEndpoint } from 'shared/explorer';
 import { announcer } from '../adapters/explorer';
 import { typePreview, labelPreview, isRefusal } from '../cypher/recipes';
 import { useGraphEndpoints, useGraphEnv, usePendingPreview } from '../env';
-import { connectionView, surfaceGate } from '../graph/connections';
+import { DETAILS_CLOSED, connectionView, detailsPanelAfter, surfaceGate } from '../graph/connections';
+import type { DetailsPanelAction, IDetailsPanelState } from '../graph/connections';
 import { canWrite, engineText, parseDialect, targetText } from '../graph/dialect';
 import { previewFor } from '../graph/previews';
 import { GraphIcon } from '../icons';
 import { styles } from '../styles';
 import AskBar from '../components/AskBar';
-import ConnectionDrawer from '../components/ConnectionDrawer';
+import ConnectionDetailsPanel from '../components/ConnectionDetailsPanel';
 import HistoryPanel from '../components/HistoryPanel';
 import RunSurface from '../components/RunSurface';
 import { createLoadSlot } from '../graph/loadSlot';
@@ -84,9 +86,10 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const gate = surfaceGate(view, opened.current);
 
 	const [historyOpen, setHistoryOpen] = useState(false);
-	// A dev-tool frame opens the connection drawer here (null: closed; 'test': opened by Test connection, which tests).
+	// A dev-tool frame shows the connection details inline here (see detailsPanelAfter).
 	const inFrame = env.mount === 'frame';
-	const [drawer, setDrawer] = useState<'details' | 'test' | null>(null);
+	const [details, setDetails] = useState<IDetailsPanelState>(DETAILS_CLOSED);
+	const panel = (action: DetailsPanelAction): void => setDetails((current) => detailsPanelAfter(current, action));
 	// One slot for the life of the document: the surface takes each request once (see loadSlot.ts).
 	const [slot] = useState(createLoadSlot);
 	const [loadSeq, setLoadSeq] = useState(0);
@@ -142,7 +145,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 					inFrame || writable ? (
 						<>
 							{inFrame && (
-								<Button variant="ghost" onClick={() => setDrawer('details')} title="What the node reports about itself, and Test connection.">
+								<Button variant="ghost" onClick={() => panel('toggle')} ariaExpanded={details.open} title="What the node reports about itself, and Test connection.">
 									Details
 								</Button>
 							)}
@@ -155,6 +158,16 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 					) : undefined
 				}
 			/>
+			{inFrame && details.open && (
+				<ConnectionDetailsPanel
+					key={endpoint.key}
+					endpoint={endpoint}
+					probe={probe}
+					testRequest={details.testRequest}
+					onTest={(target) => (env.ready ? env.probe(target.key) : Promise.resolve(null))}
+					onClose={() => panel('close')}
+				/>
+			)}
 			{gate.mounted ? (
 				<div style={{ flex: 1, minHeight: 0 }}>
 					<RunSurface
@@ -174,7 +187,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 					description={view.blocked ?? 'The connection has not answered yet.'}
 					action={
 						inFrame ? (
-							<Button variant="primary" onClick={() => setDrawer('test')}>
+							<Button variant="primary" onClick={() => panel('test')}>
 								Test connection
 							</Button>
 						) : (
@@ -200,18 +213,6 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 				}}
 				announce={(text) => announcer.announce(text)}
 			/>
-			{inFrame && drawer !== null && (
-				<ConnectionDrawer
-					key={endpoint.key}
-					contained
-					open
-					endpoint={endpoint}
-					probe={probe}
-					testOnOpen={drawer === 'test'}
-					onTest={(target) => (env.ready ? env.probe(target.key) : Promise.resolve(null))}
-					onClose={() => setDrawer(null)}
-				/>
-			)}
 		</div>
 	);
 };

@@ -310,6 +310,47 @@ export function drawerKeyAfter(drawerKey: string | null, endpoints: readonly IEx
 }
 
 // =============================================================================
+// THE INLINE DETAILS PANEL OF A DEV-TOOL CONNECTION DOCUMENT
+// =============================================================================
+//
+// As a dev tool a connection document shows the details in its own layout (no
+// drawer: rocket-ui keeps hidden documents mounted, and a modal drawer left
+// open there would hold the keyboard and the page scroll for the whole realm).
+// Details toggles them. Test connection opens them and asks for a test, again
+// each time it is pressed while they are open. A panel opened by Details tests
+// nothing by itself, and closing forgets the requests.
+
+/** Whether a document's details panel is open, and the last Test connection request (0: none). */
+export interface IDetailsPanelState {
+	open: boolean;
+	testRequest: number;
+}
+
+/** What a document does to its details panel. */
+export type DetailsPanelAction = 'toggle' | 'test' | 'close';
+
+/** A closed panel with no request. */
+export const DETAILS_CLOSED: IDetailsPanelState = { open: false, testRequest: 0 };
+
+/**
+ * The details panel after an action.
+ *
+ * @param state - The panel now.
+ * @param action - Details (toggle), Test connection (test), or close.
+ * @returns The panel after it.
+ */
+export function detailsPanelAfter(state: IDetailsPanelState, action: DetailsPanelAction): IDetailsPanelState {
+	switch (action) {
+		case 'toggle':
+			return state.open ? DETAILS_CLOSED : { open: true, testRequest: 0 };
+		case 'test':
+			return { open: true, testRequest: (state.open ? state.testRequest : 0) + 1 };
+		default:
+			return DETAILS_CLOSED;
+	}
+}
+
+// =============================================================================
 // AN OPEN DOCUMENT WHOSE CONNECTION IS CHECKED AGAIN
 // =============================================================================
 //

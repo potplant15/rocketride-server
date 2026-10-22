@@ -88,9 +88,14 @@ live here.
 - As a dev tool there is no Connections landing: the generic frame is one
   EmptyState, the sidebar lists the connections (`GraphSidebar` under
   `devtool`; wording in `graph/connections.ts`: `connectionRow`,
-  `rowStatusText`, `sidebarListLine`), and the connection drawer opens inside a
-  connection's document (`ConnectionDrawer contained`). The full app keeps
-  `ConnectionsView` as its `CONNECTIONS_URI` document and its menu entry.
+  `rowStatusText`, `sidebarListLine`), and a connection's document shows the
+  connection details inline under its header (`ConnectionDetailsPanel`, state
+  in `detailsPanelAfter`). Not a drawer: rocket-ui keeps hidden documents
+  mounted, and a modal `DetailPanel` left open in one would trap Tab, lock the
+  page scroll and take Escape for the whole realm; the panel has no overlay and
+  no document or window listener. The full app keeps `ConnectionsView` as its
+  `CONNECTIONS_URI` document, its menu entry and its `ConnectionDrawer`; both
+  render `ConnectionDetailsBody` and test through `useConnectionTest`.
 - Retained state: the base guard keeps each snapshot under 64 KiB and the
   whole republished map under 128 KiB. The controller's `shrink` hook degrades
   `endpoints`, `schemas` and `dataVersions` through the protocol's own cuts

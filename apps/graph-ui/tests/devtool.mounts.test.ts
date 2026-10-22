@@ -410,6 +410,13 @@ describe('what a frame says when it cannot reach the controller', () => {
 		assert.match(missingConnectionText('ready', 1).description, /too many connections/);
 	});
 
+	it('CE-1: no module a frame loads opens the connection details as a drawer; they are an inline panel there', () => {
+		const files = reachable('GraphDevToolFrame.tsx');
+		assert.ok(files.includes('components/ConnectionDetailsPanel.tsx') && files.includes('components/ConnectionDetails.tsx'), 'the premise: the frame reaches the inline panel');
+		assert.ok(!files.includes('components/ConnectionDrawer.tsx'), 'the drawer is the full app\'s');
+		for (const file of files) assert.doesNotMatch(code(read(file)), /\bcontained\b/, `${file} anchors an overlay to a document`);
+	});
+
 	it('a frame document offers no "Open Connections" button: in a dev tool the sidebar is the list', () => {
 		const frame = code(read('GraphDevToolFrame.tsx'));
 		assert.doesNotMatch(frame, /Open Connections|kind: 'connections'|<Button/);

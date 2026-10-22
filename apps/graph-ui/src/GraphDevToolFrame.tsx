@@ -53,8 +53,7 @@ import WorkbenchView from './views/WorkbenchView';
 import WriteConsoleView from './views/WriteConsoleView';
 
 const styles = {
-	// Positioned and clipped: a connection document's drawer (DetailPanel `contained`) anchors to it.
-	root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden', position: 'relative' } as CSSProperties,
+	root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden' } as CSSProperties,
 	center: { display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center' } as CSSProperties,
 	notice: { padding: '8px 24px 0' } as CSSProperties,
 };

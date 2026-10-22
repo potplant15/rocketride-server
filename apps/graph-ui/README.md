@@ -272,9 +272,10 @@ it cannot be browsed. Click a row, or press Enter or Space on it, to open its
 workbench. **Refresh** is on the Connections header, and a line under the rows
 says when discovery is running, found nothing, or failed. What a card's drawer
 shows in the full app (engine, version, target, writes, **Test connection**)
-opens inside the connection's own document instead: **Details** on the
-workbench header, or **Test connection** where a connection cannot be browsed
-or its write console is not available. The tool's own page, with no document, only says to
+shows inside the connection's own document instead, under its header:
+**Details** on the workbench header shows or hides it, and **Test connection**
+where a connection cannot be browsed or its write console is not available
+shows it and tests. Close it with its close button, or Escape inside it. The tool's own page, with no document, only says to
 open a connection from the sidebar. Everything that reaches the engine goes
 through the sidebar, which holds the tool's one connection; the documents hold
 none.
