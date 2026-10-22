@@ -24,6 +24,7 @@ import { historyPrefsPath } from 'shared/explorer/devtool/prefs';
 import { PREVIEW_MAX_AGE_MS, previewFor } from '../src/graph/previews';
 import { account, graphRow, mountController, mountFrame, readOnlyNode, rocketRealm, settle, signInVsCode, until, vscodeRealm } from './support/devtool';
 import { createDevToolHarness } from 'shared/explorer/devtool/testing';
+import { SUMMON_EVENT, SUMMON_GRACE_MS, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 
 const APP = 'rocketride.graph';
 
@@ -506,7 +507,7 @@ describe('T8 - host:connection false: frames stop running and drop what they wai
 		await assert.rejects(running, (error: unknown) => error instanceof ExplorerToolError && error.kind === 'timeout' && /may still have run/.test(error.message));
 		await settle();
 		assert.equal(frame.connected.get(), false);
-		const env = frame.env(frame.connected.get());
+		const env = frame.env(frame.connected.get() === true);
 		assert.equal(env.ready, false, 'run and apply are disabled');
 		assert.equal(env.session(endpoint), null, 'and there is no session to send through');
 		assert.equal(frame.lastReset(), 'disconnected', 'the frame cleared its caches');
@@ -710,21 +711,145 @@ describe('owedHistory: parking, adoption and the time limit', () => {
 });
 
 describe('a frame whose controller is not mounted summons it (busPeer host.mountToolSidebar, #2625 9bd5d931f)', () => {
-	it('a graph frame posts nothing at mount, so it summons nothing; its `active` on a window focus summons the controller, once per hold', async () => {
-		const h = createDevToolHarness(APP, { json: true });
+	/**
+	 * A focus source the test fires by hand.
+	 *
+	 * @returns The target to inject and its trigger.
+	 */
+	const focusable = () => {
 		const listeners = new Set<() => void>();
-		const focusTarget = {
-			addEventListener: (_type: string, listener: () => void) => { listeners.add(listener); },
-			removeEventListener: (_type: string, listener: () => void) => { listeners.delete(listener); },
+		return {
+			target: {
+				addEventListener: (_type: string, listener: () => void) => { listeners.add(listener); },
+				removeEventListener: (_type: string, listener: () => void) => { listeners.delete(listener); },
+			},
+			fire: () => { for (const listener of [...listeners]) listener(); },
 		};
-		const { frame } = mountFrame(h, 'workbench:k1|a', { focusTarget });
-		const summons = (): unknown[] => h.emitted.filter((e) => e.op === 'host.mountToolSidebar');
+	};
+	const summonsOf = (h: ReturnType<typeof createDevToolHarness>): unknown[] => h.emitted.filter((e) => e.op === 'host.mountToolSidebar');
+	/** The frame events a harness carried as signals, by name. */
+	const signalled = (h: ReturnType<typeof createDevToolHarness>, name: string): number => h.wire.filter((e) => e.transient && e.topic === `tool:${APP}:toSidebar` && (e.value as { name?: unknown } | null)?.name === name).length;
+	/** The event busPeer holds in its single retained frame-to-sidebar slot (what a mounting controller is replayed). */
+	const retainedSlot = (h: ReturnType<typeof createDevToolHarness>): unknown => {
+		const writes = h.wire.filter((e) => !e.transient && e.topic === `tool:${APP}:lastToSidebar`);
+		return writes.length > 0 ? (writes[writes.length - 1].value as { name?: unknown } | null)?.name : undefined;
+	};
+
+	it('a graph frame summons nothing inside the settle window; its `active` on a window focus summons the controller too, once per hold', async () => {
+		const h = createDevToolHarness(APP, { json: true });
+		const focus = focusable();
+		const { frame } = mountFrame(h, 'workbench:k1|a', { focusTarget: focus.target });
 		await settle();
-		assert.deepEqual(summons(), [], 'nothing at mount');
-		for (const listener of [...listeners]) listener();
-		for (const listener of [...listeners]) listener();
+		assert.deepEqual(summonsOf(h), [], 'nothing before the summon\'s settle');
+		focus.fire();
+		focus.fire();
 		await settle();
-		assert.deepEqual(summons(), [{ op: 'host.mountToolSidebar', params: { appId: APP } }], 'two focuses, one summon');
+		assert.deepEqual(summonsOf(h), [{ op: 'host.mountToolSidebar', params: { appId: APP } }], 'two focuses, one summon');
 		frame.dispose();
+	});
+
+	it('F11: a graph frame with no controller summons it on purpose at mount: ONE reserved, non-op event after the settle; "unanswered" only after the grace; nothing once disposed', async () => {
+		const h = createDevToolHarness(APP, { json: true });
+		h.setHostConnection(true);
+		const { frame, timers } = mountFrame(h, 'workbench:k1|a');
+		await settle();
+		assert.equal(frame.summon.get(), 'summoning');
+		assert.equal(signalled(h, SUMMON_EVENT), 0, 'nothing inside the settle window');
+		timers.advance(SUMMON_SETTLE_MS);
+		await settle();
+		assert.equal(signalled(h, SUMMON_EVENT), 1, 'the summon event, not a call and not an op name');
+		assert.equal(signalled(h, 'active'), 0, 'not as a side effect of `active`');
+		assert.deepEqual(summonsOf(h), [{ op: 'host.mountToolSidebar', params: { appId: APP } }]);
+		assert.equal(frame.summon.get(), 'summoning', 'quiet until the grace is over');
+		timers.advance(SUMMON_GRACE_MS);
+		assert.equal(frame.summon.get(), 'unanswered');
+		frame.dispose();
+		const sent = signalled(h, SUMMON_EVENT);
+		timers.advance(60_000);
+		await settle();
+		assert.equal(signalled(h, SUMMON_EVENT), sent, 'a disposed frame summons nothing');
+		assert.equal(timers.pending(), 0, 'and leaves no timer behind');
+	});
+
+	it('F11: a frame whose controller is up summons nothing, and its summon state is ready', async () => {
+		const engine = vscodeRealm();
+		signInVsCode(engine.realm);
+		const mounted = mountController(engine.cm);
+		mounted.h.setHostConnection(true);
+		const { frame, timers } = mountFrame(mounted.h, 'workbench:k1|r');
+		await until(() => frame.summon.get() === 'ready', 'the retained readiness');
+		timers.advance(60_000);
+		await settle();
+		assert.equal(signalled(mounted.h, SUMMON_EVENT), 0);
+		assert.deepEqual(summonsOf(mounted.h), []);
+		frame.dispose();
+		mounted.controller.dispose();
+	});
+
+	it('F11: after a summon the newly ready controller hears the frame\'s `active`: the summon took busPeer\'s retained slot, and the frame re-announces once per readiness nonce', async () => {
+		const engine = vscodeRealm();
+		signInVsCode(engine.realm);
+		const absent = mountController(engine.cm);
+		absent.controller.dispose();
+		absent.h.setHostConnection(true);
+		const focus = focusable();
+		const { frame, timers } = mountFrame(absent.h, 'workbench:k1|s', { focusTarget: focus.target });
+		focus.fire();
+		await settle();
+		assert.equal(retainedSlot(absent.h), 'active', 'the premise: the frame\'s `active` sits in the retained slot');
+		timers.advance(SUMMON_SETTLE_MS);
+		await settle();
+		assert.equal(retainedSlot(absent.h), SUMMON_EVENT, 'the summon replaced it: a controller mounting now is replayed the summon, not `active`');
+		const activesBefore = signalled(absent.h, 'active');
+
+		// The host mounts the controller on the summon, as both hosts do (its channel first, then the controller).
+		const summoned = mountController(engine.cm, {}, absent.h, absent);
+		await until(() => frame.summon.get() === 'ready', 'the summoned controller\'s readiness');
+		await until(() => summoned.controller.activeConnection.get() === 'k1|s', 'the frame to announce itself to the summoned controller');
+		assert.equal(signalled(absent.h, 'active') - activesBefore, 1, 'one re-announce for the new nonce');
+		assert.deepEqual(summoned.errors, [], 'the replayed summon ran nothing');
+		assert.deepEqual(absent.h.violations, []);
+		frame.dispose();
+		summoned.controller.dispose();
+	});
+});
+
+describe('F12/F13 inputs: what the frame knows about the host connection and the account', () => {
+	it('the host connection is unknown until the host publishes it, then false or true (never false by default)', async () => {
+		const h = createDevToolHarness(APP, { json: true });
+		const { frame } = mountFrame(h, 'workbench:k1|c');
+		await settle();
+		assert.equal(frame.connected.get(), undefined, 'not published yet is not "disconnected"');
+		h.setHostConnection(false);
+		await until(() => frame.connected.get() === false, 'false');
+		h.setHostConnection(true);
+		await until(() => frame.connected.get() === true, 'true');
+		frame.dispose();
+	});
+
+	it('F12: the frame follows the sign-in: pending before the controller says anything, nobody without an account, signed-in with one', async () => {
+		const h = createDevToolHarness(APP, { json: true });
+		const { frame } = mountFrame(h, 'workbench:k1|p');
+		await settle();
+		assert.equal(frame.signIn.get(), 'pending', 'no controller has said anything about the account');
+		frame.dispose();
+
+		const nobody = vscodeRealm();
+		nobody.realm.root.connect(null);
+		const unsigned = mountController(nobody.cm);
+		unsigned.h.setHostConnection(true);
+		const left = mountFrame(unsigned.h, 'workbench:k1|n');
+		await until(() => left.frame.signIn.get() === 'nobody', 'the controller to vouch for nobody');
+		left.frame.dispose();
+		unsigned.controller.dispose();
+
+		const engine = vscodeRealm();
+		signInVsCode(engine.realm);
+		const signed = mountController(engine.cm);
+		signed.h.setHostConnection(true);
+		const right = mountFrame(signed.h, 'workbench:k1|y');
+		await until(() => right.frame.signIn.get() === 'signed-in', 'the controller to vouch for the account');
+		right.frame.dispose();
+		signed.controller.dispose();
 	});
 });

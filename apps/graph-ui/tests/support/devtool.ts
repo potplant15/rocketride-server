@@ -185,18 +185,61 @@ export function mountController(cm: IGraphRealm, over: Partial<IGraphControllerO
 	return { h, spy, hostChannel: channel, controller, docs, errors };
 }
 
+/** Timers a test runs by hand (the frame's summon): `advance(ms)` fires what falls due, in order. */
+export interface IManualTimers {
+	/** The scheduler to inject (returns a cancel). */
+	schedule(fn: () => void, ms: number): () => void;
+	/** Move time on, firing every timer that falls due. */
+	advance(ms: number): void;
+	/** How many timers are still scheduled. */
+	pending(): number;
+}
+
 /**
- * Mount a frame as a host does.
+ * Timers that fire only when the test advances them.
+ *
+ * @returns The timers.
+ */
+export function manualTimers(): IManualTimers {
+	let now = 0;
+	const due: Array<{ at: number; fn: () => void; live: boolean }> = [];
+	return {
+		schedule(fn, ms) {
+			const entry = { at: now + ms, fn, live: true };
+			due.push(entry);
+			return () => {
+				entry.live = false;
+			};
+		},
+		advance(ms) {
+			const end = now + ms;
+			for (;;) {
+				const next = due.filter((entry) => entry.live && entry.at <= end).sort((a, b) => a.at - b.at)[0];
+				if (!next) break;
+				next.live = false;
+				now = next.at;
+				next.fn();
+			}
+			now = end;
+		},
+		pending: () => due.filter((entry) => entry.live).length,
+	};
+}
+
+/**
+ * Mount a frame as a host does. Its summon runs on timers the test advances by hand (`timers`), so a frame sends no
+ * summon unless the test moves time on.
  *
  * @param h - The harness.
  * @param docKey - The frame's docKey.
  * @param over - Frame options to override.
- * @returns The frame and its documents recorder.
+ * @returns The frame, its documents recorder and its summon's timers.
  */
-export function mountFrame(h: IDevToolHarness, docKey: string | undefined, over: Partial<IGraphFrameOptions> = {}): { frame: IGraphFrame; docs: ReturnType<typeof recordingDocuments>; errors: unknown[] } {
+export function mountFrame(h: IDevToolHarness, docKey: string | undefined, over: Partial<IGraphFrameOptions> = {}): { frame: IGraphFrame; docs: ReturnType<typeof recordingDocuments>; errors: unknown[]; timers: IManualTimers } {
 	const peer = h.newFramePeer();
 	const docs = recordingDocuments();
 	const errors: unknown[] = [];
+	const timers = manualTimers();
 	const frame = createGraphFrame({
 		peer,
 		channel: shellProtocol.createToolChannel(peer),
@@ -205,10 +248,11 @@ export function mountFrame(h: IDevToolHarness, docKey: string | undefined, over:
 		createToolController: shellProtocol.createToolController,
 		createToolChannel: shellProtocol.createToolChannel,
 		focusTarget: null,
+		schedule: timers.schedule,
 		onError: (error) => errors.push(error),
 		...over,
 	});
-	return { frame, docs, errors };
+	return { frame, docs, errors, timers };
 }
 
 /**

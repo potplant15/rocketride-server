@@ -42,6 +42,14 @@
 //     for is reported with an op.
 //   - Identity (R9): the frame remembers the first fingerprint; a different one
 //     closes its document (documents.close) and clears its caches.
+//   - The summon (F11): while no controller is ready the frame asks its host to
+//     mount one, with the base's reserved non-op event (summon.ts), and says
+//     how that stands (`summon`). It re-announces `active` once per readiness
+//     nonce, so a summoned controller hears which document this is although
+//     the summon took busPeer's retained slot.
+//   - The account (F12): what the controller says about the sign-in
+//     (`signIn`), so a document can wait for one instead of claiming it is
+//     not connected.
 //   - Drafts and captions are session-only (no usePrefs on this path).
 // =============================================================================
 
@@ -50,10 +58,12 @@ import { ExplorerToolError } from 'shared/explorer';
 import type { IExplorerEndpoint, IGenerationTicket, IHistoryEntry, IInvokeOptions, IProbeResult, IToolSession } from 'shared/explorer';
 import { HOST_CONNECTION_TOPIC, createFrameCaller } from 'shared/explorer/devtool/frame';
 import type { IFrameCaller } from 'shared/explorer/devtool/frame';
-import { createFrameIdentityGuard } from 'shared/explorer/devtool/frameIdentity';
-import type { FrameResetReason, IFrameIdentityGuard } from 'shared/explorer/devtool/frameIdentity';
+import { createFrameIdentityGuard, followSignIn } from 'shared/explorer/devtool/frameIdentity';
+import type { FrameResetReason, IFrameIdentityGuard, SignInState } from 'shared/explorer/devtool/frameIdentity';
 import { CONTROLLER_STATE_TOPIC, channelFor } from 'shared/explorer/devtool/realm';
 import type { DevToolPeer } from 'shared/explorer/devtool/realm';
+import { createControllerSummon } from 'shared/explorer/devtool/summon';
+import type { SummonState } from 'shared/explorer/devtool/summon';
 import { TOOL } from '../adapters/explorer';
 import { DEVTOOL_HISTORY_PRIVACY_NOTE, memoryPrefs } from '../env';
 import type { DocTarget, IGraphEnv, IGraphHistory, IKeyed, IReadable } from '../env';
@@ -81,6 +91,8 @@ export interface IGraphFrameOptions {
 	now?: () => number;
 	/** Where focus comes from (default: the window; null: none). */
 	focusTarget?: { addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void } | null;
+	/** The summon's timers (default setTimeout; tests run their own). */
+	schedule?: (fn: () => void, ms: number) => () => void;
 	/** Told about a failure nobody awaits (a history edit, a refresh the controller refused). */
 	onError?: (error: unknown) => void;
 }
@@ -91,12 +103,16 @@ export interface IGraphFrame {
 	readonly channel: ToolChannel;
 	readonly caller: IFrameCaller<GraphOps>;
 	readonly guard: IFrameIdentityGuard;
-	/** The host's `host:connection` (false until the host published it). */
-	readonly connected: IReadable<boolean>;
+	/** The host's `host:connection`: undefined until the host published it (not yet known is not disconnected). */
+	readonly connected: IReadable<boolean | undefined>;
 	/** The controller's schema summaries (status, labels, failure), as last published. */
 	readonly schemas: IReadable<Record<string, IFrameSchema>>;
 	/** Whether a controller is up to carry this frame's calls (its readiness on the reserved topic). */
 	readonly controllerReady: IReadable<boolean>;
+	/** Where the summon of a missing controller stands: ready, summoning (the quiet grace), or unanswered. */
+	readonly summon: IReadable<SummonState>;
+	/** What the controller says about the account: pending (nothing yet), nobody, or signed in. */
+	readonly signIn: IReadable<SignInState>;
 	/** The REMOTE env (rebuild when `connected` changes). */
 	env(ready: boolean): IGraphEnv;
 	/** Why the frame last cleared its caches, or null. */
@@ -220,7 +236,7 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 	let resetWhy: FrameResetReason | null = null;
 
 	// ── Mirrors of the controller's retained state ──────────────────────────────────────────────
-	const connected = cell(false);
+	const connected = cell<boolean | undefined>(undefined);
 	const endpoints = cell<IGraphEndpointsState>(NO_ENDPOINTS);
 	const schemas = cell<Record<string, IFrameSchema>>({});
 	const versions = cell<Record<string, number>>({});
@@ -244,6 +260,14 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 		announcedTo = nonce;
 		sendActive();
 	}));
+	// F11: summon a missing controller on purpose (one reserved non-op event, never a call), and follow how that stands.
+	const summoner = createControllerSummon({ channel, ...(opts.schedule ? { schedule: opts.schedule } : {}) });
+	const summon = cell<SummonState>(summoner.state());
+	offs.push(summoner.subscribe((state) => summon.set(state)));
+	offs.push(() => summoner.dispose());
+	// F12: what the controller says about the account (told 'pending' at once).
+	const signIn = cell<SignInState>('pending');
+	offs.push(followSignIn(channel, (state) => signIn.set(state)));
 	offs.push(channel.onState(STATE.endpoints, (snapshot) => {
 		if (Array.isArray(field(snapshot, 'endpoints'))) endpoints.set({ ...NO_ENDPOINTS, ...(snapshot as IGraphEndpointsState) });
 	}));
@@ -418,6 +442,8 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 		connected,
 		schemas,
 		controllerReady,
+		summon,
+		signIn,
 		lastReset: () => resetWhy,
 		env(ready) {
 			const cached = envs.get(ready);

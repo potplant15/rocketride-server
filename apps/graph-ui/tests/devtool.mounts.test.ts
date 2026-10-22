@@ -308,7 +308,7 @@ describe('what a frame says when it cannot reach the controller', () => {
 		mounted.controller.dispose();
 		mounted.h.setHostConnection(true);
 		const { frame } = mountFrame(mounted.h, undefined);
-		await until(() => frame.connected.get(), 'the host connection reached the frame');
+		await until(() => frame.connected.get() === true, 'the host connection reached the frame');
 		const notSent = await frame.caller.callReply(OP.historyList, { key: 'k1|x' }, { timeoutMs: 30 }).then(() => null, (error: unknown) => error);
 		assert.ok(isNotSent(notSent), `the premise: the base's own failure for a call no controller took (${String((notSent as Error)?.message)})`);
 		assert.equal(frameFailureText(notSent, false), CONTROLLER_NOT_READY_TEXT);

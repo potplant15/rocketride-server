@@ -35,7 +35,7 @@
 // It holds no client (R1): every view below reads the REMOTE GraphEnv.
 // =============================================================================
 
-import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Banner, Button, EmptyState } from 'shell';
 import type { DevToolProps } from 'shell';
@@ -92,7 +92,8 @@ export const GraphDevTool: React.FC<DevToolProps> = ({ peer, channel, documents,
 
 /** The frame's env provider (rebuilt when `host:connection` flips) and its routed body. */
 const FrameRoot: React.FC<{ frame: IGraphFrame }> = ({ frame }) => {
-	const ready = useSyncExternalStore(frame.connected.subscribe, frame.connected.get, frame.connected.get);
+	// Not yet published is not ready either (the frame's cell tells the two apart for the document states).
+	const ready = useReadable(frame.connected) === true;
 	const controllerReady = useReadable(frame.controllerReady);
 	const env = useMemo(() => frame.env(ready), [frame, ready]);
 	return (
