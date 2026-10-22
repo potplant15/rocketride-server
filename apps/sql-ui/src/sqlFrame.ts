@@ -61,6 +61,8 @@ import type { IFrameCaller } from 'shared/explorer/devtool/frame';
 import { createFrameIdentityGuard } from 'shared/explorer/devtool/frameIdentity';
 import type { FrameResetReason } from 'shared/explorer/devtool/frameIdentity';
 import { channelFor, CONTROLLER_STATE_TOPIC } from 'shared/explorer/devtool/realm';
+import { createControllerSummon } from 'shared/explorer/devtool/summon';
+import type { IControllerSummon } from 'shared/explorer/devtool/summon';
 import { ExplorerToolError } from 'shared/explorer/errors';
 import type { DevToolPeer } from 'shared/explorer/devtool/realm';
 import { applyReplicaConnections, isDirectEndpointKey } from './connect';
@@ -136,7 +138,7 @@ export function directReleaseKey(endpoint: SqlEndpoint | null): string | null {
 }
 
 /** What a connection document shows. */
-export type ConnectionDocState = 'waiting' | 'not-connected' | 'no-sidebar' | 'failed' | 'not-found' | 'loading' | 'opening' | 'open';
+export type ConnectionDocState = 'waiting' | 'not-connected' | 'starting' | 'no-sidebar' | 'signed-out' | 'failed' | 'not-found' | 'loading' | 'opening' | 'open';
 
 /**
  * Decide what a connection document shows. An id the list does not hold is
@@ -146,17 +148,25 @@ export type ConnectionDocState = 'waiting' | 'not-connected' | 'no-sidebar' | 'f
  * @param input.ready - The frame may call: the engine is reachable (`host:connection`), the controller is ready and vouches for an account.
  * @param input.sidebarClosed - The engine is reachable but no controller is ready (the sidebar was never opened, or was closed): a document not yet open says to open the sidebar; an open one stays.
  * @param input.hostKnown - Whether the host has published `host:connection` yet (frames only). `false` means no snapshot has arrived, which says nothing about the server: the document waits instead of claiming it is not connected.
+ * @param input.summoning - The engine is reachable and the controller is being summoned (inside the summon's grace): a document not yet open says it is starting; an open one stays.
+ * @param input.signedOut - The engine is reachable and the controller is up, but it vouches for no one: "waiting for sign-in", not "not connected".
  * @param input.listStatus - The saved-connection list's status.
  * @param input.found - The list holds the document's connection id.
  * @param input.failed - Opening it failed.
  * @param input.opened - It resolved to an endpoint.
  * @returns The state.
  */
-export function connectionDocState(input: { ready: boolean; sidebarClosed?: boolean; hostKnown?: boolean; listStatus: SavedConnectionsStatus; found: boolean; failed: boolean; opened: boolean }): ConnectionDocState {
-	// An open document stays open (run and apply are disabled); one that has
-	// not opened says to open the sidebar instead of waiting.
+export function connectionDocState(input: { ready: boolean; sidebarClosed?: boolean; hostKnown?: boolean; summoning?: boolean; signedOut?: boolean; listStatus: SavedConnectionsStatus; found: boolean; failed: boolean; opened: boolean }): ConnectionDocState {
+	// An open document stays open (run and apply are disabled) while its
+	// controller is being summoned or never answered; one that has not opened
+	// says it is starting, then (after the summon's grace) to open the sidebar.
 	if (input.sidebarClosed === true) return input.opened && !input.failed ? 'open' : 'no-sidebar';
-	if (!input.ready) return input.hostKnown === false ? 'waiting' : 'not-connected';
+	if (!input.ready) {
+		if (input.hostKnown === false) return 'waiting';
+		if (input.summoning === true) return input.opened && !input.failed ? 'open' : 'starting';
+		if (input.signedOut === true) return 'signed-out';
+		return 'not-connected';
+	}
 	if (input.failed) return 'failed';
 	if (!input.found) return input.listStatus === 'ready' ? 'not-found' : 'loading';
 	return input.opened ? 'open' : 'opening';
@@ -182,7 +192,7 @@ let documentHosts = 0;
  */
 export function attachSqlDocumentHost(channel: ToolChannel): () => void {
 	documentHosts++;
-	if (documentHosts === 1) documentHostDetach = wireSqlDocumentHost(sqlChannel(channel));
+	if (documentHosts === 1) documentHostDetach = wireSqlDocumentHost(sqlChannel(channel), channel);
 	let detached = false;
 	return () => {
 		if (detached) return;
@@ -201,7 +211,7 @@ export function attachSqlDocumentHost(channel: ToolChannel): () => void {
  * @param channel - The typed channel.
  * @returns Teardown.
  */
-function wireSqlDocumentHost(channel: TypedToolChannel<SqlStateMap, SqlEventMap>): () => void {
+function wireSqlDocumentHost(channel: TypedToolChannel<SqlStateMap, SqlEventMap>, raw: ToolChannel): () => void {
 	// The controller's list, applied as a READ-ONLY replica (no writer, so a
 	// mutation attempted in this realm is refused by the store). A list the
 	// controller has not read (no identity, still loading) is shown as loading.
@@ -231,9 +241,25 @@ function wireSqlDocumentHost(channel: TypedToolChannel<SqlStateMap, SqlEventMap>
 	};
 	doc?.addEventListener('visibilitychange', onVisible);
 
+	// ...and again to every controller that becomes ready: a frame's summon
+	// event takes the peer's single retained slot, and the channel a host
+	// builds for a summon-driven mount takes the held burst, so a controller
+	// may never have heard the last announcement.
+	let lastNonce: string | null = null;
+	const offReady = raw.onState(CONTROLLER_STATE_TOPIC, (snapshot: unknown) => {
+		const value = snapshot !== null && typeof snapshot === 'object' ? (snapshot as { ready?: unknown }).ready : undefined;
+		const nonce = typeof value === 'string' && value !== '' ? value : null;
+		if (nonce === lastNonce) return;
+		lastNonce = nonce;
+		if (nonce === null) return;
+		lastActive = undefined;
+		pushActive();
+	});
+
 	return () => {
 		offConnections();
 		offActive();
+		offReady();
 		doc?.removeEventListener('visibilitychange', onVisible);
 	};
 }
@@ -338,6 +364,8 @@ export interface SqlFrameOptions {
 	 * snapshots are cleared before it is called.
 	 */
 	onReset?: (reason: FrameResetReason) => void;
+	/** The summon's scheduler (tests; default setTimeout). */
+	summonSchedule?: (fn: () => void, ms: number) => () => void;
 	/** The clock deadlines are stamped from (tests). */
 	now?: () => number;
 }
@@ -350,6 +378,8 @@ export interface SqlFrameMount {
 	readonly caller: IFrameCaller<SqlOps>;
 	/** The identity fingerprint this frame belongs to (the first it saw), or null before one arrived. */
 	owner(): string | null;
+	/** Summons the controller while it is not ready (shared/explorer/devtool/summon). */
+	readonly summon: IControllerSummon;
 	/** Detach (the effect's cleanup): pending calls are dropped as stale. */
 	dispose(): void;
 }
@@ -384,14 +414,19 @@ export function attachSqlFrame(opts: SqlFrameOptions): SqlFrameMount {
 			opts.onReset?.(reason);
 		},
 	});
+	// While no controller is ready, ask the host to mount one (an event, never
+	// a call; quiet until its grace runs out).
+	const summon = createControllerSummon({ channel, ...(opts.summonSchedule ? { schedule: opts.summonSchedule } : {}) });
 	let disposed = false;
 	return {
 		channel,
 		caller,
 		owner: () => guard.first(),
+		summon,
 		dispose() {
 			if (disposed) return;
 			disposed = true;
+			summon.dispose();
 			guard.dispose();
 			caller.dispose();
 			detachHost();

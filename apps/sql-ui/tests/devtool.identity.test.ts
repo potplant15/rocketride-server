@@ -614,7 +614,8 @@ describe('T7 — a frame calls nothing on its own until the controller vouches f
 
 	it('a frame is ready (opening its connection, the first schema read, run and apply) only with the host connection, a ready controller AND a vouched account', () => {
 		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
-		assert.match(devTool, /const vouched = useVouched\(toolChannel\);/);
+		assert.match(devTool, /const signIn = useSignIn\(toolChannel\);/);
+		assert.match(devTool, /const vouched = signIn === 'signed-in';/);
 		assert.match(devTool, /const controllerReady = useControllerReady\(toolChannel\);/);
 		assert.match(devTool, /const ready = engineReady && controllerReady && vouched;/);
 		assert.match(devTool, /createRemoteSqlEnv\(mount\.frame\.caller, ready,/);
@@ -688,7 +689,7 @@ describe('a frame restored before its sidebar was opened says to open it, and ne
 		assert.equal(connectionDocState({ ...base, sidebarClosed: true, opened: true, failed: true }), 'no-sidebar');
 		assert.equal(connectionDocState({ ...base, sidebarClosed: false }), 'not-connected');
 		const devTool = fs.readFileSync(path.join(SRC, 'SqlDevTool.tsx'), 'utf8');
-		assert.match(devTool, /const sidebarClosed = engineReady && !controllerReady;/);
+		assert.match(devTool, /const sidebarClosed = engineReady && !controllerReady && summon === 'unanswered';/);
 		assert.match(devTool, /case 'no-sidebar':\s*body = <SidebarClosed \/>;/);
 		assert.match(devTool, /title="Open the SQL Explorer sidebar to connect"/);
 		const editor = fs.readFileSync(path.join(SRC, 'components', 'ConnectionEditorBody.tsx'), 'utf8');

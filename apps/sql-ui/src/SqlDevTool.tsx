@@ -47,7 +47,10 @@ import { useConnectionRecord } from './connectionRecord';
 import type { SqlEndpoint } from './connect';
 import { setActiveConnection } from './navigation';
 import { SQL_TOOL_PROTOCOL, frameChannel } from './sqlBridge';
-import { attachSqlFrame, connectionDocState, directReleaseKey, followControllerReady, followVouched, routeDocKey, sqlChannel } from './sqlFrame';
+import { attachSqlFrame, connectionDocState, directReleaseKey, followControllerReady, routeDocKey, sqlChannel } from './sqlFrame';
+import { followSignIn } from 'shared/explorer/devtool/frameIdentity';
+import type { SignInState } from 'shared/explorer/devtool/frameIdentity';
+import type { IControllerSummon, SummonState } from 'shared/explorer/devtool/summon';
 import type { SqlFrameMount } from './sqlFrame';
 import { createRemoteHistory } from './history/remoteHistory';
 import type { RemoteHistory } from './history/remoteHistory';
@@ -108,9 +111,11 @@ const OverlayHost: React.FC = () => {
  * @param props.connId - The saved connection's id (the host document key).
  * @param props.sidebarClosed - The engine is reachable but the tool's controller (its sidebar) is not ready.
  * @param props.hostKnown - The host has published `host:connection` (until then the document waits).
+ * @param props.starting - The engine is reachable and the controller is being summoned (inside the summon's grace).
+ * @param props.signedOut - The controller is up but vouches for no one.
  * @param props.onOpenError - Tell the sidebar this connection could not be opened.
  */
-const SqlConnectionDocument: React.FC<{ connId: string; sidebarClosed: boolean; hostKnown: boolean; onOpenError: (message: string) => void }> = ({ connId, sidebarClosed, hostKnown, onOpenError }) => {
+const SqlConnectionDocument: React.FC<{ connId: string; sidebarClosed: boolean; hostKnown: boolean; starting: boolean; signedOut: boolean; onOpenError: (message: string) => void }> = ({ connId, sidebarClosed, hostKnown, starting, signedOut, onOpenError }) => {
 	const env = useSqlEnv();
 	const { record: conn, status } = useConnectionRecord(connId);
 	const [endpoint, setEndpoint] = useState<SqlEndpoint | null>(null);
@@ -157,12 +162,18 @@ const SqlConnectionDocument: React.FC<{ connId: string; sidebarClosed: boolean; 
 	}, [releaseKey, connId]);
 
 	let body: React.ReactNode;
-	switch (connectionDocState({ ready: env.ready, sidebarClosed, hostKnown, listStatus: status, found: conn !== null, failed: resolveError !== null, opened: endpoint !== null })) {
+	switch (connectionDocState({ ready: env.ready, sidebarClosed, hostKnown, summoning: starting, signedOut, listStatus: status, found: conn !== null, failed: resolveError !== null, opened: endpoint !== null })) {
 		case 'no-sidebar':
 			body = <SidebarClosed />;
 			break;
 		case 'waiting':
 			body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Waiting for the server connection…" description="This connection opens once the host reports the server connection." /></div>;
+			break;
+		case 'starting':
+			body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Starting SQL Explorer…" description="The SQL Explorer sidebar is starting. This connection opens once it is ready." /></div>;
+			break;
+		case 'signed-out':
+			body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Waiting for sign-in" description="Sign in to RocketRide to open this connection." /></div>;
 			break;
 		case 'not-connected':
 			body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Not connected" description="Connect to a RocketRide server to open this connection." /></div>;
@@ -212,15 +223,31 @@ function useControllerReady(channel: ToolChannel): boolean {
 }
 
 /**
- * Whether the controller vouches for a signed-in account (see followVouched).
+ * What the controller says about the account (see followSignIn).
  *
  * @param channel - The frame's channel.
- * @returns True once its retained identity carries a fingerprint.
+ * @returns 'pending' until it publishes, then 'nobody' or 'signed-in'.
  */
-function useVouched(channel: ToolChannel): boolean {
-	const [vouched, setVouched] = useState(false);
-	useEffect(() => followVouched(channel, setVouched), [channel]);
-	return vouched;
+function useSignIn(channel: ToolChannel): SignInState {
+	const [state, setState] = useState<SignInState>('pending');
+	useEffect(() => followSignIn(channel, setState), [channel]);
+	return state;
+}
+
+/**
+ * Where the frame's summon of its controller stands.
+ *
+ * @param summon - The frame mount's summon (null before the mount exists).
+ * @returns 'summoning' until there is a summon to follow.
+ */
+function useSummonState(summon: IControllerSummon | null): SummonState {
+	const [state, setState] = useState<SummonState>(() => summon?.state() ?? 'summoning');
+	useEffect(() => {
+		if (!summon) return undefined;
+		setState(summon.state());
+		return summon.subscribe(setState);
+	}, [summon]);
+	return state;
 }
 
 /**
@@ -276,9 +303,16 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 	const hostConnection = useConnectionReady(toolChannel);
 	const engineReady = hostConnection === true;
 	const controllerReady = useControllerReady(toolChannel);
-	const vouched = useVouched(toolChannel);
+	// While no controller is ready the frame summons one (F11); it says to open
+	// the sidebar only once the summon's grace ran out, "starting" before that.
+	const summon = useSummonState(mount?.frame.summon ?? null);
+	// The account (F12): 'nobody' says "waiting for sign-in", never "not connected".
+	const signIn = useSignIn(toolChannel);
+	const vouched = signIn === 'signed-in';
 	const ready = engineReady && controllerReady && vouched;
-	const sidebarClosed = engineReady && !controllerReady;
+	const sidebarClosed = engineReady && !controllerReady && summon === 'unanswered';
+	const starting = engineReady && !controllerReady && summon !== 'unanswered';
+	const signedOut = engineReady && controllerReady && signIn === 'nobody';
 	const env = useMemo(() => (mount ? createRemoteSqlEnv(mount.frame.caller, ready, mount.frame.owner, mount.history) : null), [mount, ready]);
 	const onOpenError = useCallback((message: string) => sqlChannel(toolChannel).sendEvent('openError', message), [toolChannel]);
 
@@ -295,7 +329,7 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 			/>
 		);
 	} else if (route.kind === 'connection') {
-		body = <SqlConnectionDocument connId={route.connId} sidebarClosed={sidebarClosed} hostKnown={hostConnection !== undefined} onOpenError={onOpenError} />;
+		body = <SqlConnectionDocument connId={route.connId} sidebarClosed={sidebarClosed} hostKnown={hostConnection !== undefined} starting={starting} signedOut={signedOut} onOpenError={onOpenError} />;
 	} else {
 		body = (
 			<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>

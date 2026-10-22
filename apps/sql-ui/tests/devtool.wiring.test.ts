@@ -55,6 +55,8 @@ import { lookupConnection } from '../src/connectionRecord';
 import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
 import type { ConnectionsState, HistoryState, SqlOps } from '../src/ops';
 import { attachSqlFrame, connectionDocState, directReleaseKey, routeDocKey, sqlChannel } from '../src/sqlFrame';
+import { setActiveConnection } from '../src/navigation';
+import { SUMMON_EVENT, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
 import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS } from '../src/sqlTimeouts';
 import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
@@ -98,6 +100,30 @@ function retained(posts: unknown[]): Map<string, unknown> {
  */
 function source(rel: string): string {
 	return fs.readFileSync(path.join(SRC, rel), 'utf8');
+}
+
+/** Timers a test runs by hand: `advance(ms)` fires what falls due, in order. */
+function manualTimers() {
+	let now = 0;
+	const due: Array<{ at: number; fn: () => void; live: boolean }> = [];
+	return {
+		schedule(fn: () => void, ms: number): () => void {
+			const entry = { at: now + ms, fn, live: true };
+			due.push(entry);
+			return () => { entry.live = false; };
+		},
+		advance(ms: number): void {
+			const until = now + ms;
+			for (;;) {
+				const next = due.filter((entry) => entry.live && entry.at <= until).sort((a, b) => a.at - b.at)[0];
+				if (!next) break;
+				next.live = false;
+				now = next.at;
+				next.fn();
+			}
+			now = until;
+		},
+	};
 }
 
 /**
@@ -497,6 +523,59 @@ describe('a frame whose controller is not mounted summons it (busPeer host.mount
 		} finally {
 			frame.dispose();
 		}
+	});
+
+	it('F11: the frame summons on purpose (devtool:summon), and re-announces `active` to the controller that the summon mounted', async () => {
+		resetSavedConnections({ force: true });
+		setActiveConnection('p1:s1:db_1');
+		const h = createDevToolHarness(SQL_APP_ID, { json: true });
+		h.setHostConnection(true);
+		const timers = manualTimers();
+		const frame = attachSqlFrame({ peer: h.newFramePeer(), docKey: 'c-pipe', protocol: shellProtocol, summonSchedule: timers.schedule });
+		const engine = scriptedClientRealm(engineScript([PIPELINE], [taskRow('p1')], postgres, {}));
+		engine.realm.login(USER);
+		let mount: ReturnType<typeof attachSqlController> | null = null;
+		try {
+			await settle();
+			assert.equal(frame.summon.state(), 'summoning');
+			timers.advance(SUMMON_SETTLE_MS);
+			await settle();
+			assert.equal(frame.summon.sent(), 1);
+			assert.ok(h.wire.some((entry) => entry.transient && (entry.value as { name?: unknown } | null)?.name === SUMMON_EVENT), 'the summon event went out');
+
+			// The host mounts the controller as on a summon-driven first mount: a NEW channel, then the controller.
+			// That channel takes the held burst (the frame's first `active` among it), so only a re-announce reaches the controller.
+			mount = attachSqlController({ peer: h.sidebarPeer, channel: shellProtocol.createToolChannel(h.sidebarPeer), cm: engine.cm, protocol: shellProtocol, focusTarget: null });
+			const actives: Array<string | null> = [];
+			mount.bridge.subscribeActive((key) => actives.push(key));
+			await until(() => frame.summon.state() === 'ready', 'the controller to be ready');
+			await until(() => actives.includes('p1:s1:db_1'), 'the frame to re-announce its active connection');
+			timers.advance(60_000);
+			await settle();
+			assert.equal(frame.summon.sent(), 1, 'no retry once the controller answered');
+		} finally {
+			mount?.dispose();
+			frame.dispose();
+			setActiveConnection(null);
+		}
+	});
+
+	it('F12 and F13: the state order of a connection document, and the frame wires the summon and the sign-in states', () => {
+		const base = { ready: false, failed: false, opened: false, found: true, listStatus: 'ready' as const };
+		assert.equal(connectionDocState({ ...base, hostKnown: false, summoning: true, signedOut: true }), 'waiting', 'an unknown host comes first');
+		assert.equal(connectionDocState({ ...base, summoning: true, signedOut: true }), 'starting', 'then a controller being summoned');
+		assert.equal(connectionDocState({ ...base, summoning: true, opened: true }), 'open', 'an open document stays open while its controller comes back');
+		assert.equal(connectionDocState({ ...base, sidebarClosed: true }), 'no-sidebar', 'then one that never answered');
+		assert.equal(connectionDocState({ ...base, signedOut: true }), 'signed-out', 'then nobody signed in');
+		assert.equal(connectionDocState(base), 'not-connected');
+		const devTool = source('SqlDevTool.tsx');
+		assert.match(devTool, /const sidebarClosed = engineReady && !controllerReady && summon === 'unanswered';/);
+		assert.match(devTool, /const starting = engineReady && !controllerReady && summon !== 'unanswered';/);
+		assert.match(devTool, /const signedOut = engineReady && controllerReady && signIn === 'nobody';/);
+		assert.match(devTool, /const vouched = signIn === 'signed-in';/);
+		assert.match(devTool, /case 'starting':/);
+		assert.match(devTool, /case 'signed-out':\s*body = <div style=\{styles\.welcome\}><EmptyState icon=\{<DatabaseIcon \/>\} title="Waiting for sign-in"/);
+		assert.doesNotMatch(devTool, /followVouched/, 'the frame follows the base\'s followSignIn');
 	});
 });
 
