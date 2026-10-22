@@ -250,9 +250,9 @@ async function fetchTaskNames(client: IExplorerClient, timeoutMs: number): Promi
 
 /**
  * The display name of a connection, from its anchor row: listTasks's name for
- * the run when it has one, else the pipeline's name, else the source
- * component's name, else what getTasks says (the source id when the pipeline
- * has no name).
+ * the run when it has one, else the pipeline's name (getTasks's own name when
+ * that is more than the source id, which is what the server sends then), else
+ * the source component's name, else the source id.
  *
  * @param row - The anchor row.
  * @param components - The pipeline's components.
@@ -263,6 +263,8 @@ function displayNameOf(row: IExplorerTaskRow, components: IExplorerComponent[], 
 	const projectId = projectIdOf(row);
 	const listed = projectId === '' ? undefined : names.get(nameKey(projectId, row.source, row.runKind));
 	if (typeof listed === 'string') return listed;
+	// The server names a getTasks row `pipeline.name || source`.
+	if (row.name !== row.source) return row.name;
 	const pipelineName = row.pipeline?.name;
 	if (typeof pipelineName === 'string' && pipelineName !== '') return pipelineName;
 	// The engine names a status `{task}.{component name | config.name | source}`.
@@ -272,7 +274,7 @@ function displayNameOf(row: IExplorerTaskRow, components: IExplorerComponent[], 
 		const config = component.config;
 		if (isPlainObject(config) && typeof config.name === 'string' && config.name !== '') return config.name;
 	}
-	return row.name;
+	return row.source;
 }
 
 // =============================================================================

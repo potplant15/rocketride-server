@@ -436,6 +436,8 @@ describe('discoverToolEndpoints — readable names (one listTasks per discovery,
 		assert.equal(named.found[0]!.endpoint.pipelineName, 'Orders pipeline', 'a pipeline name comes first');
 		const bare = await discoverNamed([unnamed({ pipeline: { project_id: 'proj-1', components: [{ id: 'tools_1', provider: 'tools' }, { id: 'db_1', provider: 'db_postgres' }] } })], page([]));
 		assert.equal(bare.found[0]!.endpoint.pipelineName, 'tools_1', 'no names anywhere: the source id');
+		const told = await discoverNamed([unnamed({ name: 'Named by the server' })], page([]));
+		assert.equal(told.found[0]!.endpoint.pipelineName, 'Named by the server', 'getTasks\'s own name, when it is more than the source id, is the pipeline\'s name');
 	});
 
 	it('takes a name only from a live row of the same project, source and run kind, and only when the live rows agree on it', async () => {
