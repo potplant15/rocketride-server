@@ -674,8 +674,9 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 	const shell = (): Record<string, unknown> => createRequire(__filename)('shell') as Record<string, unknown>;
 
 	it('a frame env hands every grid the realm\'s session persistence, which copies in and out and never writes the host\'s prefs', async () => {
-		const host = installHostGridBridge(shell());
 		const r = await rig({ docKey: 'c-pipe' });
+		// Installed once the rig is mounted, so only the persistence calls see the stand-in document.
+		const host = installHostGridBridge(shell());
 		try {
 			const grids = r.env.gridPersistence;
 			const again = createRemoteSqlEnv(r.frame.caller, true, r.frame.owner, r.history);
