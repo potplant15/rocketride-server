@@ -80,6 +80,13 @@ export const UNBOUNDED_TOOL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
  */
 export const GET_TASKS_TIMEOUT_MS = 30_000;
 
+/**
+ * Bus timeout of `client.listTasks` (discovery's readable names only). Equal
+ * to discovery's own wait for it (connect/discovery.ts `TASK_NAMES_TIMEOUT_MS`;
+ * a test pins the two), so the bus gives up when discovery stops waiting.
+ */
+export const LIST_TASKS_TIMEOUT_MS = 10_000;
+
 /** Bus timeout of `client.getTaskPipeline` (discovery's per-task fallback; it runs inside the same discovery bound). */
 export const GET_TASK_PIPELINE_TIMEOUT_MS = 30_000;
 
