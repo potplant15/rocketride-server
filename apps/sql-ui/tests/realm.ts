@@ -125,9 +125,11 @@ export const SAVED_PATH = '.workspace/rocketride.sql.json';
  * @param rows - What `client.getTasks` lists (read at call time: mutate it to change the answer).
  * @param tool - What `client.tool` answers.
  * @param files - Other files in the user's store, by path (mutable: writes land here).
+ * @param listed - What `client.listTasks` lists, as the server's rows (default none, so names
+ *   fall back to getTasks's; a test of the readable names scripts them).
  * @returns The script.
  */
-export function engineScript(saved: SavedSqlConnection[], rows: IFakeTaskRow[], tool: (params: { token: string; tool: string; input?: Record<string, unknown>; timeout?: number }) => unknown = () => ({ dialect: 'postgres' }), files: Record<string, unknown> = {}): BusScript {
+export function engineScript(saved: SavedSqlConnection[], rows: IFakeTaskRow[], tool: (params: { token: string; tool: string; input?: Record<string, unknown>; timeout?: number }) => unknown = () => ({ dialect: 'postgres' }), files: Record<string, unknown> = {}, listed: Record<string, unknown>[] = []): BusScript {
 	const read = (path: string): unknown => (path === SAVED_PATH ? saved : files[path]);
 	return {
 		'client.fsMkdir': () => ({}),
@@ -143,6 +145,7 @@ export function engineScript(saved: SavedSqlConnection[], rows: IFakeTaskRow[], 
 			return {};
 		},
 		'client.getTasks': () => rows.map((row) => ({ ...row })),
+		'client.listTasks': () => ({ rows: listed.map((row) => ({ ...row })), total: listed.length, page: 1, pageSize: 100 }),
 		'client.getTaskPipeline': () => undefined,
 		'client.tool': (params) => tool(params as { token: string; tool: string }),
 		'client.addMonitor': () => ({}),

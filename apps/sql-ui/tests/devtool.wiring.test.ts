@@ -45,7 +45,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { ExplorerToolError } from 'shared/explorer/errors';
 import { assertJsonSafe, assertSidebarSubscribers, createDevToolHarness, findToolFactoryImports, manualNow, settle, shellProtocol, spyPeer } from 'shared/explorer/devtool/testing';
-import { BUS_TOOL_MARGIN_MS, FRAME_OP_MARGIN_MS, GET_TASKS_TIMEOUT_MS, MAX_TIMER_MS, SDK_TIMEOUT_SLACK_MS, UNBOUNDED_TOOL_TIMEOUT_MS } from 'shared/explorer/devtool/timeouts';
+import { BUS_TOOL_MARGIN_MS, FRAME_OP_MARGIN_MS, GET_TASKS_TIMEOUT_MS, LIST_TASKS_TIMEOUT_MS, MAX_TIMER_MS, SDK_TIMEOUT_SLACK_MS, UNBOUNDED_TOOL_TIMEOUT_MS } from 'shared/explorer/devtool/timeouts';
+import { TASK_NAMES_REQUEST } from 'shared/explorer/connect/discovery';
 import { DEFAULT_RETRY_WINDOW_MS } from 'shared/explorer/connect/session';
 import { MAX_RETAINED_STATE_BYTES, MAX_RETAINED_TOTAL_BYTES, jsonByteLength } from 'shared/explorer/devtool/state';
 import { CONTROLLER_STATE_TOPIC, RESERVED_STATE_PREFIX } from 'shared/explorer/devtool/realm';
@@ -665,6 +666,42 @@ describe('a frame whose controller is not mounted summons it (busPeer host.mount
 // =============================================================================
 // GRID LAYOUTS — never into the host's prefs (the Rocket Builder freeze)
 // =============================================================================
+
+describe('connection names: #2625\'s readable name from one listTasks, names only', () => {
+	// A pipeline started with use(name='Shop Postgres') and no pipeline name:
+	// getTasks names it by its source id; listTasks by its status name.
+	const started = taskRow('p1', { name: 's1', pipeline: { project_id: 'p1', name: '', components: [{ id: 's1', provider: 'tools', name: 'Tools' }, { id: 'db_1', provider: 'db_postgres', name: 'Orders DB' }] } });
+	const status = { id: 't1', name: 'Shop Postgres.Tools', projectId: 'p1', source: 's1', runKind: 'dev', completed: false, state: 3 };
+
+	it('the controller\'s discovery names the endpoint "Shop Postgres.Tools", asking listTasks once over the bus with a named timeout', async () => {
+		const r = await rig({ rows: [started], listed: [status] });
+		try {
+			const [endpoint] = await r.env.discoverEndpoints();
+			assert.equal(endpoint?.pipelineName, 'Shop Postgres.Tools');
+			assert.equal(endpoint?.key, 'p1:s1:db_1', 'the key is getTasks\'s');
+			const asked = r.engine.requests.filter((q) => q.op === 'client.listTasks');
+			assert.ok(asked.length >= 1);
+			for (const q of asked) {
+				assert.deepEqual(q.params, TASK_NAMES_REQUEST);
+				assert.equal(q.timeoutMs, LIST_TASKS_TIMEOUT_MS);
+			}
+			assert.equal(asked.length, r.engine.requests.filter((q) => q.op === 'client.getTasks').length, 'one listTasks per discovery');
+		} finally {
+			r.dispose();
+		}
+	});
+
+	it('without listTasks\'s name the endpoint falls back to the source component\'s name, with the same key', async () => {
+		const r = await rig({ rows: [started] });
+		try {
+			const [endpoint] = await r.env.discoverEndpoints();
+			assert.equal(endpoint?.pipelineName, 'Tools');
+			assert.equal(endpoint?.key, 'p1:s1:db_1');
+		} finally {
+			r.dispose();
+		}
+	});
+});
 
 describe('grid layouts are copies everywhere: a frame keeps them in the session, the full app in its own prefs', () => {
 	it('a frame env hands every grid the realm\'s session persistence, which copies in and out', async () => {

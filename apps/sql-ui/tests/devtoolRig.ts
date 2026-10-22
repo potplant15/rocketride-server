@@ -132,10 +132,10 @@ export interface IRig {
  * @param opts - The engine's saved list, tasks and tool answers; whether to sign in; `onRefused` hears every call the controller's deadline guard refused; `bareGate` hands the controller a bus without `getClient`, whose realm the activation gate cannot classify (a VS Code webview mounted while its root is down), so the gate waits for an explicit signal.
  * @returns The rig.
  */
-export async function rig(opts: { saved?: SavedSqlConnection[]; rows?: IFakeTaskRow[]; tool?: (params: { tool: string; input?: Record<string, unknown> }) => unknown; login?: boolean; activate?: boolean; now?: () => number; docKey?: string; files?: Record<string, unknown>; bareGate?: boolean; onRefused?: (error: unknown) => void } = {}): Promise<IRig> {
+export async function rig(opts: { saved?: SavedSqlConnection[]; rows?: IFakeTaskRow[]; tool?: (params: { tool: string; input?: Record<string, unknown> }) => unknown; login?: boolean; activate?: boolean; now?: () => number; docKey?: string; files?: Record<string, unknown>; bareGate?: boolean; onRefused?: (error: unknown) => void; listed?: Record<string, unknown>[] } = {}): Promise<IRig> {
 	resetSavedConnections({ force: true });
 	const h = createDevToolHarness(SQL_APP_ID, { json: true });
-	const engine = scriptedClientRealm(engineScript(opts.saved ?? [PIPELINE, DIRECT], opts.rows ?? [taskRow('p1')], opts.tool ?? postgres, opts.files ?? {}));
+	const engine = scriptedClientRealm(engineScript(opts.saved ?? [PIPELINE, DIRECT], opts.rows ?? [taskRow('p1')], opts.tool ?? postgres, opts.files ?? {}, opts.listed ?? []));
 	const spy = spyPeer(h.sidebarPeer);
 	const hostChannel = shellProtocol.createToolChannel(spy.peer);
 	const docs = { opened: [] as Array<[string, string]>, closed: [] as string[] };
