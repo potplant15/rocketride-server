@@ -54,6 +54,9 @@ import type { IBusPeerBus } from '../../../../../packages/shell/src/components/w
 import { createToolChannel } from '../../../../../packages/shell/src/components/workspace/toolChannel';
 import { createToolController, createToolOpServer } from '../../../../../packages/shell/src/components/workspace/toolOps';
 import { HOST_CONNECTION_TOPIC } from '../../../../../packages/shell/src/components/workspace/toolRelay';
+import { GRID_CONFIG_CLEAR, GRID_CONFIG_GET, GRID_CONFIG_SET, createMessageGridPersistence } from '../../../../../packages/shell/src/components/data-grid/gridConfigChannel';
+import type { IGridConfigClearDetail, IGridConfigGetDetail, IGridConfigSetDetail } from '../../../../../packages/shell/src/components/data-grid/gridConfigChannel';
+import type { IDataGridPersistence } from '../../../../../packages/shell/src/components/data-grid/persistence';
 import type { DevToolPeer } from './realm';
 
 // =============================================================================
@@ -749,6 +752,85 @@ export function createFakeClientRealm(): IFakeClientRealm {
 		},
 		deactivate(appId) {
 			hub.emit('shell:toolSidebarDeactivated', { appId });
+		},
+	};
+}
+
+// =============================================================================
+// GRID LAYOUTS (gridPersistence.ts)
+// =============================================================================
+
+/**
+ * What Tabulator's sort module does to a persisted sorter list it is handed:
+ * it swaps each field for its live column (cyclic, as the real one is).
+ *
+ * @param sorters - The list the grid was handed.
+ */
+export function tabulatorSetSort(sorters: unknown): void {
+	const column = { field: 'name', table: {} as Record<string, unknown>, element: { tag: 'div' } };
+	column.table.columns = [column];
+	for (const item of sorters as Array<{ column: unknown }>) item.column = column;
+}
+
+/** A host's workspace prefs, as far as the grid config channel reads them. */
+export interface IGridHostPrefs {
+	/** Layout blobs by tableId, then by type. */
+	tableLayouts: Record<string, Record<string, unknown>>;
+}
+
+/** An installed {@link installHostGridBridge}. */
+export interface IHostGridBridge {
+	/** The host's prefs (mutable; what a workspace save would write). */
+	prefs: IGridHostPrefs;
+	/** The shell's bare channel adapter: what a grid with no `persistence` gets. */
+	bareChannel(): IDataGridPersistence;
+	/** Put `document` and the 'shell' stub back exactly as they were. */
+	uninstall(): void;
+}
+
+/**
+ * The web shell's grid config bridge (WorkspaceContext) on a stand-in
+ * `document`: a get answers with the stored layout BY REFERENCE, and a set
+ * keeps the blob it is given. While installed, the test runner's 'shell' stub
+ * also carries the real channel factory, so an env that makes its channel on
+ * first use (`() => createMessageGridPersistence()`) gets the real one.
+ *
+ * An app's full-app persistence keeps the channel it made first, and that
+ * channel's per-table cache, for the rest of the process: give each full-app
+ * test its own tableIds.
+ *
+ * @param shell - The test runner's 'shell' module (the apps' stub-shell object).
+ * @returns The bridge.
+ */
+export function installHostGridBridge(shell: Record<string, unknown>): IHostGridBridge {
+	const prefs: IGridHostPrefs = { tableLayouts: {} };
+	const doc = new EventTarget();
+	doc.addEventListener(GRID_CONFIG_GET, (event) => {
+		const detail = (event as CustomEvent<IGridConfigGetDetail>).detail;
+		detail.reply(prefs.tableLayouts[detail.tableId]);
+	});
+	doc.addEventListener(GRID_CONFIG_SET, (event) => {
+		const detail = (event as CustomEvent<IGridConfigSetDetail>).detail;
+		prefs.tableLayouts[detail.tableId] = { ...prefs.tableLayouts[detail.tableId], [detail.type]: detail.blob };
+	});
+	doc.addEventListener(GRID_CONFIG_CLEAR, (event) => {
+		delete prefs.tableLayouts[(event as CustomEvent<IGridConfigClearDetail>).detail.tableId];
+	});
+	const global = globalThis as { document?: unknown };
+	const hadDocument = 'document' in global;
+	const document = global.document;
+	global.document = doc;
+	const hadFactory = 'createMessageGridPersistence' in shell;
+	const factory = shell.createMessageGridPersistence;
+	shell.createMessageGridPersistence = createMessageGridPersistence;
+	return {
+		prefs,
+		bareChannel: () => createMessageGridPersistence(),
+		uninstall() {
+			if (hadDocument) global.document = document;
+			else delete global.document;
+			if (hadFactory) shell.createMessageGridPersistence = factory;
+			else delete shell.createMessageGridPersistence;
 		},
 	};
 }

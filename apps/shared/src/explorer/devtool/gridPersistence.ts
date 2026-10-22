@@ -25,23 +25,30 @@
 // =============================================================================
 //
 // A shell DataGrid with a `tableId` and no `persistence` prop persists its
-// layout (Tabulator's sort, columns, page blobs) through the grid config
-// channel, which the HOST answers from the active app's workspace prefs. The
-// host answers a read with the stored blob BY REFERENCE, and Tabulator's sort
-// module rewrites a persisted sorter list in place, swapping each field name
-// for its live column object (its table, DOM elements, functions). So the
-// prefs end up holding a Tabulator column, and on #2625 9bd5d931f the next
-// workspace save sends it through the SDK's message redaction walk, which
-// never finishes on it: the page freezes. A remount reads the blob again, so
-// a page switch, a re-run or a reload is enough once a sort is stored.
+// layout (Tabulator's sort, columns and page blobs, and DataGrid's own display
+// and format blobs) through the grid config channel, which the HOST answers
+// from the active app's workspace prefs. The host answers a read with the
+// stored blob BY REFERENCE, and Tabulator's sort module rewrites a persisted
+// sorter list in place, swapping each field name for its live column object
+// (its table, DOM elements, functions). That list is the workspace store's own
+// object, so the column now sits in the prefs until a sort write replaces it,
+// and the web host's bridge merges each write over the prefs it saw at its
+// last render, so a write of another blob in the same pass (a columns save
+// after the layout) keeps the rewritten list, and can even undo a sort write.
+// On #2625 9bd5d931f the next workspace save sends the prefs through the SDK's
+// message redaction walk, which never finishes on a column: the page freezes.
+// A remount reads the blob again, so a page switch, a re-run or a reload is
+// enough once a sort is stored.
 //
 // Both factories here hand Tabulator COPIES (plain JSON) and store copies, so
 // nothing Tabulator does to what it read can reach what is stored, and a blob
 // that is not plain JSON is not stored at all:
 //   - createSessionGridPersistence: a dev-tool frame. Its active app is the
 //     host (Rocket Builder), and store tools get no prefs of their own
-//     (§3.5), so frames keep layouts in memory for the session, one per
-//     realm. They survive tab switches and documents, not a reload.
+//     (§3.5), so frames keep layouts in memory, one store per realm. In
+//     Rocket Builder every document shares the page's realm, so layouts last
+//     until the page reloads; in VS Code each document is its own panel and
+//     realm, so they last as long as that panel.
 //   - createCopyingGridPersistence: a full app, over the shell's own channel
 //     (`createMessageGridPersistence` from 'shell', passed in: this library
 //     imports no 'shell' values here). Layouts stay in the app's own prefs.
