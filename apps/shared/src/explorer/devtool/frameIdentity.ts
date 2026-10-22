@@ -132,6 +132,45 @@ export function publishIdentityState(channel: ToolChannel, tracker: Pick<IIdenti
 	};
 }
 
+/**
+ * What a frame may say about the account, from the controller's `identity`
+ * topic:
+ *
+ *   pending    nothing published yet (the controller publishes only once its
+ *              tracker has a first answer): say nothing about the account;
+ *   nobody     the controller vouches for no one (signed out, or the identity
+ *              is not known): "waiting for sign-in", not "not connected";
+ *   signed-in  a fingerprint.
+ */
+export type SignInState = 'pending' | 'nobody' | 'signed-in';
+
+/**
+ * FRAME: follow what the controller says about the account. Told at once
+ * ('pending'), then on every change.
+ *
+ * @param channel - The frame's channel.
+ * @param onChange - Told the state.
+ * @param topic - The state topic (default {@link IDENTITY_STATE_TOPIC}).
+ * @returns Stop following.
+ */
+export function followSignIn(channel: ToolChannel, onChange: (state: SignInState) => void, topic: string = IDENTITY_STATE_TOPIC): () => void {
+	let last: SignInState = 'pending';
+	let stopped = false;
+	onChange(last);
+	const off = channel.onState(topic, (snapshot: unknown) => {
+		if (stopped) return;
+		const value = snapshot !== null && typeof snapshot === 'object' ? (snapshot as { fingerprint?: unknown }).fingerprint : undefined;
+		const next: SignInState = typeof value === 'string' && value !== '' ? 'signed-in' : 'nobody';
+		if (next === last) return;
+		last = next;
+		onChange(next);
+	});
+	return () => {
+		stopped = true;
+		off();
+	};
+}
+
 /** Why a frame reset its caches. */
 export type FrameResetReason = 'identity' | 'unknown' | 'disconnected';
 

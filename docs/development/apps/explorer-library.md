@@ -543,6 +543,34 @@ the first fingerprint it sees and keeps following:
 one) or knows an identity. So a controller remount, whose new tracker starts
 unknown, does not make live frames reset for nothing.
 
+`followSignIn(channel, onChange)` tells a frame what it may say about the
+account. It reports one of three states:
+
+- `'pending'`: nothing published yet; claim nothing;
+- `'nobody'`: the controller vouches for no one; say "waiting for sign-in", not "not connected";
+- `'signed-in'`: a fingerprint was published.
+
+**Summoning the controller** ([`summon.ts`](../../../apps/shared/src/explorer/devtool/summon.ts)).
+Since #2625 `9bd5d931f`, a host builds a tool's sidebar only when the tool is
+selected, or when busPeer summons it: while no controller is subscribed, the
+sidebar peer holds frame messages and emits `host.mountToolSidebar` once per
+hold period. `createControllerSummon({ channel })` uses that on purpose.
+
+- **What it sends.** A frame whose controller has published no readiness nonce
+  sends one `devtool:summon` event once `SUMMON_SETTLE_MS` have passed. It
+  re-sends at `SUMMON_RETRY_MS` while no nonce arrives (rocket-ui arms a tool's
+  sidebar peer late), and sends nothing while the host says it is
+  disconnected.
+- **It is an event, never a call.** On the summon-driven mount, a call held in
+  the peer is delivered into the host channel and dropped. No controller
+  listens for the event, so its replays do nothing.
+- **Its states.** `state()` is `'summoning'` for `SUMMON_GRACE_MS`, then
+  `'unanswered'`, or `'ready'` once a nonce arrives. Say "open the sidebar"
+  only when the state is `'unanswered'`.
+- **The retained slot.** The event takes the peer's retained last-payload slot,
+  so a frame re-announces its own hints (such as `active`) once a controller is
+  ready.
+
 **Retained state stays small** ([`state.ts`](../../../apps/shared/src/explorer/devtool/state.ts)).
 The cost of a publish is the whole state map. The sidebar peer republishes the
 WHOLE map on every publish, and the VS Code bridge posts it to every frame
@@ -586,6 +614,10 @@ with `attachWhenLoaded(prefs, (api, owner) => store.attachPrefs(api, owner))`.
     session falls back to memory.
   - A file that exists but cannot be read, or is in an unknown or newer
     format, is never written; history stays in memory for that session.
+    That includes a zero-byte file, such as one left by an interrupted write
+    before #2625 `9bd5d931f` made `fsWriteJson` a single request. It never
+    parses, so history stays in memory in every session until the file is
+    deleted by hand.
 - **One bag per identity fingerprint.** At most 8 bags are kept. The owner is
   checked before every file request and again after every awaited one (a
   write's mkdir, a load's stat and read).
