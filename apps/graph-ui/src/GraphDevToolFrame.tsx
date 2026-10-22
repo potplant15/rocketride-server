@@ -154,8 +154,11 @@ const FrameConnectionDocument: React.FC<{ kind: 'workbench' | 'write'; endpointK
 	}, [env, status]);
 
 	const state = connectionDocState({ host: gates.host, summon: gates.summon, signIn: gates.signIn, found: endpoint !== null, opened: opened.current });
+	// Marked once the view has been committed, not during render; the next state change reads it.
+	useEffect(() => {
+		if (state === 'open') opened.current = true;
+	}, [state]);
 	if (state === 'open' && endpoint) {
-		opened.current = true;
 		return (
 			<>
 				{showsControllerBanner(state, gates.summon) && (

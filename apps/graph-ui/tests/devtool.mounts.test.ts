@@ -472,6 +472,9 @@ describe('F13 - what a connection document shows: the first state that applies w
 		const doc = frame.slice(frame.indexOf('const FrameConnectionDocument'));
 		assert.match(doc, /connectionDocState\(\{ host: gates\.host, summon: gates\.summon, signIn: gates\.signIn, found: endpoint !== null, opened: opened\.current \}\)/);
 		assert.match(doc, /showsControllerBanner\(state, gates\.summon\) && \(/);
+		// The "has opened" mark is written by an effect after a commit that showed the view, never during render.
+		assert.match(doc, /useEffect\(\(\) => \{\s*if \(state === 'open'\) opened\.current = true;\s*\}, \[state\]\);/);
+		assert.equal(doc.match(/opened\.current = true/g)?.length, 1, 'no write of the ref in the render path');
 		const root = frame.slice(frame.indexOf('const FrameRoot'), frame.indexOf('export const FrameBody'));
 		assert.doesNotMatch(root, /<Banner/, 'no banner above every route');
 		assert.match(root, /const gates: IDocGates = \{ host, summon, signIn \};/);
