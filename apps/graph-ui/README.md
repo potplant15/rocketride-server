@@ -303,8 +303,9 @@ What is different there:
     changes again before the load finishes. It is never added to another
     account's history.
 - Editor drafts and caption choices last for the session only.
-- Results grid layouts (sort, column widths) last for the session only. They
-  are never written into the host's own preferences.
+- Results grid layouts (sort, column widths) are kept in memory: in
+  rocket-ui until the page reloads, in VS Code until the document's panel
+  closes. They are never written into the host's own preferences.
 - A large graph is laid out by a worker. A panel that cannot start it (VS Code
   loads the app from the engine, a different origin) places the nodes on a
   grid, and a note says why.

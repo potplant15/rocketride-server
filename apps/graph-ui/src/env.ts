@@ -130,9 +130,10 @@ export interface IGraphEnv {
 	 * Grid layouts (sort, columns, page), always as plain-JSON copies
 	 * (shared/explorer/devtool/gridPersistence): never the shell's bare
 	 * channel, which hands Tabulator the stored object to rewrite in place.
-	 * The full app keeps them in its own workspace prefs; a dev-tool mount
-	 * (frame or controller), in the realm's session only, so its grids never
-	 * write into the host's prefs.
+	 * The full app keeps them in its own workspace prefs. A dev-tool mount
+	 * keeps them in memory, so its grids never write into the host's prefs:
+	 * frames share one store per realm, and the controller (which renders no
+	 * grid today) has its own.
 	 */
 	gridPersistence: IDataGridPersistence;
 }
