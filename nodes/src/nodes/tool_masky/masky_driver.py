@@ -826,6 +826,8 @@ class MaskyDriver(ToolsBase):
             optional_str(a, 'query')
             _bool_arg(a, 'include_public')
         elif bare == 'get_avatar':
+            for key in ('avatar_id', 'handle', 'twitch_name'):
+                optional_str(a, key)
             given = [k for k in ('avatar_id', 'handle', 'twitch_name') if _str(a.get(k))]
             if len(given) != 1:
                 raise ValueError('Pass exactly one of avatar_id, handle or twitch_name')
@@ -1121,6 +1123,9 @@ class MaskyDriver(ToolsBase):
             ) from None
         except MaskyError as e:
             return initial, False, str(e)
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
+            # A status reply in an unexpected shape must not lose the id either.
+            return initial, False, f'Masky sent a status reply this node could not read ({type(e).__name__})'
 
     @staticmethod
     def _poll_failed(receipt: Dict[str, Any], what: str, error: str) -> None:

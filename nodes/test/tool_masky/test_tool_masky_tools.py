@@ -1566,6 +1566,11 @@ def test_get_avatar_not_found():
         _run(_driver(FakeClient()), 'get_avatar', avatar_id='ZZ')
 
 
+@pytest.mark.parametrize('key', ['avatar_id', 'handle', 'twitch_name'])
+def test_get_avatar_refuses_a_non_string_id(key):
+    _refused(_driver(FakeClient()), 'get_avatar', f'"{key}" must be a string', **{key: 123})
+
+
 def test_speak_handle_resolves_via_lookup():
     client = FakeClient(
         lookup={'found': True, 'owner': {'userId': 'U'}, 'avatars': [{'avatarId': 'H1', 'avatarOwnerUserId': 'U2'}]}
@@ -3134,6 +3139,22 @@ def test_speak_wait_keeps_the_job_id_when_the_status_check_fails():
     assert out['generation_id'] == 'speak:G1' and out['status'] == 'running'
     assert 'Could not reach Masky' in out['poll_error']
     assert any('Could not check on job speak:G1 after Masky accepted it' in w for w in out['warnings'])
+
+
+@pytest.mark.parametrize('reply', ['not an object', ['a list'], {'status': 5}])
+def test_speak_wait_keeps_the_job_id_when_the_status_reply_is_malformed(reply):
+    fc = FakeClient(get_speak=[reply])
+    out = _run(_driver(fc), 'speak', text='hi', avatar_id='A', output='audio', wait_for_completion=True)
+    assert fc.names().count('speak') == 1
+    assert out['generation_id'] == 'speak:G1' and out['status'] == 'running'
+    assert 'status reply this node could not read' in out['poll_error']
+
+
+def test_video_wait_keeps_the_job_id_when_the_status_reply_is_malformed():
+    fc = FakeClient(get_video=[{'status': 5}])
+    out = _run(_driver(fc), 'generate_video', prompt='a cat', wait_for_completion=True)
+    assert fc.names().count('generate_video') == 1
+    assert out['generation_id'] == 'video:V1' and 'could not read' in out['poll_error']
 
 
 def test_speak_wait_still_propagates_cancellation():
