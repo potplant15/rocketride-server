@@ -392,6 +392,40 @@ describe('docVersions across a controller remount: a new controller starts its c
 	});
 });
 
+describe('a write the controller stopped waiting for (it may have run)', () => {
+	it('the console that asked relists too: the bump names no frame, so no frame skips it as its own', async () => {
+		let release: (() => void) | null = null;
+		const engine = vscodeRealm({ soft_delete: () => new Promise((resolve) => { release = () => resolve(fixture('soft_delete_ok')); }) });
+		signInVsCode(engine.realm);
+		const mounted = mountController(engine.cm, { waits: { [OP.trash]: 50 } });
+		mounted.h.setHostConnection(true);
+		await until(() => Object.keys(mounted.controller.store.getState().probes).length === 1, 'discovery and the probe');
+		const key = mounted.controller.store.getState().endpoints[0].key;
+		const framed = mountFrame(mounted.h, consoleUri(key), { hintDelayMs: 0 });
+		await until(() => framed.frame.endpoints.get().endpoints.length === 1 && Object.keys(framed.frame.endpoints.get().probes).length === 1 && framed.frame.controllerReady.get(), 'the frame');
+		const entry = framed.frame.env(true).connection(framed.frame.endpoints.get().endpoints[0], DEFAULT_LIMITS);
+		const unbind = framed.frame.bindConsole(entry);
+		entry.opened = true;
+		entry.controller.open();
+		await until(() => entry.controller.getState().directory.rows.length > 0, 'the listing');
+		entry.controller.setWritesEnabled(true);
+		entry.controller.requestRemove([{ objectId: ID, path: 'a.md', chunks: 12 }]);
+		const before = engine.requests.length;
+		const writesBefore = entry.writes.get();
+		await entry.controller.confirmRemove();
+		assert.equal(entry.controller.getState().removal.status, 'error', 'the premise: the frame heard a timeout');
+		await until(() => (latestStateMap(mounted.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion> | undefined)?.[key] !== undefined, 'the bump');
+		assert.equal((latestStateMap(mounted.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion>)[key].origin, '', 'no frame\'s origin');
+		(release as unknown as () => void)();
+		await until(() => engine.requests.slice(before).some((r) => (r.params as { tool?: string }).tool === 'list_documents'), 'the asking console to relist');
+		assert.equal(entry.writes.get(), writesBefore + 1, 'and redraw its map');
+		unbind();
+		entry.controller.dispose();
+		framed.frame.dispose();
+		mounted.controller.dispose();
+	});
+});
+
 describe('T7 - identity fails closed in every frame', () => {
 	it('VS Code: account A -> disconnect -> reconnect -> account B closes the console and document frames and clears their caches; the landing only resets', async () => {
 		const engine = vscodeRealm();

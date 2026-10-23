@@ -63,6 +63,9 @@ async function connected(over: Partial<Record<string, ToolBehaviour>> = {}, opts
 	return { engine, ...mounted, endpoint, key: endpoint.key, caller };
 }
 
+/** A stored document of the fixtures (the write tests move it to the trash). */
+const DOC_ID = '91ae15d4-3f6e-589f-bb81-72301f2ca1b6';
+
 /** A generous frame timeout for calls whose timeout is not under test. */
 const T = { timeoutMs: 30_000 };
 
@@ -288,8 +291,33 @@ describe('T10 - the write gate is the controller\'s, even when a frame calls the
 		const run = await connected({ soft_delete: () => new Promise((resolve) => { release = () => resolve(fixture('soft_delete_ok')); }) }, { waits: { [OP.trash]: 50 } });
 		await assert.rejects(run.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [ID] }, origin: 'f' }, T), (e: unknown) => e instanceof ExplorerToolError && e.kind === 'timeout');
 		await until(() => Boolean((latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion> | undefined)?.[run.key]), 'a bump for a write that may have run');
+		// The frame that asked ran no batch (it heard a timeout), so it must relist too: the bump names no frame.
+		assert.equal((latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion>)[run.key].origin, '');
 		(release as unknown as () => void)?.();
 		assert.doesNotMatch(WRITE_REFUSED_TEXT, /vector\.|soft_delete|op\b/);
+		run.caller.dispose();
+		run.controller.dispose();
+	});
+});
+
+describe('T10 - a write that ran is never reported as failed for its size', () => {
+	it('an answer over the write cap is cut to what a frame reads, and the write stays the frame\'s own', async () => {
+		const run = await connected({}, { resultCaps: { [OP.trash]: 256 } });
+		assert.ok(JSON.stringify(fixture('soft_delete_ok')).length > 256, 'the premise: the node\'s answer is over the cap');
+		const answer = await run.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [DOC_ID] }, origin: 'frame-a' }, T);
+		assert.deepEqual(answer, { success: true, object_ids: [DOC_ID], matched_chunks: 12, not_found: [] }, 'the fields the frame reads, without the audit block');
+		await until(() => Boolean((latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion> | undefined)?.[run.key]), 'the bump');
+		assert.equal((latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion>)[run.key].origin, 'frame-a', 'the frame relists itself, as for any write that answered');
+		run.caller.dispose();
+		run.controller.dispose();
+	});
+
+	it('an answer still over the cap once cut is refused with its reason, and the bump names no frame (the asking one relists too)', async () => {
+		const run = await connected({}, { resultCaps: { [OP.trash]: 16 } });
+		await assert.rejects(run.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [DOC_ID] }, origin: 'frame-a' }, T), (e: unknown) => e instanceof ExplorerToolError && e.code === 'RESULT_TOO_LARGE');
+		assert.equal(run.engine.world.calls.filter((c) => c.tool === 'soft_delete').length, 1, 'the premise: the write ran');
+		await until(() => Boolean((latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion> | undefined)?.[run.key]), 'the bump');
+		assert.equal((latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion>)[run.key].origin, '');
 		run.caller.dispose();
 		run.controller.dispose();
 	});

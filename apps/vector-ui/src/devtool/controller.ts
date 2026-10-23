@@ -123,6 +123,9 @@ export const WRITE_REFUSED_TEXT = 'Documents cannot be removed or restored throu
 /** Said when a call names a connection discovery does not list. */
 export const NOT_LISTED_TEXT = 'This connection is not listed any more. Refresh the connections.';
 
+/** What a write's answer is cut to when it is over its cap: the fields a frame reads (vector/results.ts). */
+const WRITE_ANSWER_FIELDS = ['success', 'code', 'error', 'retry_after_s', 'object_ids', 'not_found', 'kept_live', 'matched_chunks', 'removed_chunks', 'deleted_count'] as const;
+
 /** How many connections' query hints and summaries are kept (the most recently changed). */
 const MAX_HINT_KEYS = 32;
 
@@ -384,6 +387,16 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 		return [];
 	};
 
+	// A write's answer within its cap: as it came, else cut to the fields a frame reads; null when even that is over.
+	const writeAnswer = (op: WriteOp, raw: unknown): unknown => {
+		const cap = opts.resultCaps?.[op] ?? RESULT_CAPS[op];
+		if (jsonByteLength(raw) <= cap) return raw;
+		if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+		const cut: Record<string, unknown> = {};
+		for (const name of WRITE_ANSWER_FIELDS) if (name in (raw as Record<string, unknown>)) cut[name] = (raw as Record<string, unknown>)[name];
+		return jsonByteLength(cut) <= cap ? cut : null;
+	};
+
 	// ── Op handlers: each answers a Reply (attachController wraps escaping failures) ────────────
 	const read = (op: ReadOp) => async (params: unknown) => {
 		const key = keyOf(params, op);
@@ -411,12 +424,18 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 		try {
 			raw = await store.session(client, endpoint).invoke<unknown>(tool, clean, { nodeId: endpoint.nodeId, timeoutMs: waitOf(op, key), idempotent: false });
 		} catch (error) {
-			// A write the session stopped waiting for may still run: every frame of the connection refetches.
-			if (error instanceof ExplorerToolError && error.kind === 'timeout') bump(key, action, [], origin);
+			// A write the session stopped waiting for may still run: every frame of the connection refetches, the one that
+			// asked included (it heard a failure and ran no batch, so it relists only for a bump that names no frame).
+			if (error instanceof ExplorerToolError && error.kind === 'timeout') bump(key, action, [], '');
 			throw error;
 		}
-		bump(key, action, goneOf(op, raw, ids), origin);
-		return replyOk(sized(raw, op, tool));
+		// The write ran: its answer always reaches the frame. Over the cap it is cut to the fields a frame reads; only one
+		// still over the cap is refused, and then the bump names no frame, so the one that asked relists too.
+		const gone = goneOf(op, raw, ids);
+		const answer = writeAnswer(op, raw);
+		bump(key, action, gone, answer === null ? '' : origin);
+		if (answer === null) return replyOk(sized(raw, op, tool));
+		return replyOk(answer);
 	};
 	const expire = (map: Map<string, { nonce: string }>, key: string, nonce: string, publishMap: () => void): void => {
 		const cancel = schedule(() => {
