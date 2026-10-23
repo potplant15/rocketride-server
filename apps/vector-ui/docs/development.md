@@ -53,7 +53,11 @@ limits) is `docs/development/nodes/vector-tool-contract.md`.
   and call their store through a link read at call time. The full app's is the
   module-level `appConnections` (`connectionEntry`, cleared with the
   connection caches); each frame has its own, so a confirmation shows only in
-  the document that asked.
+  the document that asked. A frame's reset (an account change, the host
+  connection dropping) clears its own registry and forgets only its own
+  connection in the realm's caches (`connectionCaches.forgetKey`; a cache kept
+  per connection registers how to forget one): in rocket-ui the realm may also
+  run the full app and other documents.
 - `src/devtool/protocol.ts` is the contract: the `vector.*` ops (each answers
   a Reply and carries a deadline; a tool op is `{ key, input }` with the
   tool's own input, a write also names the calling frame as `origin`), the
@@ -70,9 +74,15 @@ limits) is `docs/development/nodes/vector-tool-contract.md`.
   (failure envelopes included: the frame unwraps them with their code), caps
   results (`RESULT_TOO_LARGE`) and arguments before any call, re-checks the
   write gate on its own record and probe for every write, sends a write once
-  and bumps `docVersions` for every write that ran or timed out. A call that
-  arrives before its discovery listed and probed the connection (a call held
-  across a remount) waits for it inside its deadline. `src/devtool/wiring.ts`
+  and bumps `docVersions` for every write that ran or timed out. Each version
+  carries the controller mount's `epoch` (a remounted controller counts again
+  from 1). A bump names the asking frame as `origin` only when the write
+  answered (that frame relists itself); a timeout, or an answer still over the
+  cap after it was cut to the fields a frame reads, names no frame, so the one
+  that asked relists too. A call that arrives before its discovery listed and
+  probed the connection (a call held across a remount) waits for it, then runs
+  with what is left of its deadline less a second, and is not sent when less
+  than a second is left. `src/devtool/wiring.ts`
   is the only module that imports the shell's protocol factories. Both build on
   `shared/explorer/devtool` (see `docs/development/apps/explorer-library.md`).
 - `src/devtool/frame.ts` holds the frame's side as plain functions:
@@ -82,7 +92,9 @@ limits) is `docs/development/nodes/vector-tool-contract.md`.
   remounted without them; another frame's write in, which relists, refreshes,
   probes, redraws the map and forgets what left; map requests in, taken once),
   `bindDocument` (the console's query in for the heat strip, focus requests in,
-  every write in), and `documentActions` (Show on map goes to the console). The
+  every write in), and `documentActions` (Show on map goes to the console).
+  Both bindings follow a connection's versions by (epoch, version), and a map
+  that no longer holds the connection forgets what was seen. The
   React mount only routes the docKey and calls these in effects. What a
   document shows before it can open is `connectionDocState` in
   `src/devtool/frameText.ts` (F13 order).
