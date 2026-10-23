@@ -1024,6 +1024,36 @@ def test_client_delete_and_restore_quote_ids_with_slashes(http):
     ]
 
 
+@pytest.mark.parametrize('bad', ['.', '..', ''])
+@pytest.mark.parametrize(
+    'call',
+    [
+        lambda c, bad: c.delete_turn('C1', bad),
+        lambda c, bad: c.restore_turn('C1', bad),
+        lambda c, bad: c.delete_turn(bad, 'T1'),
+        lambda c, bad: c.delete_conversation(bad),
+        lambda c, bad: c.delete_binding(bad),
+        lambda c, bad: c.rename_avatar(bad, 'New'),
+    ],
+    ids=['turn', 'restore', 'conversation-in-turn', 'conversation', 'unbind', 'rename'],
+)
+def test_client_refuses_dot_and_empty_ids_before_any_request(http, call, bad):
+    # quote() keeps dots and requests collapses dot segments: '..' would address another resource.
+    with pytest.raises(MaskyError, match='Invalid id'):
+        call(MaskyClient(KEY), bad)
+    assert http['calls'] == []
+
+
+def test_client_still_quotes_ids_that_merely_contain_dots(http):
+    http['resp'] = FakeResp(200, {'ok': True})
+    MaskyClient(KEY).delete_turn('C1', '...')
+    MaskyClient(KEY).delete_turn('C1', 'a.b')
+    assert [c['url'] for c in http['calls']] == [
+        'https://masky.ai/api/conversations/C1/turns/...',
+        'https://masky.ai/api/conversations/C1/turns/a.b',
+    ]
+
+
 def test_client_delete_5xx_is_sent_once_and_raises(http):
     http['queue'] = [ClosableResp(502, {'error': 'bad gateway'}), ClosableResp(200, {'ok': True})]
     with pytest.raises(MaskyError) as ei:

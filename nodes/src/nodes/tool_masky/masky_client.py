@@ -324,5 +324,12 @@ class MaskyClient:
 
 
 def _seg(value: str) -> str:
-    """Quote an id for use as one URL path segment."""
-    return urllib.parse.quote(str(value), safe='')
+    """Quote an id for use as one URL path segment.
+
+    quote() keeps dots, and requests collapses dot segments, so '.' and '..' (or an
+    empty id) would address a different resource; they are refused before any request.
+    """
+    text = str(value)
+    if text in ('', '.', '..'):
+        raise MaskyError(f'Invalid id: {text!r}')
+    return urllib.parse.quote(text, safe='')
