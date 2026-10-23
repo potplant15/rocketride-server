@@ -1,6 +1,8 @@
 """Exercise Astra's real SDK signatures and cursors with only HTTP mocked.
 
-Run with the astrapy version in constraints.lock; no Astra account is needed.
+Runs on whichever astrapy ``depends()`` resolves for the engine, the version the
+store node itself gets at runtime, so an SDK change fails here before it reaches a
+pipeline; no Astra account is needed.
 Protocol mocks deliberately cannot substitute for the SDK in these regressions.
 """
 
