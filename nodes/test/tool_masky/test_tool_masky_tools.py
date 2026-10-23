@@ -432,11 +432,34 @@ def test_validation_unknown_tool_lists_available():
 
 
 @pytest.mark.parametrize('bad', [['x'], 'x', 5])
-def test_validation_non_dict_input(bad):
+def test_validation_non_dict_input_becomes_empty_args(bad):
     client = FakeClient()
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match='"text" is required'):
         _driver(client)._tool_invoke(tool_name='masky.speak', input_obj=bad)
     assert client.calls == []
+
+
+def test_input_accepts_json_string_and_input_envelope():
+    d = _driver(FakeClient(), settings={'default_avatar': 'A'})
+    d._tool_validate(tool_name='masky.speak', input_obj='{"text": "hi"}')
+    d._tool_validate(tool_name='masky.speak', input_obj={'input': {'text': 'hi'}})
+    client = FakeClient(get_conversation=TURNS)
+    d = _driver(client)
+    for raw in ('{"slug": "c-1", "limit": 1}', {'input': {'slug': 'c-1', 'limit': 1}}):
+        assert d._tool_invoke(tool_name='masky.get_turns', input_obj=raw)['count'] == 1
+    assert client.args_of('get_conversation') == [('c-1',), ('c-1',)]
+
+
+def test_numeric_string_int_args_are_coerced():
+    client = FakeClient(get_conversation=TURNS)
+    d = _driver(client)
+    assert _run(d, 'get_turns', slug='c-1', limit='2')['count'] == 2
+    assert _run(d, 'estimate_cost', kind='video', duration_sec='5')['estimated_credits'] == 0.077
+    calls = len(client.calls)
+    for bad in (True, 1.5, 'many'):
+        with pytest.raises(ValueError, match='"limit" must be an integer between 1 and 100'):
+            _run(d, 'get_turns', slug='c-1', limit=bad)
+    assert len(client.calls) == calls
 
 
 def test_validation_default_avatar_satisfies_avatar_requirement():
@@ -1565,7 +1588,7 @@ def test_set_conversation_look_returns_asset_look_id():
 def test_non_string_url_fields_are_rejected(field):
     fc = FakeClient()
     args = {'prompt': 'p', 'avatar_id': 'A', field: 5}
-    with pytest.raises(ValueError, match=f'{field} must be a string'):
+    with pytest.raises(ValueError, match=f'"{field}" must be a string'):
         _run(_driver(fc), 'generate_video', **args)
     assert fc.calls == []
 
@@ -1759,22 +1782,26 @@ def _refused(d, tool, match=None, **args):
     return ei
 
 
-def test_set_avatar_public_happy_path_and_string_bools():
+def test_set_avatar_public_happy_path_and_refuses_string_bools():
     client = FakeClient()
     d = _driver(client, settings={'allow_public_sharing': True})
     assert _run(d, 'set_avatar_public', avatar_id=' A ', public=True) == {'avatar_id': 'A', 'public': True}
-    assert _run(d, 'set_avatar_public', avatar_id='A', public='false') == {'avatar_id': 'A', 'public': False}
+    assert _run(d, 'set_avatar_public', avatar_id='A', public=False) == {'avatar_id': 'A', 'public': False}
     assert client.args_of('set_avatar_public') == [('A', True), ('A', False)]
+    for bad in ('true', 'false'):
+        with pytest.raises(ValueError, match='"public" must be a boolean'):
+            _run(d, 'set_avatar_public', avatar_id='A', public=bad)
+    assert len(client.calls) == 2
 
 
 def test_set_avatar_public_validation_before_any_call():
     d = _driver(FakeClient())
-    _refused(d, 'set_avatar_public', 'public is required', avatar_id='A')
+    _refused(d, 'set_avatar_public', '"public" is required', avatar_id='A')
     _refused(d, 'set_avatar_public', 'avatar_id', public=True)
-    _refused(d, 'set_avatar_public', 'true or false', avatar_id='A', public='maybe')
+    _refused(d, 'set_avatar_public', '"public" must be a boolean', avatar_id='A', public='maybe')
 
 
-def test_set_conversation_visibility_by_id_and_by_slug():
+def test_set_conversation_visibility_by_id_and_by_slug_refuses_string_bools():
     client = FakeClient(get_conversation={'conversationId': 'C9', 'turns': []})
     d = _driver(client, settings={'allow_public_sharing': True})
     assert _run(d, 'set_conversation_visibility', conversation_id='C1', public=True) == {
@@ -1783,17 +1810,20 @@ def test_set_conversation_visibility_by_id_and_by_slug():
         'public': True,
     }
     assert client.names() == ['set_conversation_visibility']
-    out = _run(d, 'set_conversation_visibility', slug='c-1', public='false')
+    out = _run(d, 'set_conversation_visibility', slug='c-1', public=False)
     assert out == {'conversation_slug': 'c-1', 'conversation_id': 'C9', 'public': False}
     assert client.args_of('set_conversation_visibility') == [('C1', True), ('C9', False)]
     assert client.args_of('get_conversation') == [('c-1',)]
+    with pytest.raises(ValueError, match='"public" must be a boolean'):
+        _run(d, 'set_conversation_visibility', conversation_id='C1', public='false')
+    assert len(client.calls) == 3
 
 
 def test_set_conversation_visibility_validation_before_any_call():
     d = _driver(FakeClient())
-    _refused(d, 'set_conversation_visibility', 'public is required', slug='c-1')
+    _refused(d, 'set_conversation_visibility', '"public" is required', slug='c-1')
     _refused(d, 'set_conversation_visibility', 'slug or conversation_id', public=True)
-    _refused(d, 'set_conversation_visibility', 'true or false', slug='c-1', public='sure')
+    _refused(d, 'set_conversation_visibility', '"public" must be a boolean', slug='c-1', public='sure')
 
 
 def test_create_avatar_public_flag():
@@ -1803,7 +1833,7 @@ def test_create_avatar_public_flag():
         'create_avatar',
         name='Nova',
         image_url='https://i/x.png',
-        public='true',
+        public=True,
     )
     (body,) = client.args_of('create_avatar')[0]
     assert body['publiclyRenderable'] is True
@@ -1813,6 +1843,14 @@ def test_create_avatar_public_flag():
     _run(_driver(client2), 'create_avatar', name='Nova', image_url='https://i/x.png')
     assert 'publiclyRenderable' not in client2.args_of('create_avatar')[0][0]
     _refused(_driver(FakeClient()), 'create_avatar', name='Nova', image_url='https://i/x.png', public=5)
+    _refused(
+        _driver(FakeClient(), settings={'allow_public_sharing': True}),
+        'create_avatar',
+        '"public" must be a boolean',
+        name='Nova',
+        image_url='https://i/x.png',
+        public='true',
+    )
 
 
 def test_edit_image_single_source_uses_image_url():
@@ -1899,16 +1937,23 @@ def test_send_turn_reinterpret():
     assert 'reinterpret' not in client.args_of('send_turn')[-1][1]
 
 
-def test_send_turn_reinterpret_string_true_and_turn_job():
+def test_send_turn_reinterpret_refuses_string_true_and_turn_job():
     client = FakeClient()
     d = _driver(client)
-    _run(d, 'send_turn', conversation_id='C1', text='hi', mode='speak', reinterpret='true')
-    assert client.args_of('send_turn')[0][1]['reinterpret'] is True
+    _refused(
+        d,
+        'send_turn',
+        '"reinterpret" must be a boolean',
+        conversation_id='C1',
+        text='hi',
+        mode='speak',
+        reinterpret='true',
+    )
     d.turn_job(conversation_id='C1', slug=None, text='hi', mode='speak', output='audio', wait=False, reinterpret=True)
-    assert client.args_of('send_turn')[1][1]['reinterpret'] is True
+    assert client.args_of('send_turn')[0][1]['reinterpret'] is True
     # turn_job itself drops the flag outside speak mode.
     d.turn_job(conversation_id='C1', slug=None, text='hi', mode='chat', output='audio', wait=False, reinterpret=True)
-    assert 'reinterpret' not in client.args_of('send_turn')[2][1]
+    assert 'reinterpret' not in client.args_of('send_turn')[1][1]
 
 
 def test_send_turn_reinterpret_validation_before_any_call():
@@ -1925,20 +1970,20 @@ def test_send_turn_reinterpret_validation_before_any_call():
         mode='chat',
         reinterpret=True,
     )
-    _refused(
-        d, 'send_turn', 'reinterpret only applies to mode=speak', slug='c-1', text='hi', mode='chat', reinterpret='true'
-    )
+    _refused(d, 'send_turn', '"reinterpret" must be a boolean', slug='c-1', text='hi', mode='chat', reinterpret='true')
 
 
-def test_set_stream_identity_clear():
+def test_set_stream_identity_clear_refuses_string_bool():
     client = FakeClient(set_stream_identity={'streamIdentity': None})
     out = _run(_driver(client), 'set_stream_identity', clear=True)
     assert out == {'stream_identity': None}
     assert client.args_of('set_stream_identity') == [(None, None)]
     client = FakeClient(set_stream_identity={'streamIdentity': {'avatarId': 'A', 'imageUrl': LOOK_FB}})
-    out = _run(_driver(client), 'set_stream_identity', clear='true')
+    out = _run(_driver(client), 'set_stream_identity', clear=True)
     assert client.args_of('set_stream_identity') == [(None, None)]
     assert out['stream_identity']['avatar_id'] == 'A'
+    client = FakeClient()
+    _refused(_driver(client), 'set_stream_identity', '"clear" must be a boolean', clear='true')
 
 
 def test_set_stream_identity_validation_before_any_call():
@@ -2224,9 +2269,9 @@ def test_client_get_video_pricing_request_exception(pricing_requests, which):
         ('speak', {'text': 'hi', 'avatar_id': 'A', 'wait_for_completion': 2}),
     ],
 )
-def test_optional_booleans_reject_unknown_values(tool, args):
+def test_optional_booleans_reject_non_bool_values(tool, args):
     fc = FakeClient()
-    with pytest.raises(ValueError, match='must be true or false'):
+    with pytest.raises(ValueError, match='must be a boolean'):
         _run(_driver(fc), tool, **args)
     assert fc.calls == []
 
@@ -2809,7 +2854,6 @@ def test_missing_switches_default_to_off():
     'tool,args',
     [
         ('set_avatar_public', {'avatar_id': 'A', 'public': True}),
-        ('set_avatar_public', {'avatar_id': 'A', 'public': 'true'}),
         ('set_conversation_visibility', {'conversation_id': 'C1', 'public': True}),
         ('set_conversation_visibility', {'slug': 'c-1', 'public': True}),
         ('create_avatar', {'name': 'Nova', 'image_url': 'https://i/x.png', 'public': True}),
@@ -3009,9 +3053,9 @@ def test_rename_avatar_success():
 @pytest.mark.parametrize(
     ('args', 'match'),
     [
-        ({'name': 'x'}, 'avatar_id is required'),
-        ({'avatar_id': 'A'}, 'name is required'),
-        ({'avatar_id': 'A', 'name': '   '}, 'name is required'),
+        ({'name': 'x'}, '"avatar_id" is required'),
+        ({'avatar_id': 'A'}, '"name" is required'),
+        ({'avatar_id': 'A', 'name': '   '}, '"name" is required'),
         ({'avatar_id': 'A', 'name': 'x' * 81}, 'name is 81 characters; Masky accepts 80'),
     ],
 )

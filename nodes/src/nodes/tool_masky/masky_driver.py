@@ -41,6 +41,14 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ai.common.tools import ToolsBase
+from ai.common.utils import (
+    normalize_tool_input,
+    optional_bool,
+    optional_int,
+    optional_str,
+    require_bool,
+    require_str,
+)
 
 from .masky_client import MaskyClient
 from .masky_core import (
@@ -175,14 +183,6 @@ def _remember(cache: Dict[str, Any], key: str, value: Any) -> None:  # noqa: ANN
             cache.pop(next(iter(cache)), None)
 
 
-def _as_bool(value: Any, default: bool) -> bool:  # noqa: ANN401
-    if value is None:
-        return default
-    if isinstance(value, str):
-        return value.strip().lower() in {'true', '1', 'yes'}
-    return bool(value)
-
-
 def _str(value: Any) -> str:  # noqa: ANN401
     return value.strip() if isinstance(value, str) else ''
 
@@ -200,19 +200,10 @@ def _is_http(url: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _need(args: Dict[str, Any], name: str) -> str:
-    value = args.get(name)
-    if value is None or (isinstance(value, str) and not value.strip()):
-        raise ValueError(f'{name} is required')
-    if not isinstance(value, str):
-        raise ValueError(f'{name} must be a string')
-    return value.strip()
-
-
-def _opt_str(args: Dict[str, Any], name: str) -> None:
-    value = args.get(name)
-    if value is not None and not isinstance(value, str):
-        raise ValueError(f'{name} must be a string')
+# Type checks use the shared strict helpers in ai.common.utils.tool_args
+# (require_str, optional_str, require_bool, optional_bool, optional_int). The
+# helpers below cover what those do not: enums, Masky's length limits, public
+# URLs and the look_id / look_url pair.
 
 
 def _max_len(value: str, name: str, limit: int, way_out: str) -> None:
@@ -226,21 +217,13 @@ def _enum(args: Dict[str, Any], name: str, allowed: Tuple[Any, ...]) -> None:
 
 
 def _int_range(args: Dict[str, Any], name: str, minimum: int, maximum: Optional[int] = None) -> None:
-    value = args.get(name)
-    if value is None:
-        return
-    bound = f'between {minimum} and {maximum}' if maximum is not None else f'>= {minimum}'
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < minimum
-        or (maximum is not None and value > maximum)
-    ):
-        raise ValueError(f'{name} must be an integer {bound}')
+    """Range-check an optional integer and store it back as an int (a numeric string is accepted)."""
+    if args.get(name) is not None:
+        args[name] = optional_int(args, name, lo=minimum, hi=maximum)
 
 
 def _url(args: Dict[str, Any], name: str, required: bool = False) -> None:
-    _opt_str(args, name)
+    optional_str(args, name)
     value = _str(args.get(name))
     if not value:
         if required:
@@ -251,18 +234,10 @@ def _url(args: Dict[str, Any], name: str, required: bool = False) -> None:
 
 
 def _one_look(args: Dict[str, Any]) -> None:
-    _opt_str(args, 'look_id')
+    optional_str(args, 'look_id')
     _url(args, 'look_url')
     if _str(args.get('look_id')) and _str(args.get('look_url')):
         raise ValueError('Pass look_id or look_url, not both')
-
-
-def _need_bool(args: Dict[str, Any], name: str) -> None:
-    value = args.get(name)
-    if value is None:
-        raise ValueError(f'{name} is required (true or false)')
-    if not isinstance(value, bool) and not (isinstance(value, str) and value.strip().lower() in _BOOL_STRINGS):
-        raise ValueError(f'{name} must be true or false')
 
 
 def _edit_sources(args: Dict[str, Any]) -> List[str]:
@@ -275,16 +250,9 @@ def _edit_sources(args: Dict[str, Any]) -> List[str]:
     return sources
 
 
-_BOOL_STRINGS = {'true', 'false', '1', '0', 'yes', 'no'}
-
-
 def _bool_arg(args: Dict[str, Any], *names: str) -> None:
     for name in names:
-        value = args.get(name)
-        if value is None or isinstance(value, bool):
-            continue
-        if not (isinstance(value, str) and value.strip().lower() in _BOOL_STRINGS):
-            raise ValueError(f'{name} must be true or false')
+        optional_bool(args, name)
 
 
 class MaskyDriver(ToolsBase):
@@ -817,7 +785,11 @@ class MaskyDriver(ToolsBase):
     def _bare(self, tool_name: str) -> str:
         return tool_name.split('.', 1)[-1] if '.' in tool_name else tool_name
 
-    def _tool_validate(self, *, tool_name: str, input_obj: Any) -> None:  # noqa: ANN401, C901
+    def _tool_validate(self, *, tool_name: str, input_obj: Any) -> None:  # noqa: ANN401
+        self._checked_args(tool_name, input_obj)
+
+    def _checked_args(self, tool_name: str, input_obj: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: ANN401
+        """Refuse an unknown or switched-off tool, normalise its input and check it; return (bare, args)."""
         bare = self._bare(tool_name)
         if bare not in self._tools:
             raise ValueError(
@@ -826,25 +798,25 @@ class MaskyDriver(ToolsBase):
         refusal = self._gate(bare)
         if refusal:
             raise ValueError(refusal)
-        if input_obj is None:
-            input_obj = {}
-        if not isinstance(input_obj, dict):
-            raise TypeError('Tool input must be a JSON object')
-        a = input_obj
+        args = normalize_tool_input(input_obj, tool_name=self._server_name)
+        self._validate_args(bare, args)
+        return bare, args
 
+    def _validate_args(self, bare: str, a: Dict[str, Any]) -> None:  # noqa: C901
+        """Check one tool's arguments in place; integers given as numeric strings are stored back as ints."""
         if bare == 'list_avatars':
-            _opt_str(a, 'query')
+            optional_str(a, 'query')
             _bool_arg(a, 'include_public')
         elif bare == 'get_avatar':
             given = [k for k in ('avatar_id', 'handle', 'twitch_name') if _str(a.get(k))]
             if len(given) != 1:
                 raise ValueError('Pass exactly one of avatar_id, handle or twitch_name')
         elif bare == 'create_avatar':
-            _max_len(_need(a, 'name'), 'name', LIMITS['avatar_name_chars'], 'Shorten it.')
+            _max_len(require_str(a, 'name'), 'name', LIMITS['avatar_name_chars'], 'Shorten it.')
             _url(a, 'image_url', required=True)
-            _opt_str(a, 'personality')
+            optional_str(a, 'personality')
             _max_len(_str(a.get('personality')), 'personality', LIMITS['personality_chars'], 'Shorten it.')
-            _opt_str(a, 'voice_id')
+            optional_str(a, 'voice_id')
             urls = a.get('knowledge_urls')
             if urls is not None:
                 if not isinstance(urls, list) or len(urls) > LIMITS['knowledge_urls_max']:
@@ -853,51 +825,50 @@ class MaskyDriver(ToolsBase):
                     if not isinstance(url, str) or not _is_http(url.strip()):
                         raise ValueError('knowledge_urls must contain public http(s) URLs')
             _bool_arg(a, 'public')
-            if _as_bool(a.get('public'), False):
+            if optional_bool(a, 'public', default=False):
                 self._require_public_sharing(f'{self._server_name}.create_avatar(public=true)')
         elif bare == 'delete_conversation':
-            _need(a, 'conversation_id')
+            require_str(a, 'conversation_id')
         elif bare in ('delete_turn', 'restore_turn'):
-            _need(a, 'conversation_id')
-            _need(a, 'turn_id')
+            require_str(a, 'conversation_id')
+            require_str(a, 'turn_id')
         elif bare in ('train_avatar', 'list_looks', 'get_binding', 'unbind_agent'):
-            _need(a, 'avatar_id')
+            require_str(a, 'avatar_id')
         elif bare == 'rename_avatar':
-            _need(a, 'avatar_id')
-            _max_len(_need(a, 'name'), 'name', LIMITS['avatar_name_chars'], 'Shorten it.')
+            require_str(a, 'avatar_id')
+            _max_len(require_str(a, 'name'), 'name', LIMITS['avatar_name_chars'], 'Shorten it.')
         elif bare == 'set_avatar_public':
-            _need(a, 'avatar_id')
-            _need_bool(a, 'public')
-            if _as_bool(a['public'], False):
+            require_str(a, 'avatar_id')
+            if require_bool(a, 'public'):
                 self._require_public_sharing(f'{self._server_name}.set_avatar_public(public=true)')
         elif bare == 'set_stream_identity':
             _bool_arg(a, 'clear')
-            _opt_str(a, 'avatar_id')
-            clearing = _as_bool(a.get('clear'), False)
+            optional_str(a, 'avatar_id')
+            clearing = optional_bool(a, 'clear', default=False)
             if clearing and (_str(a.get('avatar_id')) or _str(a.get('look_id')) or _str(a.get('look_url'))):
                 raise ValueError('Pass clear=true on its own, or avatar_id (with an optional look) to set it')
             if not clearing and not _str(a.get('avatar_id')):
                 raise ValueError('avatar_id is required (or clear=true to remove the stream identity)')
             _one_look(a)
         elif bare == 'list_voices':
-            _opt_str(a, 'query')
+            optional_str(a, 'query')
             _bool_arg(a, 'include_custom')
         elif bare == 'set_avatar_voice':
-            _need(a, 'avatar_id')
-            _need(a, 'voice_id')
+            require_str(a, 'avatar_id')
+            require_str(a, 'voice_id')
         elif bare == 'add_look':
-            _need(a, 'avatar_id')
+            require_str(a, 'avatar_id')
             _url(a, 'image_url', required=True)
         elif bare == 'speak':
-            _max_len(_need(a, 'text'), 'text', LIMITS['speech_chars'], 'Split it into several speak calls.')
+            _max_len(require_str(a, 'text'), 'text', LIMITS['speech_chars'], 'Split it into several speak calls.')
             self._validate_avatar(a)
             _enum(a, 'output', ('audio', 'video'))
             _enum(a, 'text_mode', ('literal', 'personality'))
-            _opt_str(a, 'language')
+            optional_str(a, 'language')
             _one_look(a)
             _bool_arg(a, 'wait_for_completion')
         elif bare == 'generate_video':
-            _max_len(_need(a, 'prompt'), 'prompt', LIMITS['video_prompt_chars'], 'Shorten the prompt.')
+            _max_len(require_str(a, 'prompt'), 'prompt', LIMITS['video_prompt_chars'], 'Shorten the prompt.')
             _url(a, 'image_url')
             _one_look(a)
             if _str(a.get('image_url')) and (_str(a.get('look_id')) or _str(a.get('look_url'))):
@@ -906,7 +877,7 @@ class MaskyDriver(ToolsBase):
                 _str(a.get('avatar_id')) or self._settings.get('default_avatar')
             ):
                 raise ValueError('A look needs avatar_id (or a Default Avatar on the node)')
-            _opt_str(a, 'speech_text')
+            optional_str(a, 'speech_text')
             _max_len(_str(a.get('speech_text')), 'speech_text', LIMITS['video_speech_chars'], 'Shorten the line.')
             _url(a, 'audio_url')
             if _str(a.get('speech_text')) and _str(a.get('audio_url')):
@@ -924,7 +895,7 @@ class MaskyDriver(ToolsBase):
                 self._require_public_sharing(f'{self._server_name}.generate_video(share=public)')
             _bool_arg(a, 'draft', 'silent', 'expand_prompt', 'wait_for_completion')
         elif bare == 'generate_image':
-            _max_len(_need(a, 'prompt'), 'prompt', LIMITS['image_prompt_chars'], 'Shorten the prompt.')
+            _max_len(require_str(a, 'prompt'), 'prompt', LIMITS['image_prompt_chars'], 'Shorten the prompt.')
             _enum(a, 'engine', ('default', 'ideogram'))
             _enum(a, 'aspect_ratio', ASPECT_RATIOS)
         elif bare == 'edit_image':
@@ -942,16 +913,16 @@ class MaskyDriver(ToolsBase):
                 raise ValueError(
                     f'The qwen edit engine takes at most {MAX_QWEN_IMAGES} images; got {len(sources)}. Use engine=default for up to {MAX_EDIT_IMAGES}.'
                 )
-            _max_len(_need(a, 'prompt'), 'prompt', LIMITS['image_prompt_chars'], 'Shorten the instruction.')
+            _max_len(require_str(a, 'prompt'), 'prompt', LIMITS['image_prompt_chars'], 'Shorten the instruction.')
             _enum(a, 'engine', ('default', 'qwen'))
-            _opt_str(a, 'aspect_ratio')
+            optional_str(a, 'aspect_ratio')
         elif bare == 'get_generation':
-            _need(a, 'generation_id')
+            require_str(a, 'generation_id')
             _enum(a, 'kind', JOB_KINDS)
             decode_job_id(a['generation_id'], _str(a.get('kind')) or None)
             _bool_arg(a, 'wait_for_completion')
         elif bare == 'estimate_cost':
-            _need(a, 'kind')
+            require_str(a, 'kind')
             _enum(a, 'kind', ('speak', 'video', 'image', 'turn'))
             _enum(a, 'output', ('audio', 'video'))
             _enum(a, 'resolution', ('720p', '1080p'))
@@ -961,7 +932,7 @@ class MaskyDriver(ToolsBase):
             _int_range(a, 'duration_sec', LIMITS['video_duration_min'], LIMITS['video_duration_max'])
             kind = a['kind']
             if kind in ('speak', 'turn'):
-                _need(a, 'text')
+                require_str(a, 'text')
             if kind == 'image':
                 _enum(a, 'engine', ('default', 'qwen') if _str(a.get('image_url')) else ('default', 'ideogram'))
         elif bare == 'create_conversation':
@@ -969,20 +940,19 @@ class MaskyDriver(ToolsBase):
             _one_look(a)
         elif bare == 'set_conversation_visibility':
             self._need_conversation(a)
-            _need_bool(a, 'public')
-            if _as_bool(a['public'], False):
+            if require_bool(a, 'public'):
                 self._require_public_sharing(f'{self._server_name}.set_conversation_visibility(public=true)')
         elif bare == 'send_turn':
             self._need_conversation(a)
             _bool_arg(a, 'reinterpret')
-            if _as_bool(a.get('reinterpret'), False) and (_str(a.get('mode')) or 'chat') != 'speak':
+            if optional_bool(a, 'reinterpret', default=False) and (_str(a.get('mode')) or 'chat') != 'speak':
                 raise ValueError('reinterpret only applies to mode=speak')
-            _max_len(_need(a, 'text'), 'text', LIMITS['turn_chars'], 'Split it into several turns.')
+            _max_len(require_str(a, 'text'), 'text', LIMITS['turn_chars'], 'Split it into several turns.')
             _enum(a, 'mode', ('chat', 'speak'))
             _enum(a, 'output', ('audio', 'video'))
             _bool_arg(a, 'wait_for_agent')
         elif bare == 'get_turns':
-            _need(a, 'slug')
+            require_str(a, 'slug')
             since = a.get('since')
             if since is not None and (isinstance(since, bool) or not isinstance(since, (str, int))):
                 raise ValueError('since must be a turn_id or epoch milliseconds')
@@ -993,10 +963,10 @@ class MaskyDriver(ToolsBase):
             if not (_str(a.get('look_id')) or _str(a.get('look_url'))):
                 raise ValueError('look_id or look_url is required')
         elif bare == 'bind_agent':
-            _need(a, 'avatar_id')
-            if not PUBKEY_RE.match(_need(a, 'pubkey')):
+            require_str(a, 'avatar_id')
+            if not PUBKEY_RE.match(require_str(a, 'pubkey')):
                 raise ValueError('pubkey must be 64 lowercase hex characters (a Nostr public key)')
-            if not _need(a, 'relay').lower().startswith('wss://'):
+            if not require_str(a, 'relay').lower().startswith('wss://'):
                 raise ValueError('relay must be a wss:// URL')
             _int_range(a, 'timeout_sec', 5, 120)
             _int_range(a, 'kind', 1)
@@ -1010,19 +980,19 @@ class MaskyDriver(ToolsBase):
                 raise ValueError('extra_tags must be a list of string lists, e.g. [["t", "support"]]')
 
     def _validate_avatar(self, a: Dict[str, Any]) -> None:
-        _opt_str(a, 'avatar_id')
+        optional_str(a, 'avatar_id')
         if not (_str(a.get('avatar_id')) or self._settings.get('default_avatar')):
             raise ValueError('avatar_id is required (or set a Default Avatar on the node). Find ids with list_avatars.')
 
     def _need_conversation(self, a: Dict[str, Any]) -> None:
-        _opt_str(a, 'slug')
-        _opt_str(a, 'conversation_id')
+        optional_str(a, 'slug')
+        optional_str(a, 'conversation_id')
         if not (_str(a.get('slug')) or _str(a.get('conversation_id'))):
             raise ValueError('slug or conversation_id is required')
 
     def _tool_invoke(self, *, tool_name: str, input_obj: Any) -> Any:  # noqa: ANN401
-        self._tool_validate(tool_name=tool_name, input_obj=input_obj)
-        return self._tools[self._bare(tool_name)]['run'](input_obj or {})
+        bare, args = self._checked_args(tool_name, input_obj)
+        return self._tools[bare]['run'](args)
 
     # ------------------------------------------------------------------
     # Shared lookups
@@ -1185,7 +1155,7 @@ class MaskyDriver(ToolsBase):
             if shaped:
                 seen.add(shaped['avatar_id'])
                 avatars.append(shaped)
-        if _as_bool(a.get('include_public'), False):
+        if optional_bool(a, 'include_public', default=False):
             for x in self._client.list_public_avatars():
                 shaped = self._shape_avatar(x, own=False, owner={})
                 if shaped and shaped['avatar_id'] not in seen:
@@ -1246,7 +1216,7 @@ class MaskyDriver(ToolsBase):
         if a.get('knowledge_urls'):
             body['knowledgeBaseUrls'] = [u.strip() for u in a['knowledge_urls']]
         if a.get('public') is not None:
-            body['publiclyRenderable'] = _as_bool(a['public'], False)
+            body['publiclyRenderable'] = require_bool(a, 'public')
         result = self._client.create_avatar(body)
         avatar = result.get('avatar') if isinstance(result, dict) and isinstance(result.get('avatar'), dict) else {}
         return {
@@ -1272,7 +1242,7 @@ class MaskyDriver(ToolsBase):
         return {'avatar_id': avatar.get('avatarId') or avatar_id, 'name': avatar.get('displayName') or name}
 
     def _set_avatar_public(self, a: Dict[str, Any]) -> Dict[str, Any]:
-        public = _as_bool(a['public'], False)
+        public = require_bool(a, 'public')
         self._client.set_avatar_public(_str(a['avatar_id']), public)
         return {'avatar_id': _str(a['avatar_id']), 'public': public}
 
@@ -1301,7 +1271,7 @@ class MaskyDriver(ToolsBase):
         return {'stream_identity': self._shape_identity(self._client.get_stream_identity().get('streamIdentity'))}
 
     def _set_stream_identity(self, a: Dict[str, Any]) -> Dict[str, Any]:
-        if _as_bool(a.get('clear'), False):
+        if optional_bool(a, 'clear', default=False):
             result = self._client.set_stream_identity(None)
             return {'stream_identity': self._shape_identity(result.get('streamIdentity'))}
         avatar_id = _str(a['avatar_id'])
@@ -1311,7 +1281,7 @@ class MaskyDriver(ToolsBase):
 
     def _list_voices(self, a: Dict[str, Any]) -> Dict[str, Any]:
         query = _str(a.get('query')).lower()
-        include_custom = _as_bool(a.get('include_custom'), True)
+        include_custom = optional_bool(a, 'include_custom', default=True)
         voices = []
         for v in self._client.list_voices():
             voice_id = _str_or_none(v.get('id')) or _str_or_none(v.get('voiceId'))
@@ -1354,7 +1324,7 @@ class MaskyDriver(ToolsBase):
             look=_str(a.get('look_url')) or _str(a.get('look_id')),
             language=_str(a.get('language')),
             text_mode=_str(a.get('text_mode')),
-            wait=_as_bool(a.get('wait_for_completion'), False),
+            wait=optional_bool(a, 'wait_for_completion', default=False),
         )
         return self._finish(receipt)
 
@@ -1415,7 +1385,7 @@ class MaskyDriver(ToolsBase):
 
     def _video_params(self, a: Dict[str, Any]) -> Tuple[str, bool]:
         resolution = _str(a.get('resolution')) or TOOL_DEFAULTS['resolution']
-        draft = _as_bool(a.get('draft'), TOOL_DEFAULTS['draft'])
+        draft = optional_bool(a, 'draft', default=TOOL_DEFAULTS['draft'])
         return resolution, draft
 
     def _generate_video(self, a: Dict[str, Any]) -> Dict[str, Any]:
@@ -1428,8 +1398,8 @@ class MaskyDriver(ToolsBase):
             fps=a.get('fps'),
             aspect_ratio=_str(a.get('aspect_ratio')),
             seed=a.get('seed'),
-            silent=None if a.get('silent') is None else _as_bool(a['silent'], False),
-            expand_prompt=None if a.get('expand_prompt') is None else _as_bool(a['expand_prompt'], True),
+            silent=optional_bool(a, 'silent'),
+            expand_prompt=optional_bool(a, 'expand_prompt'),
             share=_str(a.get('share')),
             image_url=_str(a.get('image_url')),
             look=_str(a.get('look_url')) or _str(a.get('look_id')),
@@ -1437,7 +1407,7 @@ class MaskyDriver(ToolsBase):
             speech_text=_str(a.get('speech_text')),
             audio_url=_str(a.get('audio_url')),
             last_frame_image=_str(a.get('last_frame_image_url')),
-            wait=_as_bool(a.get('wait_for_completion'), False),
+            wait=optional_bool(a, 'wait_for_completion', default=False),
         )
         return self._finish(receipt)
 
@@ -1582,7 +1552,7 @@ class MaskyDriver(ToolsBase):
         job = self._jobs.get(f'{kind}:{raw_id}', {})
         estimate = job.get('estimate') or {}
         started = job.get('started')
-        wait = _as_bool(a.get('wait_for_completion'), False)
+        wait = optional_bool(a, 'wait_for_completion', default=False)
 
         if kind == 'image':
             cached = self._images.get(f'image:{raw_id}')
@@ -1653,7 +1623,7 @@ class MaskyDriver(ToolsBase):
                 _str(a['text']),
                 mode=_str(a.get('mode')) or 'chat',
                 output=_str(a.get('output')) or 'audio',
-                reinterpret=_as_bool(a.get('reinterpret'), False),
+                reinterpret=optional_bool(a, 'reinterpret', default=False),
             )
         cap = self._settings.get('max_credits_per_call', 1.0)
         return {
@@ -1721,7 +1691,7 @@ class MaskyDriver(ToolsBase):
             return dict(self._pipeline_conversation)
 
     def _set_conversation_visibility(self, a: Dict[str, Any]) -> Dict[str, Any]:
-        public = _as_bool(a['public'], False)
+        public = require_bool(a, 'public')
         conversation_id, slug, _ = self._conversation(a)
         self._client.set_conversation_visibility(conversation_id, public)
         return {'conversation_slug': slug, 'conversation_id': conversation_id, 'public': public}
@@ -1800,7 +1770,7 @@ class MaskyDriver(ToolsBase):
     def _send_turn(self, a: Dict[str, Any]) -> Dict[str, Any]:
         # The cost guard runs before any request, including the slug lookup.
         mode, output = _str(a.get('mode')) or 'chat', _str(a.get('output')) or 'audio'
-        reinterpret = _as_bool(a.get('reinterpret'), False)
+        reinterpret = optional_bool(a, 'reinterpret', default=False)
         check_budget(
             estimate_turn(_str(a['text']), mode=mode, output=output, reinterpret=reinterpret),
             self._settings.get('max_credits_per_call', 1.0),
@@ -1812,7 +1782,7 @@ class MaskyDriver(ToolsBase):
             text=_str(a['text']),
             mode=mode,
             output=output,
-            wait=_as_bool(a.get('wait_for_agent'), False),
+            wait=optional_bool(a, 'wait_for_agent', default=False),
             include_urls=self._include_media_urls,
             reinterpret=reinterpret,
         )
@@ -1942,7 +1912,7 @@ class MaskyDriver(ToolsBase):
         if _str(a.get('fallback')):
             body['fallback'] = _str(a['fallback'])
         if a.get('enabled') is not None:
-            body['enabled'] = _as_bool(a['enabled'], True)
+            body['enabled'] = a['enabled']
         if a.get('kind') is not None:
             body['kind'] = a['kind']
         if a.get('extra_tags'):

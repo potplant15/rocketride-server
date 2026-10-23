@@ -189,10 +189,10 @@ def test_unknown_tool_names_available(http):
     assert http['calls'] == []
 
 
-def test_non_dict_input_type_error(http):
+def test_non_dict_input_becomes_empty_args_and_fails_on_required_arg(http):
     d = _driver(MaskyClient(KEY))
-    with pytest.raises(TypeError):
-        d._tool_invoke(tool_name='masky.list_voices', input_obj=['x'])
+    with pytest.raises(ValueError, match='"text" is required'):
+        d._tool_invoke(tool_name='masky.speak', input_obj=['x'])
     assert http['calls'] == []
 
 
@@ -233,8 +233,11 @@ def test_list_voices_include_custom_false():
     assert [v['voice_id'] for v in _voices(include_custom=False)['voices']] == ['v1', 'v3']
 
 
-def test_list_voices_include_custom_string_false():
-    assert [v['voice_id'] for v in _voices(include_custom='false')['voices']] == ['v1', 'v3']
+def test_list_voices_include_custom_refuses_string_false():
+    client = FakeClient(voices=VOICES)
+    with pytest.raises(ValueError, match='"include_custom" must be a boolean'):
+        _driver(client)._tool_invoke(tool_name='masky.list_voices', input_obj={'include_custom': 'false'})
+    assert client.calls == []
 
 
 def test_list_voices_query_case_insensitive():
