@@ -16,6 +16,7 @@ The tests start a fresh engine: the flag is set once per process.
 
 import os
 import select
+import shutil
 import subprocess
 import sys
 
@@ -33,12 +34,12 @@ _START_TIMEOUT = 60
 _CAP_SYS_PTRACE = 19
 
 
-def _flag_of_a_new_engine(**env: str) -> int:
-    """Start the engine this test runs under and return its dumpable flag."""
+def _flag_of_a_new_engine(engine: str = sys.executable, **env: str) -> int:
+    """Start an engine, by default the one this test runs under, and return its dumpable flag."""
     environ = {k: v for k, v in os.environ.items() if k != 'RR_ENABLE_DEBUGGER_CONNECTION'}
     environ.update(env)
     out = subprocess.run(
-        [sys.executable, '-c', _PRINT_FLAG],
+        [engine, '-c', _PRINT_FLAG],
         env=environ,
         capture_output=True,
         text=True,
@@ -72,6 +73,30 @@ def test_the_opt_out_keeps_a_debuggers_way_in(value):
 def test_any_other_value_leaves_the_engine_closed(value):
     """A value that is not a yes, a typo included, must not open the process."""
     assert _flag_of_a_new_engine(RR_ENABLE_DEBUGGER_CONNECTION=value) == 0
+
+
+def test_an_engine_its_user_cannot_read_runs_closed_even_with_the_opt_out():
+    """The kernel starts a binary its user cannot read, as in the images, with fs.suid_dumpable as its flag.
+
+    A 2 (Ubuntu, the CI runners) is what Crashpad cannot dump, so the engine clears it (#2782).
+    A 0 (WSL, Docker Desktop) is the kernel's own close, which the opt-out must not open.
+    """
+    with open('/proc/sys/fs/suid_dumpable', encoding='utf-8') as f:
+        host = int(f.read())
+    if host == 1:
+        pytest.skip('fs.suid_dumpable is 1: the kernel starts every binary open')
+    if os.geteuid() == 0:
+        pytest.skip('root reads any file, so the kernel starts the copy open')
+
+    # Next to the engine, which finds its libraries and Python from where it runs
+    copy = os.path.join(os.path.dirname(sys.executable), f'.engine-unreadable-{os.getpid()}')
+    shutil.copyfile(sys.executable, copy)
+    try:
+        os.chmod(copy, 0o111)
+        flag = _flag_of_a_new_engine(copy, RR_ENABLE_DEBUGGER_CONNECTION='1')
+    finally:
+        os.remove(copy)
+    assert flag == 0, f'fs.suid_dumpable is {host}'
 
 
 def test_a_closed_engine_hides_its_environment_from_its_users_processes():
