@@ -47,6 +47,9 @@ const LANE_FILES = [
 	'adapters/connections.ts',
 	'adapters/consoleActions.ts',
 	'adapters/react.ts',
+	'env.ts',
+	'envContext.tsx',
+	'localEnv.ts',
 	'components/StatsStrip.tsx',
 	'components/StatsCharts.tsx',
 	'components/ScopeBar.tsx',
@@ -84,9 +87,12 @@ test("a document tab and the console both front the connection's console tab for
 	const app = code('VectorApp.tsx');
 	assert.match(app, /import ConnectionsView, \{ openConsole \} from '\.\/views\/ConnectionsView';/);
 	assert.match(app, /makeConsoleActions\(entry, \{[\s\S]*?showConsole: \(\) => openConsole\(entry\.ctx\.endpoint\),[\s\S]*?\}\)/);
+	// The console is also a dev-tool frame's document, so it fronts the console through its mount's env (the full
+	// app's env opens it with openConsole, tests/devtool.env.test.ts), never through the full app's landing.
 	const view = code('views/ConsoleView.tsx');
-	assert.match(view, /import \{ openConsole \} from '\.\/ConnectionsView';/);
-	assert.match(view, /makeConsoleActions\(entry, \{[\s\S]*?showConsole: \(\) => openConsole\(entry\.ctx\.endpoint\),[\s\S]*?\}\)/);
+	assert.doesNotMatch(view, /from '\.\/ConnectionsView'/);
+	assert.match(view, /makeConsoleActions\(entry, \{[\s\S]*?showConsole: \(\) => env\.openConsole\(entry\.ctx\.endpoint\),[\s\S]*?\}\)/);
+	assert.match(app, /createLocalVectorEnv\(\{[^}]*openConsole, openDocument: openDocumentTab \}\)/, "and the full app's env is the landing's openConsole");
 });
 
 test('the console is the first view of a connection: the landing and the sidebar open its console', () => {
@@ -228,7 +234,7 @@ test("no lane file reads a token or a component's configuration, or stops events
 });
 
 test('pure modules stay pure: vector/ and the pure adapters import no shell value and no React', () => {
-	const pure = LANE_FILES.filter((f) => f.startsWith('vector/') || ['adapters/explorer.ts', 'adapters/actions.ts', 'adapters/connections.ts', 'adapters/consoleActions.ts'].includes(f));
+	const pure = LANE_FILES.filter((f) => f.startsWith('vector/') || ['adapters/explorer.ts', 'adapters/actions.ts', 'adapters/connections.ts', 'adapters/consoleActions.ts', 'env.ts', 'localEnv.ts'].includes(f));
 	for (const file of pure) {
 		const source = code(file);
 		assert.doesNotMatch(source, /^import (?!type )[^;]*from 'shell';/m, `${file} imports a shell value`);

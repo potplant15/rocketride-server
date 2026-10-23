@@ -42,17 +42,20 @@ import { AppLayout, Button, DocSplitLayout, DocTabs, EmptyState, commonStyles, u
 import type { Documents, ShellAppProps } from 'shell';
 import { identityFingerprint, identityFromConnectResult } from 'shared/explorer';
 import { makeConsoleActions } from './adapters/consoleActions';
+import { appConnections } from './adapters/connections';
 import { LiveRegion, activeConnection, announcer, connectionCaches, vectorEndpoints } from './adapters/explorer';
-import { VectorHistoryPrefsBridge, useConnection, useEndpointStoreLifecycle, useLiveEndpoint } from './adapters/react';
+import { VectorHistoryPrefsBridge, useEndpointStoreLifecycle } from './adapters/react';
 import RemoveDialogHost from './components/RemoveDialogHost';
-import { createDocs, destroyDocs, getDocs } from './docs';
+import { createDocs, destroyDocs, getDocs, openDocumentTab } from './docs';
 import type { IConsoleDocPayload, IDocumentDocPayload } from './docs';
+import { VectorEnvProvider, useConnection, useLiveEndpoint } from './envContext';
+import { createLocalVectorEnv } from './localEnv';
 import { CONNECTIONS_URI, endpointKeyFromUri, isConsoleUri, isDocumentUri } from './vector/addresses';
 import { forgetConnections } from './vector/identityChange';
 import VectorSidebar from './VectorSidebar';
 import { VectorIcon } from './icons';
 import ConnectionsView, { openConsole } from './views/ConnectionsView';
-import ConsoleView, { openDocumentTab } from './views/ConsoleView';
+import ConsoleView from './views/ConsoleView';
 import DocumentView from './views/DocumentView';
 
 const styles = {
@@ -66,6 +69,9 @@ const styles = {
 /** The landing document's URI and label. */
 const LANDING = { uri: CONNECTIONS_URI, label: 'Connections' };
 
+/** The active connection, as the env hands it out. */
+const ACTIVE = { get: activeConnection.get, subscribe: activeConnection.subscribe };
+
 /**
  * Vector Explorer - client area.
  *
@@ -74,8 +80,10 @@ const LANDING = { uri: CONNECTIONS_URI, label: 'Connections' };
  */
 const VectorApp: React.FC<ShellAppProps> = ({ identity }) => {
 	const [ready, setReady] = useState(false);
-	const { client } = useShellConnection();
+	const { client, isConnected } = useShellConnection();
 	useEndpointStoreLifecycle(vectorEndpoints, client, identity);
+	// The LOCAL env every view below reads: the app's store, its client, its connection registry and its documents.
+	const env = useMemo(() => createLocalVectorEnv({ ready: client !== null && isConnected, client, store: vectorEndpoints, registry: appConnections, activeConnection: ACTIVE, openConsole, openDocument: openDocumentTab }), [client, isConnected]);
 
 	// A different user, organization or team (or a sign-out) must find nothing from before: every console and
 	// document tab closes and every per-connection cache clears. On the first run the documents do not exist yet.
@@ -100,7 +108,9 @@ const VectorApp: React.FC<ShellAppProps> = ({ identity }) => {
 	if (!ready) return <AppLayout showStatus>{null}</AppLayout>;
 	return (
 		<AppLayout sidebar={sidebar} showStatus>
-			<VectorAppReady docs={getDocs()!} />
+			<VectorEnvProvider value={env}>
+				<VectorAppReady docs={getDocs()!} />
+			</VectorEnvProvider>
 		</AppLayout>
 	);
 };
@@ -178,9 +188,8 @@ const VectorAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
 
 /** One stored document's tab, bound to its connection's live model. */
 const DocumentTab: React.FC<{ payload: IDocumentDocPayload; active: boolean }> = ({ payload, active }) => {
-	const { client } = useShellConnection();
 	const endpoint = useLiveEndpoint(payload.endpoint);
-	const { entry, model, channels } = useConnection(endpoint, client);
+	const { entry, model, channels } = useConnection(endpoint);
 	const actions = useMemo(
 		() =>
 			makeConsoleActions(entry, {
