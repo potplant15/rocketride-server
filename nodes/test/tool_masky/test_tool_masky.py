@@ -28,7 +28,7 @@ with scoped_stubs():
     from tool_masky import IInstance as IInstanceMod  # noqa: E402,F401
     from tool_masky import masky_core as core  # noqa: E402
     from tool_masky.masky_client import MaskyClient  # noqa: E402
-    from tool_masky.masky_core import MaskyError  # noqa: E402
+    from tool_masky.masky_core import MaskyCancelled, MaskyError  # noqa: E402
     from tool_masky.masky_driver import MaskyDriver  # noqa: E402
 
 KEY = 'mky_SECRET_KEY_123'  # gitleaks:allow -- fake key; tests assert it never appears in errors
@@ -1100,3 +1100,39 @@ def test_dropped_connection_on_a_write_warns_it_may_have_been_accepted(http, cal
 def test_dropped_connection_on_a_read_still_says_check_the_network(http):
     e = _call(http, exc=_connection_error(http))
     assert 'Could not reach Masky (ConnectionError). Check the network and the base URL.' == str(e)
+
+
+# ---------------------------------------------------------------------------
+# Cancellation wiring: beginGlobal hands the driver rocketlib.isCancelled
+# ---------------------------------------------------------------------------
+
+
+def test_begin_global_wires_rocketlib_is_cancelled_into_the_driver(stubs, http, monkeypatch):
+    def is_cancelled():
+        return False
+
+    sys.modules['rocketlib'].isCancelled = is_cancelled
+    ig = _iglobal(monkeypatch, IGlobalMod.OPEN_MODE.SOURCE, {'apikey': KEY})
+    ig.beginGlobal()
+    assert ig.driver._is_cancelled is is_cancelled
+
+
+def test_a_cancelled_pipeline_stops_waiting_through_that_wiring(stubs, http, monkeypatch):
+    sys.modules['rocketlib'].isCancelled = lambda: True
+    ig = _iglobal(
+        monkeypatch,
+        IGlobalMod.OPEN_MODE.SOURCE,
+        {'apikey': KEY, 'defaultAvatar': 'A', 'timeoutSec': 10, 'pollIntervalSec': 1},
+    )
+    ig.beginGlobal()
+    http['queue'] = [
+        FakeResp(202, {'async': True, 'generationId': 'G1'}),
+        FakeResp(200, {'generation': {'generationId': 'G1', 'status': 'pending'}}),
+    ]
+    with pytest.raises(MaskyCancelled):
+        ig.driver._tool_invoke(
+            tool_name='masky.speak', input_obj={'text': 'hi', 'output': 'audio', 'wait_for_completion': True}
+        )
+    assert [c['method'] for c in http['calls']] == ['POST', 'GET'], (
+        'it stops at the first wait, without waiting out timeoutSec'
+    )
