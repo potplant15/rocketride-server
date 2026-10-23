@@ -189,10 +189,26 @@ def test_unknown_tool_names_available(http):
     assert http['calls'] == []
 
 
-def test_non_dict_input_becomes_empty_args_and_fails_on_required_arg(http):
+@pytest.mark.parametrize('bad', [['x'], 5, 'not json'])
+def test_non_dict_input_is_refused(http, bad):
+    d = _driver(MaskyClient(KEY))
+    with pytest.raises(ValueError, match='Tool input must be a JSON object'):
+        d._tool_invoke(tool_name='masky.speak', input_obj=bad)
+    assert http['calls'] == []
+
+
+def test_non_dict_input_is_refused_for_a_tool_with_no_required_args(http):
+    d = _driver(MaskyClient(KEY))
+    with pytest.raises(ValueError, match='Tool input must be a JSON object'):
+        d._tool_invoke(tool_name='masky.list_voices', input_obj=['x'])
+    assert http['calls'] == []
+
+
+@pytest.mark.parametrize('empty', [None, '', {}])
+def test_empty_input_still_fails_on_required_arg(http, empty):
     d = _driver(MaskyClient(KEY))
     with pytest.raises(ValueError, match='"text" is required'):
-        d._tool_invoke(tool_name='masky.speak', input_obj=['x'])
+        d._tool_invoke(tool_name='masky.speak', input_obj=empty)
     assert http['calls'] == []
 
 
@@ -1027,7 +1043,7 @@ def test_client_delete_and_restore_quote_ids_with_slashes(http):
     ]
 
 
-@pytest.mark.parametrize('bad', ['.', '..', ''])
+@pytest.mark.parametrize('bad', ['.', '..', '', None])
 @pytest.mark.parametrize(
     'call',
     [
@@ -1040,7 +1056,7 @@ def test_client_delete_and_restore_quote_ids_with_slashes(http):
     ],
     ids=['turn', 'restore', 'conversation-in-turn', 'conversation', 'unbind', 'rename'],
 )
-def test_client_refuses_dot_and_empty_ids_before_any_request(http, call, bad):
+def test_client_refuses_dot_empty_and_missing_ids_before_any_request(http, call, bad):
     # quote() keeps dots and requests collapses dot segments: '..' would address another resource.
     with pytest.raises(MaskyError, match='Invalid id'):
         call(MaskyClient(KEY), bad)

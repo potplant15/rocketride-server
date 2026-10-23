@@ -24,8 +24,9 @@
 """
 Masky HTTP client.
 
-A thin layer over the Masky REST API (https://masky.ai/api). Retries 429 and
-5xx responses through ``masky_core.with_retries`` and turns every failure into
+A thin layer over the Masky REST API (https://masky.ai/api). Retries 429 for
+every request and 5xx for reads only (a write Masky may have accepted is never
+resent) through ``masky_core.with_retries``, and turns every failure into
 a ``MaskyError`` whose message names the cause and the fix. The API key is
 only ever placed in the Authorization header; it never appears in an error
 message or a log line.
@@ -333,9 +334,9 @@ def _seg(value: str) -> str:
     """Quote an id for use as one URL path segment.
 
     quote() keeps dots, and requests collapses dot segments, so '.' and '..' (or an
-    empty id) would address a different resource; they are refused before any request.
+    empty or missing id) would address a different resource; they are refused before any request.
     """
-    text = str(value)
+    text = '' if value is None else str(value)
     if text in ('', '.', '..'):
         raise MaskyError(f'Invalid id: {text!r}')
     return urllib.parse.quote(text, safe='')

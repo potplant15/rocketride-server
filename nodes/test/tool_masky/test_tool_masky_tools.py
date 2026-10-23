@@ -431,11 +431,27 @@ def test_validation_unknown_tool_lists_available():
     assert client.calls == []
 
 
-@pytest.mark.parametrize('bad', [['x'], 'x', 5])
-def test_validation_non_dict_input_becomes_empty_args(bad):
+@pytest.mark.parametrize('bad', [['x'], 'x', 5, 1.5, True])
+def test_validation_non_object_input_is_refused(bad):
+    client = FakeClient()
+    with pytest.raises(ValueError, match='Tool input must be a JSON object'):
+        _driver(client)._tool_invoke(tool_name='masky.speak', input_obj=bad)
+    assert client.calls == []
+
+
+@pytest.mark.parametrize('bad', [[], ['x'], 5, 'not json', '[1]'])
+def test_validation_non_object_input_is_refused_even_without_required_args(bad):
+    client = FakeClient()
+    with pytest.raises(ValueError, match='Tool input must be a JSON object'):
+        _driver(client)._tool_invoke(tool_name='masky.list_voices', input_obj=bad)
+    assert client.calls == []
+
+
+@pytest.mark.parametrize('empty', [None, {}, '', '{}', {'input': {}}])
+def test_validation_empty_object_input_still_reaches_required_arg_check(empty):
     client = FakeClient()
     with pytest.raises(ValueError, match='"text" is required'):
-        _driver(client)._tool_invoke(tool_name='masky.speak', input_obj=bad)
+        _driver(client)._tool_invoke(tool_name='masky.speak', input_obj=empty)
     assert client.calls == []
 
 
@@ -3124,6 +3140,29 @@ def test_speak_wait_still_propagates_cancellation():
     fc = FakeClient(get_speak=[MaskyCancelled('Cancelled while waiting for Masky to finish rendering.')])
     with pytest.raises(MaskyCancelled):
         _run(_driver(fc), 'speak', text='hi', avatar_id='A', output='audio', wait_for_completion=True)
+
+
+def test_speak_cancellation_while_waiting_names_the_accepted_job():
+    fc = FakeClient(get_speak=[MaskyCancelled('Cancelled while waiting for Masky to finish rendering.')])
+    with pytest.raises(MaskyCancelled) as e:
+        _run(_driver(fc), 'speak', text='hi', avatar_id='A', output='audio', wait_for_completion=True)
+    assert 'Cancelled while waiting' in str(e.value) and 'speak:G1' in str(e.value)
+
+
+def test_video_cancellation_while_waiting_names_the_accepted_job():
+    fc = FakeClient(get_video=[MaskyCancelled('Cancelled while waiting for Masky to finish rendering.')])
+    with pytest.raises(MaskyCancelled) as e:
+        _run(_driver(fc), 'generate_video', prompt='a cat', wait_for_completion=True)
+    assert 'Cancelled while waiting' in str(e.value) and 'video:V1' in str(e.value)
+
+
+def test_turn_cancellation_while_waiting_names_the_accepted_turn():
+    fc = FakeClient(get_conversation=[MaskyCancelled('Cancelled while waiting for Masky to finish rendering.')])
+    d = _driver(fc)
+    slug = _run(d, 'create_conversation', avatar_id='A')['conversation_slug']
+    with pytest.raises(MaskyCancelled) as e:
+        d.turn_job(conversation_id='C1', slug=slug, text='hi', mode='speak', output='audio', wait=True)
+    assert 'Cancelled while waiting' in str(e.value) and 'turn T1' in str(e.value)
 
 
 def test_video_wait_keeps_the_job_id_when_the_status_check_fails():

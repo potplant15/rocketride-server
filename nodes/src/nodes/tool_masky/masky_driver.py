@@ -35,6 +35,7 @@ API docs: https://masky.ai/api/docs/masky-openapi.json
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -59,6 +60,7 @@ from .masky_core import (
     MaskyError,
     check_budget,
     decode_job_id,
+    encode_job_id,
     estimate_image,
     estimate_speak,
     estimate_turn,
@@ -248,6 +250,18 @@ def _edit_sources(args: Dict[str, Any]) -> List[str]:
         if url and url not in sources:
             sources.append(url)
     return sources
+
+
+def _is_object_input(value: Any) -> bool:  # noqa: ANN401
+    """True for input normalize_tool_input reads as an object: None, a dict, a model or a JSON object string."""
+    if value is None or isinstance(value, dict) or hasattr(value, 'model_dump') or hasattr(value, 'dict'):
+        return True
+    if isinstance(value, str):
+        try:
+            return isinstance(json.loads(value or '{}'), dict)
+        except ValueError:
+            return False
+    return False
 
 
 def _bool_arg(args: Dict[str, Any], *names: str) -> None:
@@ -799,6 +813,10 @@ class MaskyDriver(ToolsBase):
         if refusal:
             raise ValueError(refusal)
         args = normalize_tool_input(input_obj, tool_name=self._server_name)
+        if not args and not _is_object_input(input_obj):
+            # normalize_tool_input turns a list, number or non-JSON string into {}; refuse it
+            # rather than run the tool with its defaults.
+            raise ValueError('Tool input must be a JSON object')
         self._validate_args(bare, args)
         return bare, args
 
@@ -1085,18 +1103,22 @@ class MaskyDriver(ToolsBase):
         fetch: Callable[[], Any],
         is_done: Callable[[Any], bool],
         initial: Any,  # noqa: ANN401
+        what: str,
     ) -> Tuple[Any, bool, Optional[str]]:
         """Wait after a paid request was accepted; a failing status check returns, it does not raise.
 
         Returns ``(result, finished, poll_error)``. If checking fails, ``result`` is the
         accepted response (``initial``) and ``poll_error`` says why, so the caller keeps
-        the job id instead of losing it. Cancellation still propagates.
+        the job id instead of losing it. Cancellation still propagates, naming ``what``.
         """
         try:
             result, finished = self._wait(fetch, is_done)
             return result, finished, None
-        except MaskyCancelled:
-            raise
+        except MaskyCancelled as e:
+            raise MaskyCancelled(
+                f'{e} Masky had already accepted {what}; it may still render and be charged, so check it '
+                'instead of sending it again.'
+            ) from None
         except MaskyError as e:
             return initial, False, str(e)
 
@@ -1371,6 +1393,7 @@ class MaskyDriver(ToolsBase):
                 lambda: self._client.get_speak(raw_id),
                 lambda b: speak_status(b.get('generation') or b, output) in ('done', 'failed'),
                 result,
+                f'job {encode_job_id("speak", raw_id)}',
             )
             receipt = speak_receipt(result, output=output, estimate=estimate, elapsed_sec=time.monotonic() - started)
             if poll_error:
@@ -1487,6 +1510,7 @@ class MaskyDriver(ToolsBase):
                 lambda: self._client.get_video(raw_id),
                 lambda b: (b.get('status') or '').lower() in ('ready', 'error'),
                 result,
+                f'job {encode_job_id("video", raw_id)}',
             )
             receipt = video_receipt(result, estimate=estimate, elapsed_sec=time.monotonic() - started)
             if poll_error:
@@ -1702,7 +1726,7 @@ class MaskyDriver(ToolsBase):
         conversation_id = _str_or_none(a.get('conversation_id'))
         if conversation_id:
             known = next(
-                ((s, v) for s, v in self._conversations.items() if v.get('conversation_id') == conversation_id),
+                ((s, v) for s, v in list(self._conversations.items()) if v.get('conversation_id') == conversation_id),
                 (None, {}),
             )
             return conversation_id, slug or known[0], known[1]
@@ -1816,7 +1840,7 @@ class MaskyDriver(ToolsBase):
                 )
 
             turn, finished, poll_error = self._wait_after_paid(
-                fetch, lambda x: self._turn_status(x, output) in ('done', 'failed'), turn
+                fetch, lambda x: self._turn_status(x, output) in ('done', 'failed'), turn, f'turn {turn["id"]}'
             )
             shaped = self._shape_turn(turn, output, include_urls)
             if poll_error:

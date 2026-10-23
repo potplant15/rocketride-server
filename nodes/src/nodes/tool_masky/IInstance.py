@@ -198,7 +198,9 @@ class IInstance(IInstanceBase):
                     raise
                 sent = ', '.join(str(x) for x in turn_ids)
                 # Keep the error's class (cancellation stays cancellation) and add what was already sent.
-                raise type(e)(f'{e} Turns sent from this record before the failure: {sent}.') from None
+                error = type(e)(f'{e} Turns sent from this record before the failure: {sent}.')
+                error.status, error.credit_detail = e.status, e.credit_detail
+                raise error from None
             turn_ids.append(turn.get('turn_id'))
             statuses.append(turn.get('status'))
             estimated += turn.get('estimated_credits') or 0

@@ -1106,6 +1106,20 @@ def test_live_failure_mid_record_lists_the_turns_already_sent():
     assert 'Turns sent from this record before the failure: T1.' in str(e.value)
 
 
+def test_live_failure_mid_record_keeps_the_status_and_credit_detail():
+    error = MaskyError('Masky says you are out of credits.', status=402)
+    error.credit_detail = ' (needs 9, available 2)'
+    driver = FailingSecondTurnDriver(error)
+    inst = build(
+        {'action': 'live', 'conversation': '', 'turn_mode': 'speak', 'turn_output': 'audio', 'wait_for_turn': True},
+        driver,
+    )
+    with pytest.raises(MaskyError) as e:
+        run(inst, _sentences(1200))
+    assert e.value.status == 402 and e.value.credit_detail == ' (needs 9, available 2)'
+    assert 'Turns sent from this record before the failure: T1.' in str(e.value)
+
+
 def test_live_cancellation_mid_record_stays_cancellation():
     driver = FailingSecondTurnDriver(MaskyCancelled('Cancelled while waiting for Masky to finish rendering.'))
     inst = build(
