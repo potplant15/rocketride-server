@@ -120,6 +120,8 @@ export interface IChunkTextCache {
 	/** A kept text, or undefined. */
 	peek(scope: string, key: VectorKey): IChunkText | undefined;
 	clear(): void;
+	/** Forget one connection's texts (and drop its answers still on their way). */
+	forget(connectionKey: string): void;
 }
 
 /**
@@ -166,13 +168,19 @@ export function createChunkTextCache(max = 64): IChunkTextCache {
 			kept.clear();
 			pending.clear();
 		},
+		forget(connectionKey) {
+			// Scopes are chunkTextScope's JSON pairs, so one connection's start with its key as the first element.
+			const prefix = JSON.stringify([connectionKey]).slice(0, -1) + ',';
+			epoch += 1;
+			for (const map of [kept, pending] as const) for (const k of [...map.keys()]) if (k.startsWith(prefix)) map.delete(k);
+		},
 	};
 }
 
 /** The inspector's chunk texts (per connection and sample, bounded), emptied on a change of identity. */
 export const chunkTexts = createChunkTextCache();
 
-connectionCaches.register('chunk text', () => chunkTexts.clear());
+connectionCaches.register('chunk text', () => chunkTexts.clear(), (key) => chunkTexts.forget(key));
 
 // =============================================================================
 // THE PANEL

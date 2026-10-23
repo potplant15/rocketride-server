@@ -483,8 +483,10 @@ export function createVectorFrame(opts: IVectorFrameOptions): IVectorFrame {
 		...(opts.documents ? { documents: opts.documents } : {}),
 		onReset: (reason) => {
 			resetWhy = reason;
+			// This frame's own objects, and the realm's caches of its own connection only: in rocket-ui the realm may
+			// also run the full app and other documents, whose objects and caches are theirs to clear.
 			registry.clear();
-			connectionCaches.clearAll();
+			if (frameKey !== null) connectionCaches.forgetKey(frameKey);
 			myQuery = null;
 			mySummary = null;
 		},

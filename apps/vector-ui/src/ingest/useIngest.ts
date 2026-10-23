@@ -67,7 +67,7 @@ const TOOL_TIMEOUT_MS = 30_000;
 /** The name the uploads and the chat are cleared under when the signed-in identity changes. */
 export const CHAT_AND_INGEST_CACHE = 'chat and ingest';
 
-connectionCaches.register(CHAT_AND_INGEST_CACHE, () => forgetChatAndIngest());
+connectionCaches.register(CHAT_AND_INGEST_CACHE, () => forgetChatAndIngest(), (key) => forgetChatAndIngest(key));
 
 /** What the ingest panel gets from the hook. */
 export interface VectorIngest {

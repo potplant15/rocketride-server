@@ -334,7 +334,7 @@ export const reviewedDocuments = new Map<string, ReadonlySet<string>>();
 /** The examples of the map's Recommend tab. */
 export const recommendExamples = new Map<string, IRecommendExamples>();
 
-connectionCaches.register('saved filters', () => savedFilters.clear());
-connectionCaches.register('saved views', () => savedViews.clear());
-connectionCaches.register('reviewed documents', () => reviewedDocuments.clear());
-connectionCaches.register('recommend examples', () => recommendExamples.clear());
+connectionCaches.register('saved filters', () => savedFilters.clear(), (key) => savedFilters.delete(key));
+connectionCaches.register('saved views', () => savedViews.clear(), (key) => savedViews.delete(key));
+connectionCaches.register('reviewed documents', () => reviewedDocuments.clear(), (key) => reviewedDocuments.delete(key));
+connectionCaches.register('recommend examples', () => recommendExamples.clear(), (key) => recommendExamples.delete(key));

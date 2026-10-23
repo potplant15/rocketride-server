@@ -16,7 +16,8 @@ import { codedError } from 'shared/explorer/connect/testing';
 import { SUMMON_EVENT, SUMMON_GRACE_MS, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createDevToolHarness } from 'shared/explorer/devtool/testing';
 import { callVector, fetchChunks, fetchDocument, fetchStats, scoreChunks } from '../src/adapters/actions';
-import { vectorEndpoints } from '../src/adapters/explorer';
+import { connectionCaches, vectorEndpoints } from '../src/adapters/explorer';
+import { connectionEntry, existingEntry, savedFilters } from '../src/adapters/connections';
 import type { IConnectionEntry } from '../src/adapters/connections';
 import { remoteChannel } from '../src/devtool/frame';
 import { CONTROLLER_NOT_READY_TEXT } from '../src/devtool/frameText';
@@ -25,6 +26,8 @@ import type { IDocVersion, IQueryHint } from '../src/devtool/protocol';
 import { DEVTOOL_CHAT_NOTE, DEVTOOL_UPLOADS_NOTE, NO_CHANNELS } from '../src/env';
 import { buildConsoleModel } from '../src/vector/consoleModel';
 import { consoleUri, documentUri } from '../src/vector/addresses';
+import { chunkTextScope, createChunkTextCache } from '../src/components/ChunkTextPanel';
+import { createCacheRegistry } from '../src/vector/identityChange';
 import { DEFAULT_LIMITS, readDialect } from '../src/vector/results';
 import { fixture } from './support/fixtures';
 import { account, disposeAll, latestStateMap, mountController, settle, signInVsCode, until, vscodeRealm } from './support/devtool';
@@ -423,6 +426,54 @@ describe('a write the controller stopped waiting for (it may have run)', () => {
 		entry.controller.dispose();
 		framed.frame.dispose();
 		mounted.controller.dispose();
+	});
+});
+
+describe('a frame\'s reset clears its own objects and its own connection\'s caches, nothing of other mounts in the realm', () => {
+	it('rocket-ui (one realm): the full app\'s console objects and another connection\'s saved filters survive a frame\'s host drop; the frame\'s own are gone', async () => {
+		const run = await connected((key) => consoleUri(key));
+		const appEndpoint = { key: 'k1|app-only', nodeId: 'store_1', roles: {}, components: [] } as never;
+		const appEntry = connectionEntry(appEndpoint, null);
+		appEntry.selection.selectDocument({ objectId: 'doc-app', path: 'app.md' });
+		savedFilters.set('k1|app-only', [{ id: 'f-app', name: 'app', filter: {} } as never]);
+		savedFilters.set(run.key, [{ id: 'f-frame', name: 'frame', filter: {} } as never]);
+		const entry = entryOf(run);
+		assert.equal(run.frame.connections.count(), 1);
+
+		run.h.setHostConnection(false);
+		await until(() => run.frame.lastReset() === 'disconnected', 'the frame\'s reset');
+		assert.equal(run.frame.connections.count(), 0, 'the frame\'s own objects are gone');
+		assert.equal(entry.selection.getState().connectionKey, null, 'and reset');
+		assert.equal(existingEntry('k1|app-only'), appEntry, 'the full app\'s console objects are untouched');
+		assert.deepEqual(appEntry.selection.getState().document, { objectId: 'doc-app', path: 'app.md' }, 'its selection too');
+		assert.ok(savedFilters.has('k1|app-only'), 'another connection\'s saved filters stay');
+		assert.ok(!savedFilters.has(run.key), 'the frame\'s connection\'s saved filters go');
+		connectionCaches.clearAll();
+		savedFilters.clear();
+		run.frame.dispose();
+		run.controller.dispose();
+	});
+
+	it('the chunk text cache forgets one connection\'s texts and keeps the others\'', async () => {
+		const cache = createChunkTextCache();
+		const text = (key: readonly [string, number]) => Promise.resolve({ ok: true as const, value: { key, text: 'chunk', length: 5 } as never });
+		await cache.load(chunkTextScope('k1|a', 's-1'), ['doc', 0], text);
+		await cache.load(chunkTextScope('k1|b', 's-1'), ['doc', 0], text);
+		cache.forget('k1|a');
+		assert.equal(cache.peek(chunkTextScope('k1|a', 's-1'), ['doc', 0]), undefined);
+		assert.ok(cache.peek(chunkTextScope('k1|b', 's-1'), ['doc', 0]), 'another connection\'s text stays');
+	});
+
+	it('the cache registry forgets one connection on request; a cache without a per-connection forget is left alone', () => {
+		const caches = createCacheRegistry();
+		const kept = new Map([['a', 1], ['b', 2]]);
+		let cleared = 0;
+		caches.register('keyed', () => kept.clear(), (key) => kept.delete(key));
+		caches.register('whole only', () => { cleared += 1; });
+		assert.deepEqual(caches.forgetKey('a'), ['keyed']);
+		assert.deepEqual([...kept.keys()], ['b']);
+		assert.equal(cleared, 0, 'a cache that can only clear everything is not cleared for one connection');
+		assert.deepEqual(caches.names(), ['keyed', 'whole only']);
 	});
 });
 
