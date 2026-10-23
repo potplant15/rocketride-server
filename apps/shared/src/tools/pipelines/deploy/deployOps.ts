@@ -21,9 +21,9 @@
 // =============================================================================
 
 import { ConnectionManager } from 'shell';
-import type { Deployment, DeployArtifact, DeployHistoryEntry, RocketRideClient } from 'rocketride';
+import type { DeployArtifact, DeployHistoryEntry, RocketRideClient } from 'rocketride';
 import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo, wireTeamIdOf } from './deployMapping';
-import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, DeploymentLoadPayload } from '../../types/deployTypes';
+import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, DeploymentLoadPayload } from './deployTypes';
 
 const cm = (): ConnectionManager => ConnectionManager.getInstance();
 

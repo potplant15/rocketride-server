@@ -37,7 +37,7 @@ import { Modal } from 'shell';
 import { ConfirmDialog } from 'shell';
 import { Card } from 'shell';
 import { formatTime, formatDayTime } from 'shell';
-import { buttonize } from '../../utils/buttonize';
+import { buttonize } from 'shared/utils/buttonize';
 import { SchedulePanel, describeCron, describeTtl } from './SchedulePanel';
 import { VersionRecordPanel } from './VersionRecordPanel';
 import type { IVersionRecordPanelProps } from './VersionRecordPanel';

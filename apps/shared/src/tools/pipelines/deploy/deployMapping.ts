@@ -8,18 +8,18 @@
  *
  * REALM-SIDE since the bus migration: the page fetches through the brokered
  * `client.deploy.*` ops and maps the SDK rows into the DTOs of
- * `providers/types/deployTypes.ts` before handing them to the shared deploy
+ * `deployTypes.ts` (beside this module) before handing them to the shared deploy
  * components. Team resolution is the ONE shared implementation
  * (shared/components/deploy-panel/teams — rocket-ui consumes the same one).
  */
 
 import type { Deployment, DeployArtifact, DeployHistoryEntry } from 'rocketride';
-import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, DeployHistoryRowDTO, DeployScheduleRowDTO, DeploymentInfoDTO } from '../../types/deployTypes';
+import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, DeployHistoryRowDTO, DeployScheduleRowDTO, DeploymentInfoDTO } from './deployTypes';
 // Team resolution is the ONE shared implementation (both hosts ran
 // line-for-line copies before) — re-exported here so this module stays the
 // deploy layer's single import.
-import { teamNameOf } from 'shared/panels/deploy/teams';
-export { resolveDeployTeams, teamNameOf, wireTeamIdOf } from 'shared/panels/deploy/teams';
+import { teamNameOf } from '../panels/deploy/teams';
+export { resolveDeployTeams, teamNameOf, wireTeamIdOf } from '../panels/deploy/teams';
 
 // =============================================================================
 // REGISTRY MAPPERS

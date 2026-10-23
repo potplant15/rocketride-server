@@ -601,6 +601,7 @@ import { useShellConnection, useWorkspace, usePrefs, AppLayout, Button } from 's
 | `useClient()` | `RocketRideClient \| null`, re-rendering on connect/disconnect. |
 | `useConnectionStatus()` | `ConnectionStatus` — the full state machine (state, retry attempt, progress message). |
 | `useShellApiConfig()` | `ShellApiConfig` — runtime config the host booted with. |
+| `useShellApiKey()` | `{ apiKey, loading, error }` — the connection's API key, fetched asynchronously. The only way to reach it: `client.getApiKey()` throws outside the root realm. Engine work needs no key — the client already carries the session. |
 | `getClient()` | Non-React access to the client singleton. |
 | `useAuthUser()` | `ConnectResult \| null` — current identity (the `AuthUser` type). |
 | `useLogout()` | Sign-out trigger. |
@@ -608,8 +609,19 @@ import { useShellConnection, useWorkspace, usePrefs, AppLayout, Button } from 's
 
 ```typescript
 const { client, isConnected } = useShellConnection();
-if (!client || !isConnected) return <div>Connecting...</div>;
+
+// `client` is a REAL client in every realm, including a VS Code webview —
+// its calls ride the shell bus to the host's socket. It is null only before
+// the realm has heard from the host.
+if (!client) return <Spinner />;        // UNKNOWN — not "disconnected"
+if (!isConnected) return <Offline />;   // known to be down
 ```
+
+**Never render absence as a negative.** `client === null` means *not known
+yet*, so `if (!client || !isConnected) return <div>Connecting…</div>` is a
+bug, not a shortcut: in a realm that is perfectly healthy it renders
+"Connecting…" forever while the status bar says connected. Distinguish the
+two states, and give the unknown one a neutral or loading treatment.
 
 The client instance is always the shell's — never construct a
 `RocketRideClient` in an app.

@@ -48,7 +48,7 @@ import type { CSSProperties } from 'react';
 import { commonStyles, Button } from 'shell';
 import { MonacoEditor, detectLanguage } from 'shared/components/monaco';
 import type { Monaco } from 'shared/components/monaco';
-import { WORKSPACE_URI_PREFIX, ensureWorkspaceEditorTs, getWorkspaceEditorTs, primeProjectSources, releaseProjectSource } from '../appdev/session/editorTypes';
+import { WORKSPACE_URI_PREFIX, ensureWorkspaceEditorTs, getWorkspaceEditorTs, primeProjectSources, releaseProjectSource } from '../preview/session/editorTypes';
 import { getWorkspaceVfs } from './vfs/workspace';
 
 // =============================================================================

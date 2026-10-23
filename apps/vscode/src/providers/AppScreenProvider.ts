@@ -7,16 +7,16 @@
  * AppScreenProvider — one App Builder panel per app (page-app webview).
  *
  * The panel is a BUS REALM: its identity is STAMPED into the served HTML
- * (`data-rr-app`), boot state rides `host.appbuilder.load`, host verbs ride
- * the `host.appbuilder.*` ops (ops/appBuilderOps.ts), the SDK half rides the
+ * (`data-rr-app`), boot state rides `host.preview.load`, host verbs ride
+ * the `host.preview.*` ops (ops/previewOps.ts), the SDK half rides the
  * brokered `client.app.*` ops, and the dev-session feeds ride the app's
  * topics:
  *
- *   appbuilder:app:<appId>:watch    RETAINED WatchStatus — retracted on close
- *   appbuilder:app:<appId>:dev      RETAINED {entry,manifest} — retracted
- *   appbuilder:app:<appId>:console  SIGNAL   row (realm keeps its backlog)
- *   appbuilder:app:<appId>:errors   SIGNAL   row
- *   appbuilder:app:<appId>:session  RETAINED {token} — one-shot credential,
+ *   preview:app:<appId>:watch    RETAINED WatchStatus — retracted on close
+ *   preview:app:<appId>:dev      RETAINED {entry,manifest} — retracted
+ *   preview:app:<appId>:console  SIGNAL   row (realm keeps its backlog)
+ *   preview:app:<appId>:errors   SIGNAL   row
+ *   preview:app:<appId>:session  RETAINED {token} — one-shot credential,
  *                                   the consuming page retracts after apply
  *
  * This provider keeps only what is genuinely PANEL work: the .rrapp custom
@@ -174,9 +174,9 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		this.panels.set(appId, panel);
 		panel.webview.html = this.getHtmlForWebview(panel.webview, appId);
 
-		// The panel is a bus realm: boot state rides host.appbuilder.load,
+		// The panel is a bus realm: boot state rides host.preview.load,
 		// the SDK half rides client.app.*, the feeds ride the app's topics.
-		const detachRealm = this.busHost.attachWebview(panel.webview, `page:appbuilder/${appId}`);
+		const detachRealm = this.busHost.attachWebview(panel.webview, `page:preview/${appId}`);
 
 		// Session handoff: this window is already authenticated — give the
 		// preview shell the same credential so apps requiring auth render
@@ -185,7 +185,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		void this.connectionManager
 			.resolveAuthCredential()
 			.then((token) => {
-				if (token) this.busHost.retained.publish(`appbuilder:app:${appId}:session`, { token });
+				if (token) this.busHost.retained.publish(`preview:app:${appId}:session`, { token });
 			})
 			.catch(() => {
 				/* signed out — the preview shows its sign-in prompt */
@@ -200,9 +200,9 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 			// Retract the app's retained topics — retention outlives the
 			// publisher by design, and a reopened panel must not replay a
 			// closed session's state (or a stale credential).
-			this.busHost.retained.publish(`appbuilder:app:${appId}:watch`, undefined);
-			this.busHost.retained.publish(`appbuilder:app:${appId}:dev`, undefined);
-			this.busHost.retained.publish(`appbuilder:app:${appId}:session`, undefined);
+			this.busHost.retained.publish(`preview:app:${appId}:watch`, undefined);
+			this.busHost.retained.publish(`preview:app:${appId}:dev`, undefined);
+			this.busHost.retained.publish(`preview:app:${appId}:session`, undefined);
 			// The App Screen owns the watch lifecycle: closing it ends the
 			// session and drops the dev overlay (shell returns to published).
 			void getDevSessionManager()?.stop(appId);
@@ -261,7 +261,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 */
 	public notifyWatch(appId: string, status: AppWatchStatus): void {
 		this.lastWatch.set(appId, status);
-		this.busHost.retained.publish(`appbuilder:app:${appId}:watch`, status);
+		this.busHost.retained.publish(`preview:app:${appId}:watch`, status);
 	}
 
 	/**
@@ -276,7 +276,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 *   preview shell's app metadata, not the server registry.
 	 */
 	public notifyDevServer(appId: string, entry: string, manifest?: Record<string, unknown>): void {
-		this.busHost.retained.publish(`appbuilder:app:${appId}:dev`, { entry, manifest });
+		this.busHost.retained.publish(`preview:app:${appId}:dev`, { entry, manifest });
 	}
 
 	/**
@@ -289,7 +289,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 * @param text - Row text (one line).
 	 */
 	public notifyConsole(appId: string, level: 'log' | 'warn' | 'error', text: string): void {
-		this.busHost.retained.signal(`appbuilder:app:${appId}:console`, { time: AppScreenProvider.feedTime(), level, text });
+		this.busHost.retained.signal(`preview:app:${appId}:console`, { time: AppScreenProvider.feedTime(), level, text });
 	}
 
 	/**
@@ -300,7 +300,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 * @param source - Optional origin tag ("rsbuild", "pnpm install").
 	 */
 	public notifyError(appId: string, message: string, source?: string): void {
-		this.busHost.retained.signal(`appbuilder:app:${appId}:errors`, { time: AppScreenProvider.feedTime(), message, source });
+		this.busHost.retained.signal(`preview:app:${appId}:errors`, { time: AppScreenProvider.feedTime(), message, source });
 	}
 
 	/**

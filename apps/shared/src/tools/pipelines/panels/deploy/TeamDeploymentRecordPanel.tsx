@@ -30,7 +30,7 @@ import { CardDataGrid } from 'shell';
 import { commonStyles } from 'shell';
 import { formatTime, formatDayTime } from 'shell';
 import { describeCron, describeTtl } from './SchedulePanel';
-import { buttonize } from '../../utils/buttonize';
+import { buttonize } from 'shared/utils/buttonize';
 import type { GridColumnDefinition } from 'shell';
 import type { TaskTimeline } from 'shared/tools/pipelines/panels/development/hooks/useTaskEvents';
 import type { DeploymentInfo } from './DeploymentView';

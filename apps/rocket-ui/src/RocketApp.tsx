@@ -52,7 +52,7 @@ import FileProvider from './surfaces/workspace/FileProvider';
 import DiffProvider from './surfaces/workspace/DiffProvider';
 import { ToolHostProvider } from 'shared/tools/core';
 import type { BuiltinToolServices } from 'shared/tools/core';
-import { appdevFrames } from './surfaces/appdev/session/appdevFrames';
+import { appdevFrames } from './surfaces/preview/session/appdevFrames';
 import HtmlPageProvider from './surfaces/pages/HtmlPageProvider';
 import DesktopProvider from './surfaces/pages/DesktopProvider';
 import DevToolReadmeProvider from './surfaces/pages/DevToolReadmeProvider';

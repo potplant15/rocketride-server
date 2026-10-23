@@ -43,7 +43,7 @@ import { toolDocUri } from 'shell';
 import { realmPrefsHub } from 'shell';
 import type { BuiltinToolServices } from 'shared/tools/core';
 import { registerBuiltinTools } from 'shared/tools/builtins';
-import { appdevFrames } from '../appdev/session/appdevFrames';
+import { appdevFrames } from '../preview/session/appdevFrames';
 import { BxExport, useSidebarCollapsed, useSidebarActiveView } from 'shell';
 import type { ProjectEntry } from 'shared/tools/pipelines/sidebar/types';
 import type { SidebarMode, ToolTabsSidebar } from 'shared/tools/core/chrome/types';
@@ -55,7 +55,7 @@ import { isPipelineFile, pipelineExtension } from '../workspace/projectStore';
 import { createProjectVfs } from '../workspace/projectVfs';
 import { getWorkspaceVfs, storePathToVirtual } from '../workspace/vfs/workspace';
 import { downloadJson } from '../../utils/downloadFile';
-import { scanApps } from '../appdev/session/appStore';
+import { scanApps } from '../preview/session/appStore';
 import { INTRO_PAGES } from 'shared/tools/introCatalog';
 import type { IntroMode } from 'shared/tools/introCatalog';
 

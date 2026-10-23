@@ -10,10 +10,10 @@
  * DEVELOP | DEPLOY | STORE views, their panes, forms, and state — lives in
  * shared's `modules/appdev`. This webview is a BUS REALM: its identity is
  * stamped into the served HTML (`data-rr-app`), boot state rides
- * `host.appbuilder.load`, the SDK half of its IAppBuilderHost rides the
+ * `host.preview.load`, the SDK half of its IAppBuilderHost rides the
  * brokered `client.app.*` ops (the shared adapter), host verbs ride
- * `host.appbuilder.*`, and the dev-session feeds arrive on the app's
- * `appbuilder:app:<id>:*` topics. The only remaining window.postMessage is
+ * `host.preview.*`, and the dev-session feeds arrive on the app's
+ * `preview:app:<id>:*` topics. The only remaining window.postMessage is
  * the rrdev:* mini-protocol INTO the preview iframe (cross-origin shell).
  *
  * Capability flags select the VSCode variant: no Code pane (files are
@@ -29,7 +29,7 @@ import { appPartition } from 'shell/src/workspace/workspaceStore';
 import { AppBuilderScreen } from 'shared/tools/appdev/views';
 import { createBusAppBuilderHost } from 'shared/tools/appdev';
 import type { AppErrorRow, AppEventRow, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/tools/appdev';
-import type { AppBuilderLoadPayload } from 'shared/ops/appBuilderOps';
+import type { AppBuilderLoadPayload } from 'shared/ops/previewOps';
 
 // =============================================================================
 // IDENTITY + WIRING
@@ -578,12 +578,12 @@ const AppWebview: React.FC = () => {
 			setPreviewUrl(payload.previewUrl);
 			setCapabilities(payload.capabilities);
 		};
-		void cm.request('host.appbuilder.load', { app: appId } as never).then(
+		void cm.request('host.preview.load', { app: appId } as never).then(
 			(payload) => applyLoad(payload as AppBuilderLoadPayload),
 			() => {
 				const offRetry = cm.on('shell:connected', () => {
 					offRetry();
-					void cm.request('host.appbuilder.load', { app: appId } as never).then((payload) => applyLoad(payload as AppBuilderLoadPayload), () => {});
+					void cm.request('host.preview.load', { app: appId } as never).then((payload) => applyLoad(payload as AppBuilderLoadPayload), () => {});
 				});
 			}
 		);
@@ -614,7 +614,7 @@ const AppWebview: React.FC = () => {
 		const offs = [
 			// Watch/build status (RETAINED — replay covers a reloaded webview;
 			// an undefined delivery is the close-time retraction).
-			cm.subscribe(`appbuilder:app:${appId}:watch`, (snap) => {
+			cm.subscribe(`preview:app:${appId}:watch`, (snap) => {
 				const status = snap as WatchStatus | undefined;
 				if (!status) return;
 				setWatchStatus(status);
@@ -625,7 +625,7 @@ const AppWebview: React.FC = () => {
 			// restarted on a new port): the injected container and its HMR
 			// socket are DEAD — remount the iframe so a fresh boot injects
 			// the live entry.
-			cm.subscribe(`appbuilder:app:${appId}:dev`, (snap) => {
+			cm.subscribe(`preview:app:${appId}:dev`, (snap) => {
 				const dev = snap as { entry?: string; manifest?: Record<string, unknown> } | undefined;
 				if (!dev?.entry) return;
 				const base = dev.entry.split('?')[0];
@@ -638,21 +638,21 @@ const AppWebview: React.FC = () => {
 			}),
 			// Console/error rows — SIGNALS; this realm keeps the bounded
 			// backlog (see the buffers above).
-			cm.subscribe(`appbuilder:app:${appId}:console`, (payload) => {
+			cm.subscribe(`preview:app:${appId}:console`, (payload) => {
 				const row = payload as ConsoleRow | undefined;
 				if (row) emitConsole(row);
 			}),
-			cm.subscribe(`appbuilder:app:${appId}:errors`, (payload) => {
+			cm.subscribe(`preview:app:${appId}:errors`, (payload) => {
 				const row = payload as AppErrorRow | undefined;
 				if (row) emitError(row);
 			}),
 			// The host's session handoff — a one-shot credential, RETAINED
 			// until applied; this page retracts after taking it.
-			cm.subscribe(`appbuilder:app:${appId}:session`, (snap) => {
+			cm.subscribe(`preview:app:${appId}:session`, (snap) => {
 				const session = snap as { token?: string } | undefined;
 				if (!session?.token) return;
 				setAuthToken(session.token);
-				cm.publish(`appbuilder:app:${appId}:session`, undefined);
+				cm.publish(`preview:app:${appId}:session`, undefined);
 				// A credential arriving for an EXPLICIT sign-in click gets
 				// delivered to the preview regardless of the Inherit Auth
 				// checkbox — the user just asked for it.
@@ -753,7 +753,7 @@ const AppWebview: React.FC = () => {
 				// itself arrives on the app's retained :session topic.
 				(e.source as Window | null)?.postMessage({ type: 'rrdev:loginPending' }, e.origin);
 				pendingExplicitLoginRef.current = true;
-				void cm.request('host.appbuilder.login', { app: STAMPED_APP_ID } as never, { timeoutMs: LOGIN_TIMEOUT_MS }).catch(() => {
+				void cm.request('host.preview.login', { app: STAMPED_APP_ID } as never, { timeoutMs: LOGIN_TIMEOUT_MS }).catch(() => {
 					/* sign-in abandoned — the preview keeps its prompt */
 				});
 			} else if (data?.type === 'shell:devConsole' && data.text !== undefined) {
@@ -847,7 +847,7 @@ const AppWebview: React.FC = () => {
 			// here: remounting now would load against a dead dev server — the
 			// restart's rebuild repoints the retained :dev topic, and the
 			// origin-change comparison remounts then.
-			reloadPreview: () => cm.emitOp('host.appbuilder.restart', { app: appId } as never),
+			reloadPreview: () => cm.emitOp('host.preview.restart', { app: appId } as never),
 			// Inherit Auth toggle — PreviewFrame reacts to the prop change (pushes
 			// the session down, or tells the shell to drop it).
 			setInheritAuth: (inherit: boolean) => setInheritAuthState(inherit),
@@ -857,27 +857,27 @@ const AppWebview: React.FC = () => {
 			setPref: (key: string, value: unknown) => appdevPrefs.set(key, value),
 			// Host actions. No `debug`: the external-browser debug flow was
 			// removed (2026-10-16); the capability stays declared and false.
-			revealFiles: capabilities.hasNativeFiles ? () => cm.emitOp('host.appbuilder.reveal', { app: appId } as never) : undefined,
+			revealFiles: capabilities.hasNativeFiles ? () => cm.emitOp('host.preview.reveal', { app: appId } as never) : undefined,
 
 			// ── The host-specific SDK member: DEPLOY packs the NATIVE folder ─
 			deploy: async (message) => {
-				await req('host.appbuilder.deploy', { app: appId, message });
+				await req('host.preview.deploy', { app: appId, message });
 			},
 
 			// Store: the listing lives in the app's package.json appManifest —
 			// load/save round-trip through the extension host (files are truth;
 			// every deploy packs the manifest as the listing record).
-			loadListing: async () => await req<ListingDraft | null>('host.appbuilder.loadListing', { app: appId }),
+			loadListing: async () => await req<ListingDraft | null>('host.preview.loadListing', { app: appId }),
 			saveListing: async (draft) => {
-				await req('host.appbuilder.saveListing', { app: appId, draft });
+				await req('host.preview.saveListing', { app: appId, draft });
 			},
-			runPreflight: async () => await req<PreflightCheck[]>('host.appbuilder.preflight', { app: appId }),
+			runPreflight: async () => await req<PreflightCheck[]>('host.preview.preflight', { app: appId }),
 			// Package assets: native pick (app-folder-relative result) + text
 			// read for the icon/README previews.
-			pickAppFile: async (kind) => await req<string | null>('host.appbuilder.pickAppFile', { app: appId, kind }),
-			pickIncludePath: async () => await req<string | null>('host.appbuilder.pickIncludePath', { app: appId }),
-			readAppTextFile: async (relPath) => await req<string>('host.appbuilder.readTextFile', { app: appId, relPath }),
-			readAppImageDataUri: async (relPath) => await req<string | null>('host.appbuilder.readImage', { app: appId, relPath }),
+			pickAppFile: async (kind) => await req<string | null>('host.preview.pickAppFile', { app: appId, kind }),
+			pickIncludePath: async () => await req<string | null>('host.preview.pickIncludePath', { app: appId }),
+			readAppTextFile: async (relPath) => await req<string>('host.preview.readTextFile', { app: appId, relPath }),
+			readAppImageDataUri: async (relPath) => await req<string | null>('host.preview.readImage', { app: appId, relPath }),
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- cm is a singleton
 	}, [capabilities, previewUrl, proxyPreviewUrl, req, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus, subscribeDeployChanged]);

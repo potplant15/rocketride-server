@@ -37,7 +37,7 @@ import { parsePipelineContent } from '../utils/parse';
 import type { ParsedPipelineFile, ServiceClassInfo } from '../utils/parse';
 // Leaf import: these modules also compile in the VS Code EXTENSION HOST
 // program, which must not resolve the shell's React barrel.
-import type { WorkspaceFs } from 'shell/src/workspace/workspaceFs';
+import type { WorkspaceFs } from 'shell';
 import type { ProjectEntry } from './types';
 
 /** The globs that are pipeline files. */

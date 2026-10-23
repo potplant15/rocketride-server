@@ -44,7 +44,7 @@ import { NewAppForm } from 'shared/tools/appdev/views/new-app/NewAppForm';
 import type { FrameOptions } from 'shared/tools/appdev';
 import type { NewAppIdentity } from 'shared/tools/appdev/views';
 import { getDocs } from '../../docs';
-import { APPDEV_DIR, listAppFolders, scaffoldApp } from '../appdev/session/appStore';
+import { APPDEV_DIR, listAppFolders, scaffoldApp } from '../preview/session/appStore';
 
 // =============================================================================
 // STYLES

@@ -20,7 +20,7 @@ import { registerVscodeClientOverrides } from './clientOverrides';
 import { registerVscodeHostOps } from './hostOps';
 import { registerVscodeSettingsOps } from './settingsOps';
 import { registerVscodeAppDevOps } from './appdevOps';
-import { registerVscodeAppBuilderOps } from './appBuilderOps';
+import { registerVscodePreviewOps } from './previewOps';
 import type { ISettingsOpsController } from './settingsOps';
 
 /**
@@ -51,7 +51,7 @@ export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionCon
 		connectionManager: busHost.connectionManager,
 		broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
 	});
-	registerVscodeAppBuilderOps(busHost.rootBus, {
+	registerVscodePreviewOps(busHost.rootBus, {
 		context,
 		connectionManager: busHost.connectionManager,
 		retained: busHost.retained,

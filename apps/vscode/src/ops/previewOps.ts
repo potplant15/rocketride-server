@@ -4,11 +4,11 @@
 // =============================================================================
 
 // =============================================================================
-// APP BUILDER OPS — the VS Code implementations of host.appbuilder.*
+// APP BUILDER OPS — the VS Code implementations of host.preview.*
 // =============================================================================
 //
 // The host half of the App Builder page (declared in
-// shared/ops/appBuilderOps.ts): workspace file IO against the app's native
+// shared/ops/previewOps.ts): workspace file IO against the app's native
 // folder, the OS pickers, the dev-session inner loop, and the staged
 // sign-in. The page's SDK half rides the brokered `client.app.*` ops through
 // the shared adapter — never through here. AppScreenProvider keeps only the
@@ -35,7 +35,7 @@ import { ConfigManager } from '../config';
 import { registerOpHandlers } from 'shell/src/ops/busOps';
 import type { IOpBus, OpImplTable } from 'shell/src/ops/busOps';
 import type { IRetainedRegistry } from 'shell/src/ops/retained';
-import type { AppBuilderHostOpMap, AppBuilderLoadPayload } from 'shared/ops/appBuilderOps';
+import type { PreviewHostOpMap, AppBuilderLoadPayload } from 'shared/ops/previewOps';
 
 /** What the registration needs from the extension. */
 interface IAppBuilderOpsDeps {
@@ -53,7 +53,7 @@ interface IAppBuilderOpsDeps {
  * @param deps - See {@link IAppBuilderOpsDeps}.
  * @returns Unregister-all function.
  */
-export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDeps): () => void {
+export function registerVscodePreviewOps(bus: IOpBus, deps: IAppBuilderOpsDeps): () => void {
 	const { context, connectionManager, retained } = deps;
 
 	/** The app's workspace binding, or throws the standard unbound error. */
@@ -87,8 +87,8 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 		return `${base.replace(/\/$/, '')}/?appid=${encodeURIComponent(appId)}&rrdev=1&_ts=${Date.now()}`;
 	};
 
-	const impls: OpImplTable<AppBuilderHostOpMap> = {
-		'host.appbuilder.load': async (p): Promise<AppBuilderLoadPayload> => {
+	const impls: OpImplTable<PreviewHostOpMap> = {
+		'host.preview.load': async (p): Promise<AppBuilderLoadPayload> => {
 			const apps = await scanWorkspaceApps(hostWorkspaceFs);
 			const app = apps.find((a) => a.id === p.app);
 			return {
@@ -116,7 +116,7 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 			};
 		},
 
-		'host.appbuilder.restart': async (p) => {
+		'host.preview.restart': async (p) => {
 			// Preview Reload = full inner-loop reset: kill the dev server, pnpm
 			// install (package.json may have changed), fresh rsbuild dev. The
 			// new server's first successful build triggers the preview reload.
@@ -124,12 +124,12 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 			await getDevSessionManager()?.restart(app);
 		},
 
-		'host.appbuilder.reveal': async (p) => {
+		'host.preview.reveal': async (p) => {
 			const app = await resolveApp(p.app);
 			await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(app.folder));
 		},
 
-		'host.appbuilder.login': async (p) => {
+		'host.preview.login': async (p) => {
 			// The preview shell needs a session and this window is signed out —
 			// run the EXTENSION's own sign-in flow (browser-based), then hand
 			// the fresh credential down the app's retained :session lane.
@@ -172,34 +172,34 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 					const token = await connectionManager.resolveAuthCredential();
 					// One-shot credential on the retained lane — the consuming
 					// page retracts after applying (the pipeline oauth pattern).
-					if (token) retained.publish(`appbuilder:app:${p.app}:session`, { token });
+					if (token) retained.publish(`preview:app:${p.app}:session`, { token });
 				} catch {
 					/* sign-in abandoned — the preview keeps its prompt */
 				}
 			}
 		},
 
-		'host.appbuilder.deploy': async (p) => {
+		'host.preview.deploy': async (p) => {
 			// DEPLOY = zip the app folder from disk and upload it as the next
 			// immutable registry version (the server builds the one true bundle).
 			await deployApp(p.app, String(p.message ?? ''));
 		},
 
-		'host.appbuilder.loadListing': async (p) => {
+		'host.preview.loadListing': async (p) => {
 			// The listing IS the appManifest — read it from disk.
 			const apps = await scanWorkspaceApps(hostWorkspaceFs);
 			const scanned = apps.find((a) => a.id === p.app);
 			return scanned ? await readAppListing(scanned.folder) : null;
 		},
 
-		'host.appbuilder.saveListing': async (p) => {
+		'host.preview.saveListing': async (p) => {
 			// Persist the listing back into package.json (files are truth; the
 			// next deploy packs it as metadata.manifest).
 			const app = await resolveApp(p.app);
 			await saveAppListing(app.folder, p.draft);
 		},
 
-		'host.appbuilder.preflight': async (p) => {
+		'host.preview.preflight': async (p) => {
 			// The SHARED tiered readiness bar (one implementation for every
 			// host), fed with this host's IO: native-fs existence + the
 			// dependency compat probe (Node fetch) — closes the gap where a
@@ -249,7 +249,7 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 			});
 		},
 
-		'host.appbuilder.pickAppFile': async (p) => {
+		'host.preview.pickAppFile': async (p) => {
 			// Native picker for a manifest asset (icon/readme). The result is
 			// APP-FOLDER-relative: the server's harvest only copies
 			// app-root-relative paths, so a pick outside the app folder is
@@ -272,7 +272,7 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 			return `./${rel.split(path.sep).join('/')}`;
 		},
 
-		'host.appbuilder.pickIncludePath': async (p) => {
+		'host.preview.pickIncludePath': async (p) => {
 			// Native picker for an include path — a workspace FOLDER or FILE.
 			// The result is WORKSPACE-relative (include entries pack from the
 			// workspace root, unlike app-relative assets). The native dialog
@@ -308,7 +308,7 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 			return rel.split(path.sep).join('/');
 		},
 
-		'host.appbuilder.readTextFile': async (p) => {
+		'host.preview.readTextFile': async (p) => {
 			// One app-folder-relative text file for preview (icon SVG, README
 			// markdown). Traversal-guarded and size-capped.
 			const app = await resolveApp(p.app);
@@ -322,7 +322,7 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 			return Buffer.from(bytes).toString('utf8');
 		},
 
-		'host.appbuilder.readImage': async (p) => {
+		'host.preview.readImage': async (p) => {
 			// One app-folder-relative image as a data: URI — README images are
 			// binary, so the text-read path would corrupt them. Reuses the icon
 			// inliner with the README size budget.
@@ -332,5 +332,5 @@ export function registerVscodeAppBuilderOps(bus: IOpBus, deps: IAppBuilderOpsDep
 		},
 	};
 
-	return registerOpHandlers<AppBuilderHostOpMap>(bus, impls);
+	return registerOpHandlers<PreviewHostOpMap>(bus, impls);
 }
