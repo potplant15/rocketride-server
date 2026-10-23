@@ -48,7 +48,7 @@
 import React from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { AppDescriptor, DevToolProps } from 'shell';
-import { getBuiltinTools } from './registry';
+import { getBuiltinTool } from './registry';
 
 // =============================================================================
 // STYLES
@@ -157,7 +157,7 @@ export const ToolMount: React.FC<IToolMountProps> = ({
 
 	// BUILTIN first: the registration route decides the tier, so a store
 	// tool publishing a builtin's id resolves to the builtin, never its own.
-	const builtin = getBuiltinTools().find((t) => t.id === appId);
+	const builtin = getBuiltinTool(appId);
 
 	if (!builtin) {
 		if (unavailable) return <div style={styles.status}>{unavailable}</div>;
@@ -167,9 +167,10 @@ export const ToolMount: React.FC<IToolMountProps> = ({
 		if (source?.status === 'loading') return <div style={styles.status}>Loading {label}…</div>;
 	}
 
-	const Component = builtin
-		? (slot === 'frame' ? builtin.frame : builtin.sidebar)
-		: (slot === 'frame' ? source?.descriptor?.devToolFrame : source?.descriptor?.devToolSidebar);
+	// One descriptor surface either way — a builtin's is in the bundle, a
+	// store tool's is whatever the host's load resolved.
+	const descriptor = builtin ? builtin.descriptor : source?.descriptor;
+	const Component = slot === 'frame' ? descriptor?.devToolFrame : descriptor?.devToolSidebar;
 
 	if (!Component) {
 		if (fallback !== undefined) return <>{fallback}</>;

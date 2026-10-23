@@ -220,6 +220,8 @@ interface AppManifest {
   readme?: string;
   /** Categories for filtering (e.g. ['tools', 'ai']). */
   categories?: string[];
+  /** Shell editions the app serves ('saas' | 'oss' | 'vscode'). Absent: every shell. */
+  shells?: string[];
   /** When false, the app runs without authentication. Default: true. */
   authenticated?: boolean;
   /** When false, the shell header (app name/icon in the sidebar) is hidden. Default: true. */

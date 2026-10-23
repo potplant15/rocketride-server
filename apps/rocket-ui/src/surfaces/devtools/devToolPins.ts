@@ -47,8 +47,8 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import { ConnectionManager, realmPrefsHub, useWorkspace } from 'shell';
 import type { AppManifestEntry, PrefsStore } from 'shell';
-import { applyContainerOrder, containerIdOf, pinIdOf, readDevToolPins, storeToolIds, DEV_TOOL_PINS_KEY } from 'shell/src/workspace/devToolPins';
-import { getBuiltinTools } from 'shared/tools/core';
+import { applyContainerOrder, containerIdOf, readDevToolPins, storeToolIds, DEV_TOOL_PINS_KEY } from 'shell/src/workspace/devToolPins';
+import { builtinServesHost, getBuiltinTools } from 'shared/tools/core';
 import { appPartition } from 'shell/src/workspace/workspaceStore';
 import { fetchDevToolCatalog } from 'shared/tools/core/devToolCatalog';
 import type { ToolTab } from 'shared/tools/core/chrome/types';
@@ -186,7 +186,8 @@ export function useDevToolPins(): DevToolPins {
 		// to this very pin while the rail still shows the builtin icons).
 		// Same rule as useToolStrip's toggleBuiltin materialisation.
 		const base = list.length === 0
-			? getBuiltinTools().filter((t) => !t.hosts || t.hosts.includes('rocket')).map((t) => pinIdOf(t.id))
+			// A builtin's manifest id IS its pin id (`builtin.<tool>`).
+			? getBuiltinTools().filter((t) => builtinServesHost(t, 'rocket')).map((t) => t.manifest.id)
 			: list;
 		store.set(DEV_TOOL_PINS_KEY, [...base, appId]);
 	}, [list, store]);

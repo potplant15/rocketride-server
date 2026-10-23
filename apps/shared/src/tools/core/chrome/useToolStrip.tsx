@@ -47,15 +47,19 @@ import { ConnectionManager, ToolHostProvider, createLoopbackPeer, createToolChan
 import { appPartition } from 'shell/src/workspace/workspaceStore';
 import type { DevToolProps, IPrefsHub, ToolChannel } from 'shell';
 import type { BuiltinToolServices } from '../ToolContext';
-import { getBuiltinTools } from '../registry';
+import { builtinServesHost, getBuiltinTools } from '../registry';
 import { isStoreToolPin, pinIdOf } from 'shell/src/workspace/devToolPins';
 import type { SidebarToolItem } from './SidebarChrome';
 
-/** One Store row for a builtin (enable/disable, never uninstall). */
+/** One Store row for a builtin (enable/disable, never uninstall) — the
+ *  manifest row's display fields plus this person's enablement. */
 export interface BuiltinStoreRow {
+	/** The bare tool id (what {@link ToolStrip.toggleBuiltin} takes). */
 	id: string;
 	name: string;
 	description?: string;
+	/** The manifest's icon asset URL. */
+	icon?: string;
 	enabled: boolean;
 }
 
@@ -158,7 +162,8 @@ export function useToolStrip(config: ToolStripConfig): ToolStrip {
 			if (pins.length === 0) {
 				if (enabled) return; // already shown — nothing to record
 				const everything = [
-					...getBuiltinTools().filter((t) => !t.hosts || t.hosts.includes(host)).map((t) => pinIdOf(t.id)),
+					// A builtin's manifest id IS its pin id (`builtin.<tool>`).
+					...getBuiltinTools().filter((t) => builtinServesHost(t, host)).map((t) => t.manifest.id),
 					...pins.filter(isStoreToolPin),
 				];
 				onPinsChange(everything.filter((id) => id !== pinId));
@@ -176,33 +181,42 @@ export function useToolStrip(config: ToolStripConfig): ToolStrip {
 	const builtinStoreRows = useMemo<BuiltinStoreRow[]>(
 		() =>
 			getBuiltinTools()
-				.filter((t) => !t.hosts || t.hosts.includes(host))
-				.map((t) => ({ id: t.id, name: t.name, ...(t.description !== undefined ? { description: t.description } : {}), enabled: isEnabled(t.id) })),
+				.filter((t) => builtinServesHost(t, host))
+				.map((t) => ({
+					id: t.descriptor.id,
+					name: t.manifest.name,
+					...(t.manifest.description !== undefined ? { description: t.manifest.description } : {}),
+					...(t.manifest.icon !== undefined ? { icon: t.manifest.icon } : {}),
+					enabled: isEnabled(t.descriptor.id),
+				})),
 		[host, isEnabled]
 	);
 
 	const builtinItems = useMemo<SidebarToolItem[]>(
 		() =>
 			getBuiltinTools()
-				.filter((t) => (!t.hosts || t.hosts.includes(host)) && isEnabled(t.id))
-				.map((t) => {
-					const Sidebar = t.sidebar;
-					const channel = resolveChannel(t.id);
-					const documents = documentsFor?.(t.id);
+				.filter((t) => builtinServesHost(t, host) && isEnabled(t.descriptor.id))
+				.map((t): SidebarToolItem | null => {
+					const toolId = t.descriptor.id;
+					const Sidebar = t.descriptor.devToolSidebar;
+					if (!Sidebar) return null;
+					const channel = resolveChannel(toolId);
+					const documents = documentsFor?.(toolId);
 					return {
-						id: t.id,
-						label: t.name,
-						...(t.icon !== undefined ? { icon: t.icon } : {}),
+						id: toolId,
+						label: t.manifest.name,
+						...(t.descriptor.icon !== undefined ? { icon: t.descriptor.icon } : {}),
 						// Nested provider: this tool's services carry ITS prefs
 						// partition — a tool's handle cannot address another
 						// app's keys (isolation by construction).
 						render: () => (
-							<ToolHostProvider value={{ ...services, prefs: prefsHub.partition(appPartition(t.id)) }}>
+							<ToolHostProvider value={{ ...services, prefs: prefsHub.partition(appPartition(toolId)) }}>
 								<Sidebar channel={channel} {...(documents !== undefined ? { documents } : {})} />
 							</ToolHostProvider>
 						),
 					};
-				}),
+				})
+				.filter((item): item is SidebarToolItem => item !== null),
 		[host, isEnabled, services, prefsHub, resolveChannel, documentsFor]
 	);
 
@@ -222,7 +236,7 @@ export function useToolStrip(config: ToolStripConfig): ToolStrip {
 	// This host's builtin TOOL ids — strip tabs carry them BARE (only MF pins
 	// use the `tool:` prefix), so the tab discipline below must recognize both
 	// spellings or builtins never hear activation/deactivation at all.
-	const builtinToolIds = useMemo(() => new Set(getBuiltinTools().filter((t) => !t.hosts || t.hosts.includes(host)).map((t) => t.id)), [host]);
+	const builtinToolIds = useMemo(() => new Set(getBuiltinTools().filter((t) => builtinServesHost(t, host)).map((t) => t.descriptor.id)), [host]);
 
 	/** The tool id a strip tab addresses, or null for non-tool modes. */
 	const toolIdOf = useCallback((tabId: string): string | null => {

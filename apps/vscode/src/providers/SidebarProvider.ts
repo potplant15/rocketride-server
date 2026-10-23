@@ -427,8 +427,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 					.replace(/img-src /, `img-src ${origin} `);
 			}
 
-			return htmlContent.replace(/(?:src|href)="(\/static\/[^"]+)"/g, (match: string, relativePath: string): string => {
-				const cleanPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
+			// Same tolerant pattern as renderWebviewHtml: assetPrefix 'auto'
+			// emits RELATIVE static paths ("static/…" / "./static/…").
+			return htmlContent.replace(/(?:src|href)="(\.?\/?static\/[^"]+)"/g, (match: string, relativePath: string): string => {
+				const cleanPath = relativePath.replace(/^\.?\//, '');
 				const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'webview', cleanPath));
 				return match.replace(relativePath, resourceUri.toString());
 			});

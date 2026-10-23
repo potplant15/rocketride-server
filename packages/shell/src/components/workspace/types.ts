@@ -221,6 +221,12 @@ export interface AppManifestEntry {
 	/** Categories for filtering/grouping in the app store. */
 	categories?: string[];
 	/**
+	 * Shell editions this app serves ('saas' | 'oss' | 'vscode'). Absent means
+	 * the app works on every shell. Matches the catalog wire's `shell` filter
+	 * vocabulary; hosts hide entries that do not name their edition.
+	 */
+	shells?: string[];
+	/**
 	 * The app's settings contribution (VSCode `contributes.configuration`
 	 * shape).  Available at boot from the manifest — the settings registry is
 	 * flattened from the configurations of all desktop apps.
