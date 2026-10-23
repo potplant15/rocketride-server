@@ -50,6 +50,19 @@ const LANE_FILES = [
 	'env.ts',
 	'envContext.tsx',
 	'localEnv.ts',
+	// The dev-tool mounts follow the same rules (no token, no configuration, no page key listeners, no browser storage).
+	'VectorDevTool.tsx',
+	'VectorDevToolSidebar.tsx',
+	'realmRegion.ts',
+	'devtool/protocol.ts',
+	'devtool/controller.ts',
+	'devtool/frame.ts',
+	'devtool/frameText.ts',
+	'devtool/wiring.ts',
+	'components/DevToolConnectionList.tsx',
+	'components/InlineRemoveConfirm.tsx',
+	'components/ConnectionDetailsPanel.tsx',
+	'components/RealmLiveRegion.tsx',
 	'components/StatsStrip.tsx',
 	'components/StatsCharts.tsx',
 	'components/ScopeBar.tsx',
@@ -237,7 +250,7 @@ test("no lane file reads a token or a component's configuration, or stops events
 });
 
 test('pure modules stay pure: vector/ and the pure adapters import no shell value and no React', () => {
-	const pure = LANE_FILES.filter((f) => f.startsWith('vector/') || ['adapters/explorer.ts', 'adapters/actions.ts', 'adapters/connections.ts', 'adapters/consoleActions.ts', 'env.ts', 'localEnv.ts'].includes(f));
+	const pure = LANE_FILES.filter((f) => f.startsWith('vector/') || ['adapters/explorer.ts', 'adapters/actions.ts', 'adapters/connections.ts', 'adapters/consoleActions.ts', 'env.ts', 'localEnv.ts', 'realmRegion.ts', 'devtool/protocol.ts', 'devtool/controller.ts', 'devtool/frame.ts', 'devtool/frameText.ts'].includes(f));
 	for (const file of pure) {
 		const source = code(file);
 		assert.doesNotMatch(source, /^import (?!type )[^;]*from 'shell';/m, `${file} imports a shell value`);

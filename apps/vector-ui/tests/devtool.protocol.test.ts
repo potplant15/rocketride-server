@@ -22,16 +22,16 @@ import { createFrameCaller } from 'shared/explorer/devtool/frame';
 import type { IFrameCaller } from 'shared/explorer/devtool/frame';
 import type { DevToolPeer } from 'shared/explorer/devtool/realm';
 import { MAX_RETAINED_STATE_BYTES, MAX_RETAINED_TOTAL_BYTES, jsonByteLength } from 'shared/explorer/devtool/state';
-import { assertJsonSafe, manualNow } from 'shared/explorer/devtool/testing';
+import { assertJsonSafe, createDevToolHarness, manualNow } from 'shared/explorer/devtool/testing';
 import type { IDevToolHarness } from 'shared/explorer/devtool/testing';
 import { BUS_TOOL_MARGIN_MS, FRAME_OP_MARGIN_MS, SDK_TIMEOUT_SLACK_MS } from 'shared/explorer/devtool/timeouts';
 import { WRITE_REFUSED_TEXT } from '../src/devtool/controller';
-import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, OP, RELAY_OP_MS, RESULT_CAPS, SAMPLE_BUDGET_CAP_MS, STATE, endpointsSnapshot, frameTimeoutFor, waitFor } from '../src/devtool/protocol';
+import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, OP, RELAY_OP_MS, RESULT_CAPS, SAMPLE_BUDGET_CAP_MS, STATE, VECTOR_APP_ID, endpointsSnapshot, frameTimeoutFor, waitFor } from '../src/devtool/protocol';
 import type { IDocVersion, VectorOps } from '../src/devtool/protocol';
 import { documentUri } from '../src/vector/addresses';
 import { CODE_SENTENCES } from '../src/vector/wording';
 import { fixture } from './support/fixtures';
-import { disposeAll, latestStateMap, mountController, publishedStates, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
+import { account, disposeAll, latestStateMap, mountController, publishedStates, rocketRealm, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
 import type { ToolBehaviour } from './support/vectorWorld';
 
 afterEach(disposeAll);
@@ -140,6 +140,24 @@ describe('T3 - every Vector op round-trips JSON-safe; failures come back as equa
 		for (const name of Object.values(EVENT)) assert.ok(!(Object.values(OP) as string[]).includes(name), name);
 		for (const op of Object.values(OP)) assert.match(op, /^vector\.[a-zA-Z]+$/);
 		assert.deepEqual(Object.values(STATE).sort(), ['consoleSummary', 'docVersions', 'endpoints', 'focusRequests', 'identity', 'mapRequests', 'queries']);
+	});
+});
+
+describe('T3 in one realm (rocket-ui: the bus carries values in process, no JSON image)', () => {
+	it('a read, a write and a relay answer the same as over the JSON wire', async () => {
+		const engine = rocketRealm(READS);
+		engine.realm.login(account('u1'));
+		const mounted = mountController(engine.cm, {}, createDevToolHarness(VECTOR_APP_ID, { json: false }));
+		mounted.h.setHostConnection(true);
+		await until(() => Object.keys(mounted.controller.store.getState().probes).length === 1, 'discovery and the probe');
+		const key = mounted.controller.store.getState().endpoints[0].key;
+		const caller = frameCaller(mounted.h);
+		assert.deepEqual(await caller.callReply(OP.stats, { key, input: { mode: 'full' } }, T), fixture('stats_pgvector'));
+		assert.deepEqual(await caller.callReply(OP.trash, { key, input: { object_ids: ['91ae15d4-3f6e-589f-bb81-72301f2ca1b6'] }, origin: 'f' }, T), fixture('soft_delete_ok'));
+		assert.equal(await caller.callReply(OP.showOnMap, { key, keys: [['doc-1', 0]], source: 'search' }, T), null);
+		await assert.rejects(caller.callReply(OP.stats, { key: 'k1|nope', input: {} }, T), (e: unknown) => e instanceof ExplorerToolError && e.kind === 'unavailable');
+		caller.dispose();
+		mounted.controller.dispose();
 	});
 });
 
