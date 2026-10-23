@@ -347,6 +347,9 @@ describe('T11 - no bulk result is retained state, and sizes are guarded', () => 
 		const map = latestStateMap(run.h);
 		assert.ok(jsonByteLength(map) <= MAX_RETAINED_TOTAL_BYTES, `the whole map is ${jsonByteLength(map)} bytes`);
 		assert.deepEqual(run.errors.filter((e) => e.where === 'state'), [], 'the guard never had to degrade or withhold anything');
+		// The snapshots are JSON images of the store's state (toWire), so check the source too: a Map or a Set in it would
+		// be dropped silently on the way.
+		assertJsonSafe(run.controller.store.getState(), 'the endpoint store\'s state');
 		run.caller.dispose();
 		run.controller.dispose();
 	});

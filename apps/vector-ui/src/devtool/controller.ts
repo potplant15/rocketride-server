@@ -123,6 +123,9 @@ export const WRITE_REFUSED_TEXT = 'Documents cannot be removed or restored throu
 /** Said when a call names a connection discovery does not list. */
 export const NOT_LISTED_TEXT = 'This connection is not listed any more. Refresh the connections.';
 
+/** Said when a call names a connection while nothing has been discovered yet (not signed in, or discovery still running). */
+export const NOT_DISCOVERED_TEXT = 'The connections have not been discovered yet, so nothing was sent. Try again in a moment.';
+
 /** Said when a call that waited for discovery has too little of its time left to run (it was not sent). */
 export const TOO_LATE_TEXT = 'The request waited for the connections to be discovered and has too little of its time left to run. Nothing was sent; try again.';
 
@@ -303,7 +306,7 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 				cancel();
 				cancels.delete(stop);
 				if (outcome) resolve(outcome);
-				else reject(new ExplorerToolError({ kind: 'unavailable', tool, message: NOT_LISTED_TEXT }));
+				else reject(new ExplorerToolError({ kind: 'unavailable', tool, message: pending(key) ? NOT_DISCOVERED_TEXT : NOT_LISTED_TEXT }));
 			};
 			const off = store.subscribe(() => {
 				const endpoint = settled(key);

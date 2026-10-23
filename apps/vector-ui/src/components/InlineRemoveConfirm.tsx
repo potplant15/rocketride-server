@@ -77,9 +77,6 @@ const styles = {
 	confirm: (destructive: boolean, ready: boolean): CSSProperties => ({ ...(destructive ? commonStyles.buttonDanger : commonStyles.buttonPrimary), ...(ready ? null : commonStyles.buttonDisabled) }),
 };
 
-/** A controller that never has anything pending. */
-const IDLE = { subscribe: () => () => undefined, getState: () => null } as const;
-
 /** Props. */
 export interface IInlineRemoveConfirmProps {
 	/** The frame's connection objects (their controller holds the pending write). */
@@ -95,8 +92,7 @@ export interface IInlineRemoveConfirmProps {
  * @returns The panel, or nothing while nothing is pending.
  */
 export function InlineRemoveConfirm({ entry, probe }: IInlineRemoveConfirmProps): React.ReactElement | null {
-	const source = entry.controller ?? IDLE;
-	const pending = useSyncExternalStore(source.subscribe, () => entry.controller.getState().confirm, () => null);
+	const pending = useSyncExternalStore(entry.controller.subscribe, () => entry.controller.getState().confirm, () => null);
 	if (pending === null) return null;
 	const view = confirmationFor(pending, removeContextFor(entry.ctx.endpoint, probe));
 	const dialogKey = `${pending.action}:${pending.targets.length}:${pending.targets[0]?.objectId ?? ''}`;

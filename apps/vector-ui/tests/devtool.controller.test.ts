@@ -18,6 +18,7 @@ import { ExplorerToolError } from 'shared/explorer';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
 import { assertSidebarSubscribers, findToolFactoryImports } from 'shared/explorer/devtool/testing';
 import type { IDevToolHarness } from 'shared/explorer/devtool/testing';
+import { NOT_DISCOVERED_TEXT, NOT_LISTED_TEXT } from '../src/devtool/controller';
 import { FOCUS_MAX_AGE_MS, OP, QUERY_TEXT_MAX, STATE, VECTOR_APP_ID } from '../src/devtool/protocol';
 import type { IFocusRequest, IMapRequest, IQueryHint, VectorOps } from '../src/devtool/protocol';
 import { consoleUri, documentUri } from '../src/vector/addresses';
@@ -143,6 +144,32 @@ describe('T5 - mount -> dispose -> mount leaves one live op server; ops answered
 	});
 });
 
+describe('T5 - after a remount the controller\'s own events reach the frames too', () => {
+	it('a relay served by a remounted controller (the host channel kept) is heard by a frame mounted before the remount', async () => {
+		const engine = vscodeRealm();
+		signInVsCode(engine.realm);
+		const first = mountController(engine.cm);
+		first.h.setHostConnection(true);
+		await until(() => first.controller.store.getState().endpoints.length === 1, 'discovery');
+		const key = first.controller.store.getState().endpoints[0].key;
+		const frame = frameSide(first.h);
+		const heard: unknown[] = [];
+		frame.channel.onEvent('focusChunk', (payload) => heard.push(payload));
+		await until(() => frame.caller.controllerReady(), 'the readiness');
+		first.controller.dispose();
+		const again = mountController(engine.cm, {}, first.h, first);
+		assertSidebarSubscribers(again.spy, 'remounted vector controller');
+		await until(() => again.controller.store.getState().endpoints.length === 1, 'the remounted discovery');
+		await until(() => frame.caller.controllerReady(), 'the new readiness');
+		const docKey = documentUri(key, 'doc-1');
+		await frame.caller.callReply(OP.requestFocus, { key, docKey, chunkId: 6 }, { timeoutMs: 10_000 });
+		await until(() => heard.length === 1, 'the focusChunk event from the remounted controller');
+		assert.equal((heard[0] as { chunkId?: number }).chunkId, 6);
+		frame.caller.dispose();
+		again.controller.dispose();
+	});
+});
+
 describe('the relays: a document focus and a map request cross as ops, are retained with a nonce, and end once taken', () => {
 	it('requestFocus publishes the request for its document and tells the frames; taking it (the active event) ends it', async () => {
 		const timers = manualTimers();
@@ -250,6 +277,20 @@ describe('T6 - a quiet sidebar: no event, call or document at mount; the mount i
 });
 
 describe('T7 - identity fails closed (the controller side)', () => {
+	it('a call for a connection while nothing was discovered says so (not "not listed any more"), once its deadline is near', async () => {
+		const engine = vscodeRealm();
+		engine.realm.root.connect(null);
+		const mounted = mountController(engine.cm);
+		mounted.h.setHostConnection(true);
+		const frame = frameSide(mounted.h);
+		await until(() => frame.caller.controllerReady(), 'the readiness');
+		await assert.rejects(frame.caller.callReply(OP.stats, { key: 'k1|any', input: { mode: 'full' } }, { timeoutMs: 1_500 }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'unavailable' && error.message === NOT_DISCOVERED_TEXT);
+		assert.notEqual(NOT_DISCOVERED_TEXT, NOT_LISTED_TEXT);
+		assert.ok(!engine.world.calls.some((c) => c.tool === 'stats'));
+		frame.caller.dispose();
+		mounted.controller.dispose();
+	});
+
 	it('a connected realm with no account discovers nothing, and a frame\'s refresh is refused as data', async () => {
 		const engine = vscodeRealm();
 		engine.realm.root.connect(null);
