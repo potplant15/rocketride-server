@@ -26,7 +26,7 @@ import { assertJsonSafe, createDevToolHarness, manualNow } from 'shared/explorer
 import type { IDevToolHarness } from 'shared/explorer/devtool/testing';
 import { BUS_TOOL_MARGIN_MS, FRAME_OP_MARGIN_MS, SDK_TIMEOUT_SLACK_MS } from 'shared/explorer/devtool/timeouts';
 import { WRITE_REFUSED_TEXT } from '../src/devtool/controller';
-import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, OP, RELAY_OP_MS, RESULT_CAPS, SAMPLE_BUDGET_CAP_MS, STATE, VECTOR_APP_ID, endpointsSnapshot, frameTimeoutFor, waitFor } from '../src/devtool/protocol';
+import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, OP, RELAY_OP_MS, RESULT_CAPS, SAMPLE_BUDGET_CAP_MS, STATE, VECTOR_APP_ID, VERSIONS_STATE_BYTES, endpointsSnapshot, frameTimeoutFor, versionsSnapshot, waitFor } from '../src/devtool/protocol';
 import type { IDocVersion, VectorOps } from '../src/devtool/protocol';
 import { documentUri } from '../src/vector/addresses';
 import { CODE_SENTENCES } from '../src/vector/wording';
@@ -381,6 +381,32 @@ describe('T11 - no bulk result is retained state, and sizes are guarded', () => 
 		assert.equal(run.engine.requests.filter((r) => r.op === 'client.tool').length, before, 'nothing reached the bus');
 		run.caller.dispose();
 		run.controller.dispose();
+	});
+
+	it('the docVersions snapshot keeps every stamp before any `gone`, and gives `gone` back to the newest writes that fit', () => {
+		const ids = (i: number) => Array.from({ length: 100 }, (_, n) => `${String(i).padStart(8, '0')}-0000-4000-8000-${String(n).padStart(12, '0')}`);
+		const version = (i: number, gone: string[]): IDocVersion => ({ version: i + 1, epoch: 'e-1', action: 'trash', gone, origin: `f-${i}` });
+		const all = new Map<string, IDocVersion>(Array.from({ length: 8 }, (_, i) => [`k1|proj-${i}|store_1`, version(i, ids(i))] as const));
+		const shown = new Set(all.keys());
+		const stamp = (v: IDocVersion | undefined) => v && { version: v.version, epoch: v.epoch, action: v.action, origin: v.origin };
+		const small = new Map([['k1|a', version(0, ['x'])]]);
+		assert.deepEqual(versionsSnapshot(small, shown, VERSIONS_STATE_BYTES), { 'k1|a': version(0, ['x']) }, 'under the budget: whole');
+
+		const cut = versionsSnapshot(all, shown, VERSIONS_STATE_BYTES);
+		assert.ok(jsonByteLength(cut) <= VERSIONS_STATE_BYTES, `${jsonByteLength(cut)} bytes`);
+		for (const [key, v] of all) assert.deepEqual(stamp(cut[key]), stamp(v), `${key} keeps its stamp`);
+		assert.deepEqual(cut['k1|proj-7|store_1'].gone, ids(7), 'the newest write keeps what it moved');
+		assert.deepEqual(cut['k1|proj-0|store_1'].gone, [], 'the oldest gives its list up first');
+		const withGone = [...all.keys()].filter((key) => cut[key].gone.length > 0);
+		assert.deepEqual(withGone, [...all.keys()].slice(-withGone.length), 'the lists kept are the newest ones');
+
+		// A budget too small for every stamp (the guard's shrink): the newest stamps that fit, still under the budget.
+		const tight = versionsSnapshot(all, shown, 600);
+		assert.ok(jsonByteLength(tight) <= 600, `${jsonByteLength(tight)} bytes`);
+		const keptKeys = Object.keys(tight);
+		assert.ok(keptKeys.length > 0 && keptKeys.includes('k1|proj-7|store_1'), 'the newest stamp is kept');
+		for (const key of keptKeys) assert.deepEqual(stamp(tight[key]), stamp(all.get(key)));
+		assert.ok(all.get('k1|proj-7|store_1') !== undefined && all.get('k1|proj-7|store_1')?.gone.length === 100, 'the controller\'s own entries are not changed');
 	});
 
 	it('the endpoints snapshot stays under its budget however many connections there are, and counts what it leaves out', () => {

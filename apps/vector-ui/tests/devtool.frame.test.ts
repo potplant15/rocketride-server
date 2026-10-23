@@ -12,7 +12,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { ExplorerToolError } from 'shared/explorer';
-import { codedError } from 'shared/explorer/connect/testing';
+import { codedError, projectRows, vectorComponents } from 'shared/explorer/connect/testing';
+import type { IExplorerEndpoint } from 'shared/explorer';
+import { jsonByteLength } from 'shared/explorer/devtool/state';
 import { SUMMON_EVENT, SUMMON_GRACE_MS, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createDevToolHarness } from 'shared/explorer/devtool/testing';
 import { callVector, fetchChunks, fetchDocument, fetchStats, scoreChunks } from '../src/adapters/actions';
@@ -23,7 +25,7 @@ import { CHAT_AND_INGEST_CACHE } from '../src/ingest/useIngest';
 import type { IConnectionEntry } from '../src/adapters/connections';
 import { remoteChannel } from '../src/devtool/frame';
 import { CONTROLLER_NOT_READY_TEXT } from '../src/devtool/frameText';
-import { OP, STATE, VECTOR_APP_ID } from '../src/devtool/protocol';
+import { OP, STATE, VECTOR_APP_ID, VERSIONS_STATE_BYTES } from '../src/devtool/protocol';
 import type { IDocVersion, IQueryHint } from '../src/devtool/protocol';
 import { DEVTOOL_CHAT_NOTE, DEVTOOL_UPLOADS_NOTE, NO_CHANNELS } from '../src/env';
 import { buildConsoleModel } from '../src/vector/consoleModel';
@@ -322,6 +324,53 @@ describe('the document frame: its focus, the console\'s query and median, and wr
 		unbind();
 		run.frame.dispose();
 		run.controller.dispose();
+	});
+});
+
+describe('docVersions keeps every connection\'s stamp, however many documents its writes moved', () => {
+	it('8 connections each trashing a full batch keep all 8 stamps under the budget, and a frame relists only for its own connection\'s write', async () => {
+		const PROJECTS = 8;
+		const rows = Array.from({ length: PROJECTS }, (_, i) => projectRows(['ingest_1', 'chat_1', 'tools_1'], vectorComponents('postgres'), { projectId: `vp-${i}` })).flat();
+		const echo = (call: { input?: Record<string, unknown> }) => ({ success: true, object_ids: call.input?.object_ids, matched_chunks: 1, not_found: [] });
+		const engine = vscodeRealm({ soft_delete: echo }, rows);
+		signInVsCode(engine.realm);
+		const mounted = mountController(engine.cm);
+		mounted.h.setHostConnection(true);
+		await until(() => Object.keys(mounted.controller.store.getState().probes).length === PROJECTS, 'discovery and the probes');
+		const keys = mounted.controller.store.getState().endpoints.map((e) => e.key);
+		const framed = mountFrame(mounted.h, documentUri(keys[0], ID), { hintDelayMs: 0 });
+		await until(() => framed.frame.endpoints.get().endpoints.length === PROJECTS && Object.keys(framed.frame.endpoints.get().probes).length === PROJECTS && framed.frame.controllerReady.get(), 'the frame to see every connection');
+		const endpoint = framed.frame.endpoints.get().endpoints.find((e) => e.key === keys[0]) as IExplorerEndpoint;
+		const probe = framed.frame.endpoints.get().probes[keys[0]];
+		const limits = (probe?.ok ? readDialect(probe.info)?.limits : null) ?? DEFAULT_LIMITS;
+		const entry = framed.frame.env(true).connection(endpoint, limits);
+		const relists: IDocVersion[] = [];
+		const unbind = framed.frame.bindDocument(entry, ID, { focus: () => undefined, version: (v) => relists.push(v) });
+		const batch = (i: number) => Array.from({ length: limits.write_ids_max }, (_, n) => `${String(i).padStart(8, '0')}-0000-4000-8000-${String(n).padStart(12, '0')}`);
+		const snapshot = () => (latestStateMap(mounted.h)[STATE.docVersions]?.snapshot ?? {}) as Record<string, IDocVersion>;
+		const kept: number[] = [];
+		const write = async (op: typeof OP.trash | typeof OP.restore, i: number, ids: string[]) => {
+			await framed.frame.caller.callReply(op, { key: keys[i], input: { object_ids: ids }, origin: 'frame-x' }, { timeoutMs: 30_000 });
+			await settle();
+			kept.push(Object.keys(snapshot()).length);
+		};
+
+		for (let i = 0; i < PROJECTS; i += 1) await write(OP.trash, i, batch(i));
+		const full = snapshot();
+		assert.ok(jsonByteLength(full) <= VERSIONS_STATE_BYTES, `the snapshot is ${jsonByteLength(full)} bytes`);
+		assert.deepEqual(full[keys[PROJECTS - 1]]?.gone, batch(PROJECTS - 1), 'the newest write keeps every document it moved');
+		// Restores on the other connections: each a real write there; none is one on the frame's connection.
+		for (let i = PROJECTS - 1; i >= 1; i -= 1) await write(OP.restore, i, [batch(i)[0]]);
+		const last = snapshot();
+		assert.deepEqual({ kept, relists: relists.length, stamps: keys.map((k) => last[k]?.version ?? null) }, {
+			kept: [1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8],
+			relists: 1,
+			stamps: [1, 2, 2, 2, 2, 2, 2, 2],
+		}, 'every stamp stays in every snapshot; the frame relists once, for its own connection\'s trash');
+		assert.deepEqual(relists[0].gone, batch(0), 'and learns what left from it');
+		unbind();
+		framed.frame.dispose();
+		mounted.controller.dispose();
 	});
 });
 

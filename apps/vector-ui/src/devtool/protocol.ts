@@ -47,7 +47,9 @@
 //   STATE (controller -> frames; retained, fixed topics of maps by key)
 //     endpoints        the endpoint store's snapshot (capped; see below)
 //     identity         { fingerprint } (frameIdentity.ts)
-//     docVersions      per connection: the last write that ran (any frame's)
+//     docVersions      per connection: the last write that ran (any frame's);
+//                      over its budget every stamp stays and only the newest
+//                      writes keep `gone` (versionsSnapshot)
 //     queries          per connection: the console's query text (a nonce each)
 //     consoleSummary   per connection: the console's median chunk count
 //     focusRequests    per connection: a pending chunk focus (a nonce)
@@ -206,7 +208,10 @@ export interface IDocVersion {
 	/** The controller mount that counted it (a remounted controller counts again from 1; see the frames' bindings). */
 	epoch: string;
 	action: DocWriteAction;
-	/** The documents that left the stored ones (moved to the trash, or deleted); empty for a restore or an unknown outcome. */
+	/**
+	 * The documents that left the stored ones (moved to the trash, or deleted); empty for a restore or an unknown
+	 * outcome, and for an older write when the snapshot is over its budget (versionsSnapshot).
+	 */
 	gone: string[];
 	/** The frame that asked for it (it refreshed itself already). */
 	origin: string;
@@ -477,6 +482,38 @@ export function keyedSnapshot<T>(all: ReadonlyMap<string, T>, shown: ReadonlySet
 		if (bytes + size > maxBytes) continue;
 		out[key] = toWire(all.get(key) as T);
 		bytes += size;
+	}
+	return out;
+}
+
+/**
+ * The docVersions snapshot cut to a budget. Frames refetch on a change of a connection's stamp (epoch, version) and
+ * read `gone` only to drop a selection that left, so the stamps go first: a stamp that left the snapshot and came back
+ * would read as a new write. Every stamp that fits is kept (keyedSnapshot's order, with no `gone`), then `gone` is put
+ * back on entries in the same order while the budget allows, so the newest writes keep what they moved.
+ *
+ * @param all - Every connection's last write, ordered from the least to the most recently changed.
+ * @param shown - The keys in the published endpoints snapshot.
+ * @param maxBytes - The budget.
+ * @returns The snapshot.
+ */
+export function versionsSnapshot(all: ReadonlyMap<string, IDocVersion>, shown: ReadonlySet<string>, maxBytes: number): Record<string, IDocVersion> {
+	const budget = Math.min(maxBytes, MAX_RETAINED_STATE_BYTES);
+	const whole = toWire(Object.fromEntries(all));
+	if (jsonByteLength(whole) <= budget) return whole;
+	const stamps = new Map<string, IDocVersion>();
+	for (const [key, version] of all) stamps.set(key, { ...version, gone: [] });
+	const out = keyedSnapshot(stamps, shown, budget);
+	let bytes = jsonByteLength(out);
+	const newestFirst = [...all.keys()].reverse();
+	for (const key of [...newestFirst.filter((k) => shown.has(k)), ...newestFirst.filter((k) => !shown.has(k))]) {
+		const version = all.get(key) as IDocVersion;
+		if (!Object.prototype.hasOwnProperty.call(out, key) || version.gone.length === 0) continue;
+		// The entry already holds `[]`: putting the list back adds its JSON less those two bytes.
+		const extra = jsonByteLength(version.gone) - 2;
+		if (bytes + extra > budget) continue;
+		out[key] = toWire(version);
+		bytes += extra;
 	}
 	return out;
 }

@@ -79,7 +79,10 @@ limits) is `docs/development/nodes/vector-tool-contract.md`.
   write gate on its own record and probe for every write, sends a write once
   and bumps `docVersions` for every write that ran or timed out. Each version
   carries the controller mount's `epoch` (a remounted controller counts again
-  from 1). A bump names the asking frame as `origin` only when the write
+  from 1). Over its budget the snapshot keeps every connection's stamp first
+  and gives the list of documents that left (`gone`) back to the newest writes
+  that fit (`versionsSnapshot`): a stamp that left and came back would read as
+  a new write. A bump names the asking frame as `origin` only when the write
   answered (that frame relists itself); a timeout, or an answer still over the
   cap after it was cut to the fields a frame reads, names no frame, so the one
   that asked relists too. A call that arrives before its discovery listed and

@@ -110,6 +110,7 @@ import {
 	field,
 	keyedSnapshot,
 	routeDocKey,
+	versionsSnapshot,
 	waitFor,
 } from './protocol';
 import type { DocWriteAction, IConsoleSummary, IDocVersion, IFocusRequest, IMapRequest, IQueryHint, ReadOp, ToolOp, VectorOps, WriteOp } from './protocol';
@@ -537,7 +538,7 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 	// so `omitted` stays true; never the generic `truncated` marker), and keeps the whole map under its total budget.
 	const shrink = (topic: string, snapshot: unknown, info: IOversizeInfo): unknown => {
 		if (topic === STATE.endpoints) return endpointsSnapshot(store.getState(), info.budgetBytes);
-		if (topic === STATE.docVersions) return keyedSnapshot(versions, shownKeys, info.budgetBytes);
+		if (topic === STATE.docVersions) return versionsSnapshot(versions, shownKeys, info.budgetBytes);
 		if (topic === STATE.queries) return keyedSnapshot(queries, shownKeys, info.budgetBytes);
 		if (topic === STATE.consoleSummary) return keyedSnapshot(summaries, shownKeys, info.budgetBytes);
 		if (topic === STATE.focusRequests) return keyedSnapshot(focus, shownKeys, info.budgetBytes);
@@ -570,7 +571,7 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 		publish(STATE.endpoints, snapshot);
 	};
 	function publishVersions(): void {
-		publish(STATE.docVersions, keyedSnapshot(versions, shownKeys, VERSIONS_STATE_BYTES));
+		publish(STATE.docVersions, versionsSnapshot(versions, shownKeys, VERSIONS_STATE_BYTES));
 	}
 	const publishQueries = (): void => publish(STATE.queries, keyedSnapshot(queries, shownKeys, QUERIES_STATE_BYTES));
 	const publishSummaries = (): void => publish(STATE.consoleSummary, keyedSnapshot(summaries, shownKeys, SUMMARY_STATE_BYTES));

@@ -351,6 +351,15 @@ describe('R8 - the sidebar highlights from activeDocKey, else the frames\' activ
 	});
 });
 
+describe('docVersions is cut by its own snapshot, so the stamps outlast the lists of what left', () => {
+	it('the controller publishes and shrinks docVersions with versionsSnapshot, never with the generic keyed cut', () => {
+		const text = code(read('devtool/controller.ts'));
+		assert.match(text, /publish\(STATE\.docVersions, versionsSnapshot\(versions, shownKeys, VERSIONS_STATE_BYTES\)\)/);
+		assert.match(text, /if \(topic === STATE\.docVersions\) return versionsSnapshot\(versions, shownKeys, info\.budgetBytes\);/);
+		assert.doesNotMatch(text, /keyedSnapshot\(versions\b/);
+	});
+});
+
 describe('R6 - one wiring module; the controller is built in an effect', () => {
 	it('createToolChannel, createToolOpServer and createToolController are imported from shell in ONE module', () => {
 		assert.deepEqual(findToolFactoryImports(allSources()), ['devtool/wiring.ts']);
