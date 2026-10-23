@@ -58,6 +58,15 @@
 //     controller -> frames  focusChunk, showOnMap (each carries its docKey;
 //                           frames filter on it and take a nonce once)
 //
+// THE WAITS. A frame's remote channel (devtool/frame.ts remoteChannel) takes
+// each op's timeout from frameTimeoutFor, never from the caller's own
+// `opts.timeoutMs`: the controller waits what waitFor names for the same op
+// and the same probe, so the frame's wait is always the controller's plus the
+// bus and frame margins (R5). The views' own waits (MapView's sample budget +
+// 30 s, the panels' 60 s for search and embed) are the same numbers today.
+// A call that waited at the controller for discovery runs only inside what is
+// left of its deadline, and is not started when less than a second is left.
+//
 // Every op names an endpoint by its library KEY (owner-aware, token-free),
 // never by an endpoint object, and never carries a token or a node id: the
 // controller resolves the store node and the embedding node itself

@@ -123,6 +123,12 @@ export const WRITE_REFUSED_TEXT = 'Documents cannot be removed or restored throu
 /** Said when a call names a connection discovery does not list. */
 export const NOT_LISTED_TEXT = 'This connection is not listed any more. Refresh the connections.';
 
+/** Said when a call that waited for discovery has too little of its time left to run (it was not sent). */
+export const TOO_LATE_TEXT = 'The request waited for the connections to be discovered and has too little of its time left to run. Nothing was sent; try again.';
+
+/** The least time a call is started with (a shorter one could only time out). */
+const MIN_CALL_MS = 1_000;
+
 /** What a write's answer is cut to when it is over its cap: the fields a frame reads (vector/results.ts). */
 const WRITE_ANSWER_FIELDS = ['success', 'code', 'error', 'retry_after_s', 'object_ids', 'not_found', 'kept_live', 'matched_chunks', 'removed_chunks', 'deleted_count'] as const;
 
@@ -309,6 +315,9 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 			cancels.add(stop);
 		});
 	};
+	// What is left of a call's deadline once it may run (after a wait for discovery), less the margin its answer needs
+	// to reach the frame before the frame gives up.
+	const timeLeft = (params: unknown): number => (readDeadline(params) ?? now()) - now() - LISTING_WAIT_MARGIN_MS;
 	const nodeFor = (op: ToolOp, endpoint: IExplorerEndpoint, tool: string): string => {
 		if (op !== OP.embed) return endpoint.nodeId;
 		const embed = consoleNodes(endpoint).embed;
@@ -404,7 +413,11 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 		const input = inputOf(params, op);
 		const endpoint = await endpointFor(key, tool, params);
 		checkRead(op, input, limitsOf(key), tool);
-		const raw = await store.session(client, endpoint).invoke<unknown>(tool, input, { nodeId: nodeFor(op, endpoint, tool), timeoutMs: waitOf(op, key) });
+		// Never past the frame's deadline: a call that waited for discovery gets what is left of it.
+		const left = timeLeft(params);
+		if (left < MIN_CALL_MS) throw new ExplorerToolError({ kind: 'unavailable', tool, message: TOO_LATE_TEXT });
+		const wait = Math.min(waitOf(op, key), left);
+		const raw = await store.session(client, endpoint).invoke<unknown>(tool, input, { nodeId: nodeFor(op, endpoint, tool), timeoutMs: wait });
 		return replyOk(sized(raw, op, tool));
 	};
 	const write = (op: WriteOp) => async (params: unknown) => {
@@ -418,11 +431,17 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 		const deletedOnly = op === OP.deletePermanently && input.deleted_only === true;
 		const action: DocWriteAction = op === OP.trash ? 'trash' : op === OP.restore ? 'restore' : deletedOnly ? 'empty' : 'delete';
 		const origin = typeof field(params, 'origin') === 'string' ? (field(params, 'origin') as string) : '';
+		// Never past the frame's deadline: a write that waited for discovery gets what is left of it (its answer, or the
+		// session's "stopped waiting", reaches the frame before the frame gives up), and one with too little left is
+		// not started at all.
+		const left = timeLeft(params);
+		if (left < MIN_CALL_MS) throw new ExplorerToolError({ kind: 'unavailable', tool, message: TOO_LATE_TEXT });
+		const wait = Math.min(waitOf(op, key), left);
 		// Only what the write takes is sent: never a field a frame added.
 		const clean: Record<string, unknown> = { object_ids: ids, ...(deletedOnly ? { deleted_only: true } : {}) };
 		let raw: unknown;
 		try {
-			raw = await store.session(client, endpoint).invoke<unknown>(tool, clean, { nodeId: endpoint.nodeId, timeoutMs: waitOf(op, key), idempotent: false });
+			raw = await store.session(client, endpoint).invoke<unknown>(tool, clean, { nodeId: endpoint.nodeId, timeoutMs: wait, idempotent: false });
 		} catch (error) {
 			// A write the session stopped waiting for may still run: every frame of the connection refetches, the one that
 			// asked included (it heard a failure and ran no batch, so it relists only for a bump that names no frame).

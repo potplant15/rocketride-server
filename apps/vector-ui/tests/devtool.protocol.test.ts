@@ -391,6 +391,57 @@ describe('T11 - no bulk result is retained state, and sizes are guarded', () => 
 	});
 });
 
+describe('T4 / T13 on the wait path: a call that waited for discovery runs only inside what is left of its deadline', () => {
+	/** A frame call held across a remount (the controller unmounts while it is on the bus), then a fresh controller. */
+	async function heldAcrossRemount(op: 'vector.stats' | 'vector.trash', timeoutMs: number) {
+		const clock = manualNow(2_000_000);
+		const engine = vscodeRealm(READS);
+		signInVsCode(engine.realm);
+		const first = mountController(engine.cm, { now: clock.now });
+		first.h.setHostConnection(true);
+		await until(() => Object.keys(first.controller.store.getState().probes).length === 1, 'the probe');
+		const key = first.controller.store.getState().endpoints[0].key;
+		const caller = frameCaller(first.h, clock.now);
+		await until(() => caller.controllerReady(), 'the readiness');
+		const input = op === OP.trash ? { object_ids: [DOC_ID] } : { mode: 'full' };
+		const call = caller.callReply(op, (op === OP.trash ? { key, input, origin: 'f' } : { key, input }) as never, { timeoutMs });
+		first.controller.dispose();
+		await settle();
+		const before = engine.requests.length;
+		// The fresh controller has discovered nothing: the held call waits for its discovery, inside the deadline.
+		const again = mountController(engine.cm, { now: clock.now }, first.h, first);
+		return { engine, caller, call, again, before };
+	}
+
+	it('a read: the session is asked for what is left of the deadline (less a margin), never the full wait', async () => {
+		const run = await heldAcrossRemount(OP.stats, 20_000);
+		assert.deepEqual(await run.call, fixture('stats_pgvector'));
+		const stats = run.engine.requests.slice(run.before).find((r) => r.op === 'client.tool' && (r.params as { tool?: string }).tool === 'stats');
+		assert.ok(stats, 'the read ran');
+		// The deadline is 20 s from the (frozen) clock; the session gets 20 s less the 1 s margin, the bus 6 s more.
+		assert.equal(stats.timeoutMs, 20_000 - 1_000 + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS, 'bounded by the deadline, not the 40 s statement wait');
+		run.caller.dispose();
+		run.again.controller.dispose();
+	});
+
+	it('a write: sent with what is left of its deadline, so its answer (or "stopped waiting") reaches the frame before it gives up', async () => {
+		const run = await heldAcrossRemount(OP.trash, 20_000);
+		assert.deepEqual(await run.call, fixture('soft_delete_ok'));
+		const trash = run.engine.requests.slice(run.before).find((r) => r.op === 'client.tool' && (r.params as { tool?: string }).tool === 'soft_delete');
+		assert.equal(trash?.timeoutMs, 20_000 - 1_000 + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS, 'bounded by the deadline, not the 40 s write wait');
+		run.caller.dispose();
+		run.again.controller.dispose();
+	});
+
+	it('a write with less than a second of its deadline left is refused before anything is sent', async () => {
+		const run = await heldAcrossRemount(OP.trash, 1_500);
+		await assert.rejects(run.call, (e: unknown) => e instanceof ExplorerToolError && e.kind === 'unavailable' && /Nothing was sent/.test(e.message));
+		assert.ok(!run.engine.world.calls.some((c) => c.tool === 'soft_delete'), 'the write never reached the node');
+		run.caller.dispose();
+		run.again.controller.dispose();
+	});
+});
+
 describe('T13 - deadlines: an expired call never runs; an on-time one does', () => {
 	it('a Delete permanently and a sample the PEER holds past their deadlines reach a remounted controller, which refuses them; an on-time held sample runs', async () => {
 		const clock = manualNow(1_000_000);
