@@ -171,6 +171,8 @@ describe('the console frame: hints out, other frames\' writes and map requests i
 		const run = await connected((key) => consoleUri(key));
 		const entry = entryOf(run);
 		const unbind = run.frame.bindConsole(entry);
+		// As the console view opens it (views/ConsoleView.tsx): the flag, then the first load.
+		entry.opened = true;
 		entry.controller.open();
 		await until(() => entry.controller.getState().directory.rows.length > 0, 'the listing');
 		entry.selection.selectDocument({ objectId: ID, path: 'a.md' });
@@ -198,6 +200,25 @@ describe('the console frame: hints out, other frames\' writes and map requests i
 		assert.equal(entry.writes.get(), own + 1, 'one redraw: the controller\'s own (onWritten), none for its own bump');
 		unbind();
 		entry.controller.dispose();
+		other.frame.dispose();
+		run.frame.dispose();
+		run.controller.dispose();
+	});
+
+	it('a console that has not opened yet (its store has not answered as a vector store) lists nothing for another frame\'s write', async () => {
+		const run = await connected((key) => consoleUri(key));
+		const entry = entryOf(run);
+		const unbind = run.frame.bindConsole(entry);
+		assert.equal(entry.opened, false, 'the premise: the console has not opened');
+		const other = mountFrame(run.h, documentUri(run.key, ID), { hintDelayMs: 0 });
+		await until(() => other.frame.controllerReady.get(), 'the other frame');
+		const before = run.engine.requests.length;
+		await other.frame.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [ID] }, origin: other.frame.origin }, { timeoutMs: 30_000 });
+		await until(() => entry.writes.get() === 1, 'the map is still told');
+		for (let i = 0; i < 4; i += 1) await settle();
+		const tools = run.engine.requests.slice(before).map((r) => (r.params as { tool?: string }).tool).filter((t) => t !== 'soft_delete');
+		assert.deepEqual(tools, [], `nothing listed or counted for a console that never opened (${tools.join(', ')})`);
+		unbind();
 		other.frame.dispose();
 		run.frame.dispose();
 		run.controller.dispose();

@@ -585,7 +585,9 @@ export function createVectorFrame(opts: IVectorFrameOptions): IVectorFrame {
 				if (!version || version.version === seen) return;
 				seen = version.version;
 				if (version.origin === origin) return;
-				entry.controller.documentsChanged();
+				// A console that has not opened (its store has not answered as a vector store yet) lists nothing now: it
+				// lists the store as it is when it opens.
+				if (entry.opened) entry.controller.documentsChanged();
 				entry.writes.set(entry.writes.get() + 1);
 				for (const id of Array.isArray(version.gone) ? version.gone : []) entry.selection.forgetDocument(id);
 			}));
