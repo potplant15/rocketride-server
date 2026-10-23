@@ -194,6 +194,8 @@ export type DocWriteAction = 'trash' | 'restore' | 'delete' | 'empty';
  */
 export interface IDocVersion {
 	version: number;
+	/** The controller mount that counted it (a remounted controller counts again from 1; see the frames' bindings). */
+	epoch: string;
 	action: DocWriteAction;
 	/** The documents that left the stored ones (moved to the trash, or deleted); empty for a restore or an unknown outcome. */
 	gone: string[];

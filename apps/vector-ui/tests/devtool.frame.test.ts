@@ -320,6 +320,78 @@ describe('the document frame: its focus, the console\'s query and median, and wr
 	});
 });
 
+describe('docVersions across a controller remount: a new controller starts its counters again', () => {
+	const ID2 = '2c4e8a10-7b1d-5f3a-9e6c-0d8b4a2f1e57';
+
+	it('VS Code order (the host drops, the console rebinds while the old map is retained, the controller remounts): another frame\'s write still relists it and redraws its map', async () => {
+		const run = await connected((key) => consoleUri(key));
+		const entry = entryOf(run);
+		const unbind = run.frame.bindConsole(entry);
+		entry.opened = true;
+		entry.controller.open();
+		await until(() => entry.controller.getState().directory.rows.length > 0, 'the listing');
+		const other = mountFrame(run.h, documentUri(run.key, ID), { hintDelayMs: 0 });
+		await until(() => other.frame.controllerReady.get(), 'the other frame');
+		await other.frame.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [ID] }, origin: other.frame.origin }, { timeoutMs: 30_000 });
+		await until(() => entry.writes.get() === 1, 'the first relist');
+		assert.equal((latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion>)[run.key].version, 1, 'the premise: version 1');
+
+		run.controller.dispose();
+		run.h.setHostConnection(false);
+		await settle();
+		const entry2 = run.frame.env(true).connection(run.frame.endpoints.get().endpoints[0], DEFAULT_LIMITS);
+		assert.notEqual(entry2, entry, 'the premise: the drop rebuilt the connection objects');
+		assert.equal(run.frame.docVersions.get()[run.key]?.version, 1, 'the premise: the old controller\'s version is still retained when the console binds again');
+		unbind();
+		const unbind2 = run.frame.bindConsole(entry2);
+		run.h.setHostConnection(true);
+		const again = mountController(run.engine.cm, {}, run.h, run.mounted);
+		await until(() => Object.keys(again.controller.store.getState().probes).length === 1, 'the remounted discovery');
+		await until(() => other.frame.controllerReady.get() && run.frame.controllerReady.get(), 'readiness again');
+		await until(() => Object.keys(run.frame.docVersions.get()).length === 0, 'the new controller\'s empty map');
+		entry2.opened = true;
+		entry2.controller.open();
+		await until(() => entry2.controller.getState().directory.rows.length > 0, 'the listing again');
+		for (let i = 0; i < 4; i += 1) await settle();
+		const before = run.engine.requests.length;
+		const writesBefore = entry2.writes.get();
+		await other.frame.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [ID2] }, origin: other.frame.origin }, { timeoutMs: 30_000 });
+		await until(() => (latestStateMap(run.h)[STATE.docVersions]?.snapshot as Record<string, IDocVersion>)[run.key]?.version === 1, 'the remounted controller\'s version 1');
+		await until(() => entry2.writes.get() === writesBefore + 1, 'the console to redraw its map for the other frame\'s write');
+		await until(() => run.engine.requests.slice(before).some((r) => (r.params as { tool?: string }).tool === 'list_documents'), 'and to relist');
+		unbind2();
+		entry2.controller.dispose();
+		other.frame.dispose();
+		run.frame.dispose();
+		again.controller.dispose();
+	});
+
+	it('with no host drop (a sidebar remount, a webview reload): a document frame is still told of the write after the remount', async () => {
+		const run = await connected((key) => documentUri(key, ID));
+		const entry = entryOf(run);
+		const versions: IDocVersion[] = [];
+		const unbind = run.frame.bindDocument(entry, ID, { focus: () => undefined, version: (v) => versions.push(v) });
+		const console = mountFrame(run.h, consoleUri(run.key), { hintDelayMs: 0 });
+		await until(() => console.frame.controllerReady.get(), 'the console frame');
+		await console.frame.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [ID2] }, origin: console.frame.origin }, { timeoutMs: 30_000 });
+		await until(() => versions.length === 1, 'the first version');
+
+		run.controller.dispose();
+		await settle();
+		const again = mountController(run.engine.cm, {}, run.h, run.mounted);
+		await until(() => Object.keys(again.controller.store.getState().probes).length === 1, 'the remounted discovery');
+		await until(() => console.frame.controllerReady.get() && run.frame.controllerReady.get(), 'readiness again');
+		await until(() => Object.keys(run.frame.docVersions.get()).length === 0, 'the new controller\'s empty map');
+		const seenBefore = versions.length;
+		await console.frame.caller.callReply(OP.trash, { key: run.key, input: { object_ids: [ID] }, origin: console.frame.origin }, { timeoutMs: 30_000 });
+		await until(() => versions.some((v, i) => i >= seenBefore && v.gone.includes(ID)), 'the document to be told of the write after the remount');
+		unbind();
+		console.frame.dispose();
+		run.frame.dispose();
+		again.controller.dispose();
+	});
+});
+
 describe('T7 - identity fails closed in every frame', () => {
 	it('VS Code: account A -> disconnect -> reconnect -> account B closes the console and document frames and clears their caches; the landing only resets', async () => {
 		const engine = vscodeRealm();

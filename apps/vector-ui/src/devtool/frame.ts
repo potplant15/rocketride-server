@@ -355,6 +355,28 @@ export function createVectorFrame(opts: IVectorFrameOptions): IVectorFrame {
 	const visible = cell(source ? source.visible() : true);
 	if (source) offs.push(source.subscribe(() => visible.set(source.visible())));
 
+	// ── docVersions: every write that ran on a connection, by the controller mount that counted it ──
+	// A change of a connection's (epoch, version) is a write to read again, never a "greater" version: a remounted
+	// controller counts again from 1 under a new epoch, and the map it publishes first does not hold the connection,
+	// which forgets what was seen. So neither a stale replay of the previous mount's map (the JSON wire re-delivers
+	// every topic with the new readiness nonce) nor the new mount's first version is mistaken for the other.
+	const stampOf = (version: IDocVersion): string => `${typeof version.epoch === 'string' ? version.epoch : ''}#${version.version}`;
+	const followVersions = (key: string, onWrite: (version: IDocVersion) => void): (() => void) => {
+		const first = versions.get()[key];
+		let seen: string | undefined = first ? stampOf(first) : undefined;
+		return versions.subscribe(() => {
+			const version = versions.get()[key];
+			if (!version) {
+				seen = undefined;
+				return;
+			}
+			const stamp = stampOf(version);
+			if (stamp === seen) return;
+			seen = stamp;
+			onWrite(version);
+		});
+	};
+
 	const infoOf = (key: string): Record<string, unknown> | null => {
 		const probe = endpoints.get().probes[key];
 		return probe?.ok && probe.info !== null && typeof probe.info === 'object' ? probe.info : null;
@@ -579,11 +601,7 @@ export function createVectorFrame(opts: IVectorFrameOptions): IVectorFrame {
 			onSelection();
 			onConsole();
 			// Another frame's write: what this console shows may have changed. Its own write already refreshed it.
-			let seen = versions.get()[key]?.version;
-			unbind.push(versions.subscribe(() => {
-				const version = versions.get()[key];
-				if (!version || version.version === seen) return;
-				seen = version.version;
+			unbind.push(followVersions(key, (version) => {
 				if (version.origin === origin) return;
 				// A console that has not opened (its store has not answered as a vector store yet) lists nothing now: it
 				// lists the store as it is when it opens.
@@ -617,13 +635,7 @@ export function createVectorFrame(opts: IVectorFrameOptions): IVectorFrame {
 			};
 			unbind.push(queries.subscribe(onQueries));
 			onQueries();
-			let seen = versions.get()[key]?.version;
-			unbind.push(versions.subscribe(() => {
-				const version = versions.get()[key];
-				if (!version || version.version === seen) return;
-				seen = version.version;
-				on.version(version);
-			}));
+			unbind.push(followVersions(key, (version) => on.version(version)));
 			const listener = (chunkId: number): void => {
 				entry.selection.focusChunk([objectId, chunkId]);
 				on.focus(chunkId);

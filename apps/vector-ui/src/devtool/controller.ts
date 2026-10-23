@@ -369,9 +369,12 @@ export function createVectorController(opts: IVectorControllerOptions): IVectorC
 	};
 
 	// ── docVersions: every write that ran (or may have) moves its connection's version ──────────
+	// This mount's own epoch: a remounted controller counts again from 1, so a frame tells its versions from the
+	// previous mount's by the epoch, never by the number alone.
+	const epoch = mountNonce();
 	const bump = (key: string, action: DocWriteAction, gone: string[], origin: string): void => {
 		const version = (versions.get(key)?.version ?? 0) + 1;
-		touch(versions, key, { version, action, gone, origin });
+		touch(versions, key, { version, epoch, action, gone, origin });
 		publishVersions();
 	};
 	const goneOf = (op: WriteOp, raw: unknown, ids: readonly string[]): string[] => {
