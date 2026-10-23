@@ -795,6 +795,16 @@ class MaskyDriver(ToolsBase):
         if not self._settings.get('allow_public_sharing'):
             raise ValueError(_flag_refusal(op, 'allowPublicSharing'))
 
+    def _owns_tool(self, tool_name: str) -> bool:
+        """Own every tool this node registers, including ones a permission switch hides.
+
+        ToolsBase routes tool.validate / tool.invoke only to tools the node owns, and its
+        default reads _tool_query, which leaves switched-off tools out. Owning them here
+        lets _tool_validate refuse a direct call with a message naming the switch.
+        """
+        prefix, sep, bare = (tool_name or '').partition('.')
+        return bool(sep) and prefix == self._server_name and bare in self._tools
+
     def _tool_query(self) -> List[Dict[str, Any]]:
         # A switched-off tool is hidden, so an agent never sees it; invoking it anyway is refused.
         return [
