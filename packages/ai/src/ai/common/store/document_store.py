@@ -7,8 +7,9 @@ from rocketlib import IInstanceBase, tool_function, warning
 from ..schema import Doc, DocFilter, DocMetadata, Question, QuestionText, QuestionType, Answer
 
 # The objectId of the control row createCollection writes to every collection
-# (model name and vector size, read on every collection check). Drivers and the
-# tool mixin refer to it through this name.
+# (model name and vector size, read on every collection check). DocumentStoreBase,
+# the tool mixin and the drivers refer to it through this name; store_elasticsearch
+# still spells the literal.
 CONTROL_OBJECT_ID = 'schema'
 
 

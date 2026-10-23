@@ -41,7 +41,7 @@ from pinecone.grpc import PineconeGRPC as Pinecone
 from pinecone import ServerlessSpec, PodSpec
 
 from ai.common.schema import Doc, DocFilter, DocMetadata, QuestionText
-from ai.common.store import DocumentStoreBase
+from ai.common.store import CONTROL_OBJECT_ID, DocumentStoreBase
 from ai.common.config import Config
 
 """
@@ -422,7 +422,7 @@ class Store(DocumentStoreBase):
 
         # For each document set objectId to true to make sure we delete any chunks we already have added
         for chunk in chunks:
-            if chunk.metadata.objectId != 'schema':
+            if chunk.metadata.objectId != CONTROL_OBJECT_ID:
                 objectIds[chunk.metadata.objectId] = True
 
         sum_size = 0
@@ -440,7 +440,7 @@ class Store(DocumentStoreBase):
             metadata['content'] = chunk.page_content
 
             # Bogus document which is not compatible with pinecone because it can't accept all zeroes
-            if chunk.metadata.objectId == 'schema':
+            if chunk.metadata.objectId == CONTROL_OBJECT_ID:
                 embedding[-1] = 1
                 metadata['nodeId'] = ''
                 metadata['parent'] = ''

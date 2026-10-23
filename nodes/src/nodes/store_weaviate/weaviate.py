@@ -35,6 +35,8 @@ depends(requirements)
 from typing import List, Callable, Dict, Any, cast
 import numpy as np
 import re
+import time
+from collections import Counter
 
 import weaviate
 from weaviate.client import WeaviateClient
@@ -50,6 +52,11 @@ from weaviate.exceptions import UnexpectedStatusCodeError, WeaviateBaseError
 from ai.common.schema import Doc, DocFilter, DocMetadata, QuestionText
 from ai.common.store import DocumentStoreBase
 from ai.common.config import Config
+
+
+# How long a trash update waits before re-sending a chunk a read returned after
+# its update, so a lagging replica can catch up.
+_REPEAT_PAUSE_SECONDS = 1.0
 
 
 class Store(DocumentStoreBase):
@@ -554,10 +561,23 @@ class Store(DocumentStoreBase):
                 Filter.by_property('isDeleted').equal(not deleted),
             ]
         )
+        sightings: Counter = Counter()
         while True:
             points = self.collectionObj.query.fetch_objects(filters=pending, limit=1000)
             if not points.objects:
                 return
+            # A chunk that comes back after its update was read from a replica
+            # that has not seen the write yet, or the update did not persist.
+            # Give the replica a moment and send it once more; stop rather than
+            # loop if it returns again.
+            sightings.update(point.uuid for point in points.objects)
+            stuck = sum(1 for point in points.objects if sightings[point.uuid] > 2)
+            if stuck:
+                raise Exception(
+                    f'isDeleted={deleted} did not persist on {stuck} chunk(s); the change is partly applied, retry to finish'
+                )
+            if any(sightings[point.uuid] == 2 for point in points.objects):
+                time.sleep(_REPEAT_PAUSE_SECONDS)
             for point in points.objects:
                 self.collectionObj.data.update(uuid=point.uuid, properties={'isDeleted': deleted})
 

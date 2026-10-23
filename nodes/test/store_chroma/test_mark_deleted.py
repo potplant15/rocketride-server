@@ -1,3 +1,8 @@
+# =============================================================================
+# MIT License
+# Copyright (c) 2026 Aparavi Software AG
+# =============================================================================
+
 """store_chroma soft delete and restore (#2587, phase 2).
 
 markDeleted and markActive iterated the dict a Chroma ``get`` returns as if it
@@ -43,6 +48,8 @@ class _FakeCollection:
             field, condition = next(iter(clause.items()))
             if '$in' in condition:
                 return meta.get(field) in condition['$in']
+            if '$ne' in condition:
+                return meta.get(field) != condition['$ne']  # an absent key is not equal, as in Chroma
             return meta.get(field) == condition['$eq']
 
         hits = [(row_id, meta) for row_id, meta in self.rows.items() if matches(meta, where)]
@@ -173,6 +180,19 @@ def test_the_trash_tools_work_on_this_driver(store):
     assert _deleted_flags(store.collectionObj)['b-0'] is True
     assert tool.restore({'object_ids': ['b']}) == {'success': True, 'object_ids': ['b'], 'matched_chunks': 1}
     assert _deleted_flags(store.collectionObj)['b-0'] is False
+
+
+def test_paths_list_records_without_a_deleted_flag_and_hide_trashed_ones(store):
+    """The client strips None metadata, so a chunk-0 record may lack isDeleted; objdir must agree with get."""
+    collection = store.collectionObj
+    collection.rows['c-0'] = {'objectId': 'c', 'chunkId': 0, 'parent': '/c'}  # no isDeleted key
+
+    assert store.getPaths() == {'/a': 'a', '/b': 'b', '/c': 'c'}
+    assert collection.get_calls[-1] == {'$and': [{'chunkId': {'$eq': 0}}, {'isDeleted': {'$ne': True}}]}
+
+    store.markDeleted(['c'])
+    assert store.getPaths() == {'/a': 'a', '/b': 'b'}
+    assert store.getPaths(parent='/c') == {}
 
 
 def test_trash_round_trip_filters_paths_before_paging(store):

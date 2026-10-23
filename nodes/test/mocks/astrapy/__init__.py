@@ -389,6 +389,10 @@ class Collection:
             )
         return len(data)
 
+    def estimated_document_count(self, **_: Any) -> int:
+        """Estimate the collection size; the mock knows it exactly."""
+        return len(self._get_data())
+
 
 # =============================================================================
 # Mock Cursor Class

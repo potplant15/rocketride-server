@@ -85,14 +85,18 @@ until they implement both methods.
 Both may return the number of chunk rows the backend matched, or `None` as
 before; the tools report it as `matched_chunks` (`null` when the driver gives
 no count) and never claim a count the driver did not give. The Postgres
-drivers return the statement's row count.
+drivers return the statement's row count; Chroma returns the number of
+chunks it updated.
 
 Both operations must preserve content and all metadata other than
 `isDeleted`, and must update every matching chunk even when a document spans
-multiple backend query pages. A successful restore makes its paths visible
-to `objdir` again. Qdrant updates only the nested flag; Weaviate drains bounded
-batches of chunks still in the opposite state, without offsets into a
-shrinking result set.
+multiple backend query pages (Milvus still reads all matches in one query, so
+a very large document, or many documents in one call, can exceed its message
+limit). A successful restore makes its paths visible to `objdir` again. Qdrant
+updates only the nested flag; Weaviate drains bounded batches of chunks still
+in the opposite state, without offsets into a shrinking result set, pauses and
+sends a chunk once more if a read returns it after its update (a replica may
+lag), and fails the operation instead of looping if it comes back again.
 
 ## Verification
 

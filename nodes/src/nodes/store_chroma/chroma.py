@@ -581,8 +581,11 @@ class Store(DocumentStoreBase):
         if not self.doesCollectionExist():
             return {}
 
-        # Chroma stores flat metadata; combine predicates explicitly.
-        filters = [{'chunkId': {'$eq': 0}}, {'isDeleted': {'$eq': False}}]
+        # Chroma stores flat metadata; combine predicates explicitly. The same
+        # trash predicate as _convertFilter: addChunks drops None metadata values,
+        # so a record may lack isDeleted, and $eq False would hide it while get
+        # reads it.
+        filters = [{'chunkId': {'$eq': 0}}, {'isDeleted': {'$ne': True}}]
 
         # If parent specified, add condition
         if parent is not None:

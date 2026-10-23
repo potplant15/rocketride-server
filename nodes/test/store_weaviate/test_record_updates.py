@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -209,6 +210,55 @@ def test_trash_drains_capped_pages_for_multiple_documents(monkeypatch, method, i
     for record in collection._storage.values():
         meta = record['properties']
         assert meta['isDeleted'] is (initial if meta['objectId'] == 'untouched' else not initial)
+
+
+@pytest.mark.parametrize('method, initial', [('markDeleted', False), ('markActive', True)])
+def test_trash_stops_when_an_update_does_not_persist(monkeypatch, method, initial):
+    """A chunk that comes back after its update is sent once more, then ends the drain with an error."""
+    store, collection = _make_store(_make_obj_records('a', 3, is_deleted=initial))
+    fetch = collection.query.fetch_objects
+    fetches = []
+
+    def counted_fetch(**kwargs):
+        fetches.append(kwargs)
+        assert len(fetches) <= 4, 'the drain is looping on chunks whose update did not persist'
+        return fetch(**kwargs)
+
+    monkeypatch.setattr(collection.query, 'fetch_objects', counted_fetch)
+    attempts = []
+    monkeypatch.setattr(collection.data, 'update', lambda uuid, properties: attempts.append(uuid))
+    pauses = []
+    monkeypatch.setattr(time, 'sleep', pauses.append)
+
+    with pytest.raises(Exception, match='did not persist on 3 chunk.*retry'):
+        getattr(store, method)(['a'])
+
+    assert len(fetches) == 3  # the page, the tolerated repeat, the repeat that stops the drain
+    assert len(attempts) == 6  # each chunk sent twice, never a third time
+    assert pauses == [1.0]  # once, before the re-send
+
+
+@pytest.mark.parametrize('method, initial', [('markDeleted', False), ('markActive', True)])
+def test_trash_resends_once_when_an_update_does_not_show(monkeypatch, method, initial):
+    """A replica can answer a read before it has the write; after a pause the chunk is sent again and the drain completes."""
+    store, collection = _make_store(_make_obj_records('a', 3, is_deleted=initial))
+    real_update = collection.data.update
+    attempts = {}
+    pauses = []
+    monkeypatch.setattr(time, 'sleep', pauses.append)
+
+    def update_losing_the_first_write_to_a1(uuid, properties):
+        attempts[uuid] = attempts.get(uuid, 0) + 1
+        if uuid != 'a-1' or attempts[uuid] > 1:
+            real_update(uuid=uuid, properties=properties)
+
+    monkeypatch.setattr(collection.data, 'update', update_losing_the_first_write_to_a1)
+
+    getattr(store, method)(['a'])
+
+    assert attempts == {'a-0': 1, 'a-1': 2, 'a-2': 1}
+    assert pauses == [1.0]
+    assert all(record['properties']['isDeleted'] is (not initial) for record in collection._storage.values())
 
 
 def test_trash_round_trip_removes_paths_and_keeps_parent_filter():

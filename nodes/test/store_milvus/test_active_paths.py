@@ -1,3 +1,8 @@
+# =============================================================================
+# MIT License
+# Copyright (c) 2026 Aparavi Software AG
+# =============================================================================
+
 """Milvus must filter trash in the server query before applying its page."""
 
 import importlib.util

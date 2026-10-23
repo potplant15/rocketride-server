@@ -42,8 +42,23 @@ from ai.common.config import Config
 
 from rocketlib import warning
 
-# A bounded count is the fast path; larger collections are counted by cursor.
+# A bounded count is exact; past it, stats reports the server's estimate (see
+# count_documents).
 _COUNT_UPPER_BOUND = 10_000
+# The Data API's default exact-count limit, Astra DB's: past it, countDocuments
+# answers with the limit and moreData, and astrapy raises naming the limit.
+_SERVER_COUNT_LIMIT = 1_000
+
+
+def _count_floor(exc: TooManyDocumentsToCountException) -> int:
+    """The number of rows a collection is known to exceed when astrapy refuses to count it."""
+    if not exc.server_max_count_exceeded:
+        return _COUNT_UPPER_BOUND
+    # astrapy carries the server's limit only in its message ("Document count
+    # exceeds 1000, the maximum allowed by the server"); the Data API default
+    # stands in when the message does not name it.
+    match = re.search(r'exceeds (\d+)', exc.text or '')
+    return int(match.group(1)) if match else _SERVER_COUNT_LIMIT
 
 
 class Store(DocumentStoreBase):
@@ -250,10 +265,12 @@ class Store(DocumentStoreBase):
 
         try:
             return collection.count_documents({}, upper_bound=_COUNT_UPPER_BOUND)
-        except TooManyDocumentsToCountException:
-            # The API may also impose a lower server ceiling. Do not report the
-            # ceiling or an estimate as an exact count; stream only row IDs.
-            return sum(1 for _ in collection.find(filter={}, projection={'_id': True}))
+        except TooManyDocumentsToCountException as exc:
+            # Past the exact-count ceiling (this node's bound, or the server's
+            # limit), report the server's estimate rather than paging through
+            # every row ID on each stats call. The estimate can lag recent
+            # writes, so never report less than the count known to be exceeded.
+            return max(collection.estimated_document_count(), _count_floor(exc) + 1)
 
     def searchKeyword(self, query: QuestionText, docFilter: DocFilter) -> List[Doc]:
         """
@@ -422,7 +439,7 @@ class Store(DocumentStoreBase):
                 raise Exception('No embedding in document')
 
             # Handle control document with zero vectors
-            if chunk.metadata.objectId == 'schema' and all(x == 0 for x in embedding):
+            if chunk.metadata.objectId == CONTROL_OBJECT_ID and all(x == 0 for x in embedding):
                 embedding = [1e-8] * len(embedding)
 
             # Create the document structure for AstraDB

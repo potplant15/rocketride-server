@@ -1,3 +1,8 @@
+# =============================================================================
+# MIT License
+# Copyright (c) 2026 Aparavi Software AG
+# =============================================================================
+
 """Count-limit error exposed by the Astra SDK, for protocol-mocked tests."""
 
 

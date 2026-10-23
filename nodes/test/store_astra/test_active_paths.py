@@ -1,3 +1,8 @@
+# =============================================================================
+# MIT License
+# Copyright (c) 2026 Aparavi Software AG
+# =============================================================================
+
 """Exercise Astra's real SDK signatures and cursors with only HTTP mocked.
 
 Runs on whichever astrapy ``depends()`` resolves for the engine, the version the
@@ -11,8 +16,9 @@ from unittest.mock import Mock
 
 import pytest
 from astrapy import DataAPIClient
+from astrapy.exceptions import TooManyDocumentsToCountException
 
-from nodes.store_astra.astra_db import Store
+from nodes.store_astra.astra_db import Store, _count_floor
 
 
 @pytest.fixture
@@ -96,22 +102,32 @@ def test_count_uses_sdk_required_bound_and_counts_all_rows(astra):
     assert request.call_args.kwargs['payload'] == {'countDocuments': {'filter': {}}}
 
 
-@pytest.mark.parametrize('status', [{'count': 10001}, {'count': 1000, 'moreData': True}])
-def test_count_limit_falls_back_to_all_cursor_pages(astra, status):
+@pytest.mark.parametrize(
+    'status, floor',
+    [
+        ({'count': 10001}, 10001),
+        ({'count': 1000, 'moreData': True}, 1001),
+        ({'count': 500, 'moreData': True}, 501),
+        ({'count': 20000, 'moreData': True}, 20001),
+    ],
+    ids=['node-bound', 'server-default-limit', 'server-limit-below-default', 'server-limit-above-node-bound'],
+)
+@pytest.mark.parametrize('estimate', [123456, 5])
+def test_count_past_the_ceiling_reports_the_server_estimate_but_never_below_it(astra, status, floor, estimate):
+    """Above the node's bound or the server's limit, one estimate call replaces a scan of every row ID.
+
+    The estimate can lag recent writes; the count is known to exceed the ceiling that fired.
+    """
     store, request = astra
-    request.side_effect = [
-        {'status': status},
-        page([{'_id': str(i)} for i in range(10000)], 'last'),
-        page([{'_id': 'trashed'}, {'_id': 'schema'}]),
-    ]
-    assert store.count_documents() == 10002
-    for call in request.call_args_list[1:]:
-        payload = call.kwargs['payload']['find']
-        assert payload['filter'] == {}
-        assert payload['projection'] == {'_id': True}
-        assert 'sort' not in payload
-        assert 'limit' not in payload['options']
-    assert request.call_args.kwargs['payload']['find']['options']['pageState'] == 'last'
+    request.side_effect = [{'status': status}, {'status': {'count': estimate}}]
+    assert store.count_documents() == max(estimate, floor)
+    assert request.call_count == 2
+    assert request.call_args.kwargs['payload'] == {'estimatedDocumentCount': {}}
+
+
+def test_count_floor_takes_the_data_api_default_when_the_refusal_names_no_limit():
+    assert _count_floor(TooManyDocumentsToCountException('refused', server_max_count_exceeded=True)) == 1000
+    assert _count_floor(TooManyDocumentsToCountException('refused', server_max_count_exceeded=False)) == 10000
 
 
 @pytest.mark.parametrize('operation', ['getPaths', 'count_documents'])
@@ -122,12 +138,8 @@ def test_service_errors_are_not_reported_as_empty_results(astra, operation):
         getattr(store, operation)()
 
 
-def test_count_fallback_errors_are_not_reported_as_partial_counts(astra):
+def test_count_estimate_errors_are_not_reported_as_counts(astra):
     store, request = astra
-    request.side_effect = [
-        {'status': {'count': 1000, 'moreData': True}},
-        page([{'_id': 'one'}], 'last'),
-        RuntimeError('page unavailable'),
-    ]
-    with pytest.raises(RuntimeError, match='page unavailable'):
+    request.side_effect = [{'status': {'count': 1000, 'moreData': True}}, RuntimeError('estimate unavailable')]
+    with pytest.raises(RuntimeError, match='estimate unavailable'):
         store.count_documents()

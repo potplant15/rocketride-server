@@ -56,7 +56,7 @@ from qdrant_client.http import models
 from qdrant_client.conversions import common_types as types
 
 from ai.common.schema import Doc, DocFilter, DocMetadata, QuestionText
-from ai.common.store import DocumentStoreBase
+from ai.common.store import CONTROL_OBJECT_ID, DocumentStoreBase
 from ai.common.config import Config
 
 """
@@ -462,7 +462,7 @@ class Store(DocumentStoreBase):
             FieldCondition(key='meta.isDeleted', match=models.MatchValue(value=False)),
         ]
         must_not: List[models.Condition] = [
-            FieldCondition(key='meta.objectId', match=models.MatchValue(value='schema')),
+            FieldCondition(key='meta.objectId', match=models.MatchValue(value=CONTROL_OBJECT_ID)),
         ]
 
         # If parent specified, match on it

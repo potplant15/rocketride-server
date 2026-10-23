@@ -30,9 +30,9 @@ Pipeline agents address the functions below as `<node id>.<function>`. The confi
 | Function | Description |
 | --- | --- |
 | `search` | Search the collection for matching documents. |
-| `objdir` | Lists the distinct parent paths of active documents in the collection as a map of parent path to one object ID each; accepts optional `parent`, `offset`, and `limit` (default and cap 1000). Documents that share a parent path appear as one entry. |
+| `objdir` | Lists the distinct parent paths of active documents in the collection as a map of parent path to one object ID each; accepts optional `parent`, `offset`, and `limit` (default and cap 1000). Documents that share a parent path appear as one entry. Every page scans all matching document headers, so ask for large pages (see Directory listing and counts). |
 | `get` | Returns up to `limit` chunks (default and cap 100) of one document by `object_id`, ordered by chunk ID, with `total`, `has_more`, and `truncated`; an object ID the store does not hold, or one in the trash, returns a failure object. |
-| `stats` | Returns the collection's row count (including trashed chunks and the control row), `document_count` (null on this store, which does not list documents), the embedding model name, and the vector size. |
+| `stats` | Returns the collection's row count (including trashed chunks and the control row; exact up to the count ceiling and approximate above it), `document_count` (null on this store, which does not list documents), the embedding model name, and the vector size. |
 | `upsert` | Add or update documents in the collection. |
 | `delete` | Remove documents by object ID. |
 | `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash, keeping their chunks; the reply echoes the distinct IDs, and `matched_chunks` is null on this store. |
@@ -101,9 +101,9 @@ The two search modes are selected by the incoming question rather than by a seco
 
 `objdir` reads active chunks with `chunkId` 0, groups them by non-empty parent path, and returns paths in alphabetical order. When documents share a path, the lowest object ID represents that path. `parent` is an exact filter; `offset` and `limit` apply after grouping, so they count paths. Documents without a chunk numbered 0 do not appear.
 
-Astra has no collection aggregation method in the supported SDK. Each directory request follows the SDK cursor through all matching chunks, fetching only parent and object-ID metadata, then groups and pages locally. Large collections therefore take more work even when requesting a small page.
+Astra has no collection aggregation method in the supported SDK, and a server-side sort or limit could truncate the input before paths are grouped. Each `objdir` request therefore follows the SDK cursor through every active chunk-zero header that matches `parent`, fetching only parent and object-ID metadata, then groups and pages locally. The cost of a page does not shrink with `limit`: walking N paths with a page size of L scans those headers about N / L times. On a large collection, ask for the largest page you can use (`limit=1000`, the cap) rather than many small ones, and pass `parent` where you can to narrow the scan. Cursor scans are not snapshots: concurrent writes can change directory pages between requests.
 
-`stats.count` uses the bounded count API first. If the caller or server counting limit is exceeded, it follows a cursor fetching only row IDs to count all rows. It never substitutes an estimate or the limit for the count. This fallback can be slower on large collections. Cursor scans are not snapshots: concurrent writes can change counts or directory pages between requests.
+`stats.count` uses the bounded count API, which is exact up to the counting ceiling: 10,000 rows from this node, or the limit the server imposes (1,000 on Astra DB, the Data API default). Past the ceiling the node reports the server's estimated document count instead of scanning the collection. That estimate can lag recent writes, so above the ceiling `count` is approximate; the node never reports less than the ceiling it passed (the server names its limit when it refuses a count), since the count is known to exceed it.
 
 ### Ingestion, replacement, and deletion
 

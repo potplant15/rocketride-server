@@ -78,6 +78,24 @@ def test_a_last_page_has_no_more(returned):
     assert result['has_more'] is False
 
 
+@pytest.mark.parametrize(
+    'rows, total, has_more',
+    [(3, 2, True), (2, 3, False)],
+    ids=['count-says-fewer-than-the-page-read', 'count-says-more-than-the-page-read'],
+)
+def test_has_more_follows_the_page_when_the_count_disagrees(rows, total, has_more):
+    """Under concurrent writes the count and the page can disagree; the extra row decides, not total."""
+    store = make_store(lists_documents=True)
+    store.listDocuments.return_value = _rows(rows)
+    store.countDocuments.return_value = total
+
+    result = Tools(store).list_documents({'limit': 2})
+
+    assert result['has_more'] is has_more
+    assert result['total'] == total
+    assert result['documents'] == _rows(min(rows, 2))
+
+
 def test_defaults_and_cap():
     store = make_store(lists_documents=True)
     tools = Tools(store)
