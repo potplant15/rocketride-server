@@ -24,7 +24,7 @@ with scoped_stubs() as _env_stubs:
     from tool_masky import IInstance as IInstanceMod  # noqa: E402
     from tool_masky import masky_core as core  # noqa: E402
     from tool_masky.masky_client import MaskyClient  # noqa: E402
-    from tool_masky.masky_core import MaskyError  # noqa: E402
+    from tool_masky.masky_core import MaskyCancelled, MaskyError  # noqa: E402
     from tool_masky.masky_driver import MaskyDriver  # noqa: E402
 
 # The node's lazy descriptor import runs at call time, so the fixture re-installs this stub per test.
@@ -1070,3 +1070,48 @@ def test_scene_video_private_works_without_switch():
     inst = build({'action': 'scene_video', 'share': 'private'}, driver)
     run(inst, 'a fox')
     assert driver.video[0]['share'] == 'private'
+
+
+def test_pipeline_poll_failure_names_the_job_and_does_not_download():
+    r = receipt(status='running', job='speak:G7')
+    r['poll_error'] = 'Could not reach Masky (ConnectionError).'
+    driver = FakeDriver(r, b'')
+    inst = build({'action': 'talking_head'}, driver)
+    with pytest.raises(MaskyError) as e:
+        inst.writeText('hi')
+    assert 'Could not check on job speak:G7 after Masky accepted it' in str(e.value)
+    assert 'Still rendering' not in str(e.value) and driver.downloads == []
+
+
+class FailingSecondTurnDriver(LiveDriver):
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    def turn_job(self, **kw):
+        if len(self.turns) == 1:
+            self.turns.append(kw)
+            raise self.error
+        return super().turn_job(**kw)
+
+
+def test_live_failure_mid_record_lists_the_turns_already_sent():
+    driver = FailingSecondTurnDriver(MaskyError('Masky returned HTTP 500 for POST /conversations/C1/turn.'))
+    inst = build(
+        {'action': 'live', 'conversation': '', 'turn_mode': 'speak', 'turn_output': 'audio', 'wait_for_turn': True},
+        driver,
+    )
+    with pytest.raises(MaskyError) as e:
+        run(inst, _sentences(1200))
+    assert 'Turns sent from this record before the failure: T1.' in str(e.value)
+
+
+def test_live_cancellation_mid_record_stays_cancellation():
+    driver = FailingSecondTurnDriver(MaskyCancelled('Cancelled while waiting for Masky to finish rendering.'))
+    inst = build(
+        {'action': 'live', 'conversation': '', 'turn_mode': 'speak', 'turn_output': 'audio', 'wait_for_turn': True},
+        driver,
+    )
+    with pytest.raises(MaskyCancelled) as e:
+        run(inst, _sentences(1200))
+    assert 'T1' in str(e.value)

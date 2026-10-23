@@ -184,14 +184,21 @@ class IInstance(IInstanceBase):
         wait = bool(settings.get('wait_for_turn', True))
         turn_ids, statuses, estimated, charged, warnings = [], [], 0.0, None, []
         for index, chunk in enumerate(chunks, 1):
-            turn = driver.turn_job(
-                conversation_id=conversation['conversation_id'],
-                slug=conversation['conversation_slug'],
-                text=chunk,
-                mode=mode,
-                output=output,
-                wait=wait,
-            )
+            try:
+                turn = driver.turn_job(
+                    conversation_id=conversation['conversation_id'],
+                    slug=conversation['conversation_slug'],
+                    text=chunk,
+                    mode=mode,
+                    output=output,
+                    wait=wait,
+                )
+            except MaskyError as e:
+                if not turn_ids:
+                    raise
+                sent = ', '.join(str(x) for x in turn_ids)
+                # Keep the error's class (cancellation stays cancellation) and add what was already sent.
+                raise type(e)(f'{e} Turns sent from this record before the failure: {sent}.') from None
             turn_ids.append(turn.get('turn_id'))
             statuses.append(turn.get('status'))
             estimated += turn.get('estimated_credits') or 0
@@ -240,6 +247,11 @@ class IInstance(IInstanceBase):
 
     def _deliver(self, receipt: Dict[str, Any]) -> None:
         job = receipt.get('generation_id')
+        if receipt.get('poll_error'):
+            raise MaskyError(
+                f'Could not check on job {job} after Masky accepted it ({receipt["poll_error"]}). It may still render '
+                'and be charged; check it with get_generation before sending the record again.'
+            )
         if receipt.get('status') == 'failed':
             raise MaskyError(receipt.get('error') or f'Render failed (job {job}).')
         if receipt.get('status') != 'done':

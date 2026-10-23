@@ -3058,3 +3058,43 @@ def test_rename_avatar_is_blocked_by_read_only_but_not_gated_by_allow_delete():
         _run(d, 'rename_avatar', avatar_id='A', name='New')
     assert fc.calls == []
     assert 'rename_avatar' in _listed(_driver(RenameClient()))
+
+
+# ---------------------------------------------------------------------------
+# A status check that fails after a paid request keeps the job id
+# ---------------------------------------------------------------------------
+
+POLL_DOWN = MaskyError('Could not reach Masky (ConnectionError). Check the network and the base URL.')
+
+
+def test_speak_wait_keeps_the_job_id_when_the_status_check_fails():
+    fc = FakeClient(get_speak=[POLL_DOWN])
+    out = _run(_driver(fc), 'speak', text='hi', avatar_id='A', output='audio', wait_for_completion=True)
+    assert fc.names().count('speak') == 1, 'the paid request is sent once and not again'
+    assert out['generation_id'] == 'speak:G1' and out['status'] == 'running'
+    assert 'Could not reach Masky' in out['poll_error']
+    assert any('Could not check on job speak:G1 after Masky accepted it' in w for w in out['warnings'])
+
+
+def test_speak_wait_still_propagates_cancellation():
+    fc = FakeClient(get_speak=[MaskyCancelled('Cancelled while waiting for Masky to finish rendering.')])
+    with pytest.raises(MaskyCancelled):
+        _run(_driver(fc), 'speak', text='hi', avatar_id='A', output='audio', wait_for_completion=True)
+
+
+def test_video_wait_keeps_the_job_id_when_the_status_check_fails():
+    fc = FakeClient(get_video=[POLL_DOWN])
+    out = _run(_driver(fc), 'generate_video', prompt='a cat', wait_for_completion=True)
+    assert fc.names().count('generate_video') == 1
+    assert out['generation_id'] == 'video:V1' and out['status'] in ('queued', 'running')
+    assert out['poll_error'] and any('job video:V1' in w for w in out['warnings'])
+
+
+def test_turn_wait_marks_the_turn_unconfirmed_when_the_status_check_fails():
+    fc = FakeClient(get_conversation=[POLL_DOWN])
+    d = _driver(fc)
+    slug = _run(d, 'create_conversation', avatar_id='A')['conversation_slug']
+    out = d.turn_job(conversation_id='C1', slug=slug, text='hi', mode='speak', output='audio', wait=True)
+    assert fc.names().count('send_turn') == 1
+    assert out['turn_id'] == 'T1' and out['unconfirmed'] is True and out['poll_error']
+    assert 'Could not check on turn T1' in out['warnings'][0]

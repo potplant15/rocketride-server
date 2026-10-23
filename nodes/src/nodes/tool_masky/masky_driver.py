@@ -47,6 +47,7 @@ from .masky_core import (
     ASPECT_RATIOS,
     JOB_KINDS,
     LIMITS,
+    MaskyCancelled,
     MaskyError,
     check_budget,
     decode_job_id,
@@ -1109,6 +1110,36 @@ class MaskyDriver(ToolsBase):
                 ) from None
             raise
 
+    def _wait_after_paid(
+        self,
+        fetch: Callable[[], Any],
+        is_done: Callable[[Any], bool],
+        initial: Any,  # noqa: ANN401
+    ) -> Tuple[Any, bool, Optional[str]]:
+        """Wait after a paid request was accepted; a failing status check returns, it does not raise.
+
+        Returns ``(result, finished, poll_error)``. If checking fails, ``result`` is the
+        accepted response (``initial``) and ``poll_error`` says why, so the caller keeps
+        the job id instead of losing it. Cancellation still propagates.
+        """
+        try:
+            result, finished = self._wait(fetch, is_done)
+            return result, finished, None
+        except MaskyCancelled:
+            raise
+        except MaskyError as e:
+            return initial, False, str(e)
+
+    @staticmethod
+    def _poll_failed(receipt: Dict[str, Any], what: str, error: str) -> None:
+        """Mark a receipt whose status check failed after Masky accepted the request."""
+        receipt['status'] = 'running' if receipt.get('status') in (None, 'queued', 'running') else receipt['status']
+        receipt['poll_error'] = error
+        receipt.setdefault('warnings', []).append(
+            f'Could not check on {what} after Masky accepted it ({error}). It is probably still rendering and will be '
+            'charged; check it later instead of sending it again.'
+        )
+
     def _wait(self, fetch: Callable[[], Any], is_done: Callable[[Any], bool]) -> Tuple[Any, bool]:
         return poll(
             fetch,
@@ -1366,12 +1397,15 @@ class MaskyDriver(ToolsBase):
 
         inline = status_code == 200 and not result.get('async')
         if not inline and wait:
-            result, finished = self._wait(
+            result, finished, poll_error = self._wait_after_paid(
                 lambda: self._client.get_speak(raw_id),
                 lambda b: speak_status(b.get('generation') or b, output) in ('done', 'failed'),
+                result,
             )
             receipt = speak_receipt(result, output=output, estimate=estimate, elapsed_sec=time.monotonic() - started)
-            if not finished:
+            if poll_error:
+                self._poll_failed(receipt, f'job {receipt["generation_id"]}', poll_error)
+            elif not finished:
                 timeout_warning(receipt, self._settings.get('timeout_sec', 300))
         else:
             receipt = speak_receipt(result, output=output, estimate=estimate, elapsed_sec=time.monotonic() - started)
@@ -1479,11 +1513,15 @@ class MaskyDriver(ToolsBase):
         raw_id = str(result.get('generationId') or '')
         _remember(self._jobs, f'video:{raw_id}', {'estimate': estimate, 'started': started})
         if wait:
-            result, finished = self._wait(
-                lambda: self._client.get_video(raw_id), lambda b: (b.get('status') or '').lower() in ('ready', 'error')
+            result, finished, poll_error = self._wait_after_paid(
+                lambda: self._client.get_video(raw_id),
+                lambda b: (b.get('status') or '').lower() in ('ready', 'error'),
+                result,
             )
             receipt = video_receipt(result, estimate=estimate, elapsed_sec=time.monotonic() - started)
-            if not finished:
+            if poll_error:
+                self._poll_failed(receipt, f'job {receipt["generation_id"]}', poll_error)
+            elif not finished:
                 timeout_warning(receipt, self._settings.get('timeout_sec', 300))
         else:
             receipt = video_receipt(result, estimate=estimate, elapsed_sec=time.monotonic() - started)
@@ -1807,9 +1845,19 @@ class MaskyDriver(ToolsBase):
                     (x for x in self._turns_of(self._client.get_conversation(slug)) if x.get('id') == turn['id']), turn
                 )
 
-            turn, finished = self._wait(fetch, lambda x: self._turn_status(x, output) in ('done', 'failed'))
+            turn, finished, poll_error = self._wait_after_paid(
+                fetch, lambda x: self._turn_status(x, output) in ('done', 'failed'), turn
+            )
             shaped = self._shape_turn(turn, output, include_urls)
-            if not finished:
+            if poll_error:
+                # Sent, but its progress could not be read: report it like a turn that cannot be polled.
+                shaped['unconfirmed'] = True
+                shaped['poll_error'] = poll_error
+                shaped['warnings'] = [
+                    f'Could not check on turn {turn.get("id")} after Masky accepted it ({poll_error}). '
+                    'Check it later with get_turns instead of sending it again.'
+                ]
+            elif not finished:
                 shaped['warnings'] = [
                     f'Still rendering after {self._settings.get("timeout_sec", 300):g} s (turn {turn.get("id")}). Check again with get_turns.'
                 ]
