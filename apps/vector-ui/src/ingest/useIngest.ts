@@ -46,6 +46,8 @@
 // of identity must forget them with every other per-connection cache, so
 // this module registers the registry's reset with the app's cache registry
 // (`connectionCaches`); the same endpoint key then gets a new, empty queue.
+// It registers no per-connection forget: a dev-tool frame never holds chat
+// or uploads, and the full app keeps them across a reconnect.
 // =============================================================================
 
 import { useCallback, useSyncExternalStore } from 'react';
@@ -67,7 +69,7 @@ const TOOL_TIMEOUT_MS = 30_000;
 /** The name the uploads and the chat are cleared under when the signed-in identity changes. */
 export const CHAT_AND_INGEST_CACHE = 'chat and ingest';
 
-connectionCaches.register(CHAT_AND_INGEST_CACHE, () => forgetChatAndIngest(), (key) => forgetChatAndIngest(key));
+connectionCaches.register(CHAT_AND_INGEST_CACHE, () => forgetChatAndIngest());
 
 /** What the ingest panel gets from the hook. */
 export interface VectorIngest {

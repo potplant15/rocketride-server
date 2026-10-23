@@ -53,8 +53,10 @@
 //             A console sends its query and median as hints, again to a
 //             controller that remounted without them.
 //   IDENTITY  The frame remembers the first fingerprint; a different one closes
-//             its document (documents.close) and clears its caches, as does
-//             `host:connection` turning false (R9).
+//             its document (documents.close), clears its own objects and
+//             forgets its connection in the realm's caches. `host:connection`
+//             turning false, or an unknown identity, clears its own objects
+//             only (R9).
 //   SUMMON    While no controller is ready the frame asks its host to mount
 //             one with the base's reserved non-op event (F11), and re-announces
 //             `active` once per readiness nonce.
@@ -483,10 +485,12 @@ export function createVectorFrame(opts: IVectorFrameOptions): IVectorFrame {
 		...(opts.documents ? { documents: opts.documents } : {}),
 		onReset: (reason) => {
 			resetWhy = reason;
-			// This frame's own objects, and the realm's caches of its own connection only: in rocket-ui the realm may
-			// also run the full app and other documents, whose objects and caches are theirs to clear.
+			// This frame's own objects only. In rocket-ui the realm may also run the full app and other documents,
+			// whose objects and caches are theirs: the full app keeps a connection's saved views and filters, chat
+			// and uploads across a reconnect. Only another identity forgets the frame's connection in the realm's
+			// per-connection caches (the full app then clears everything anyway).
 			registry.clear();
-			if (frameKey !== null) connectionCaches.forgetKey(frameKey);
+			if (reason === 'identity' && frameKey !== null) connectionCaches.forgetKey(frameKey);
 			myQuery = null;
 			mySummary = null;
 		},

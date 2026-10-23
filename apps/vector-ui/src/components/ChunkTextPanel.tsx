@@ -119,8 +119,9 @@ export interface IChunkTextCache {
 	load(scope: string, key: VectorKey, fetch: LoadChunkText): Promise<ToolOutcome<IChunkText>>;
 	/** A kept text, or undefined. */
 	peek(scope: string, key: VectorKey): IChunkText | undefined;
+	/** Forget every text (and drop every answer still on its way). */
 	clear(): void;
-	/** Forget one connection's texts (and drop its answers still on their way). */
+	/** Forget one connection's texts (and drop its answers still on their way; other connections' are kept). */
 	forget(connectionKey: string): void;
 }
 
@@ -133,7 +134,6 @@ export interface IChunkTextCache {
 export function createChunkTextCache(max = 64): IChunkTextCache {
 	const kept = new Map<string, IChunkText>();
 	const pending = new Map<string, Promise<ToolOutcome<IChunkText>>>();
-	let epoch = 0;
 	const id = (scope: string, key: VectorKey): string => `${scope}\u0000${key[0]}#${key[1]}`;
 	return {
 		load(scope, key, fetch) {
@@ -146,12 +146,13 @@ export function createChunkTextCache(max = 64): IChunkTextCache {
 			}
 			const flying = pending.get(k);
 			if (flying) return flying;
-			const started = epoch;
 			const run: Promise<ToolOutcome<IChunkText>> = fetch(key)
 				.catch((error: unknown): ToolOutcome<IChunkText> => ({ ok: false, code: undefined, message: error instanceof Error ? error.message : String(error) }))
 				.then((outcome) => {
-					if (pending.get(k) === run) pending.delete(k);
-					if (outcome.ok && started === epoch) {
+					// A load still pending was neither forgotten nor cleared while it ran: only then is its answer kept.
+					const current = pending.get(k) === run;
+					if (current) pending.delete(k);
+					if (outcome.ok && current) {
 						kept.set(k, outcome.value);
 						while (kept.size > max) kept.delete(kept.keys().next().value as string);
 					}
@@ -164,14 +165,12 @@ export function createChunkTextCache(max = 64): IChunkTextCache {
 			return kept.get(id(scope, key));
 		},
 		clear() {
-			epoch += 1;
 			kept.clear();
 			pending.clear();
 		},
 		forget(connectionKey) {
 			// Scopes are chunkTextScope's JSON pairs, so one connection's start with its key as the first element.
 			const prefix = JSON.stringify([connectionKey]).slice(0, -1) + ',';
-			epoch += 1;
 			for (const map of [kept, pending] as const) for (const k of [...map.keys()]) if (k.startsWith(prefix)) map.delete(k);
 		},
 	};

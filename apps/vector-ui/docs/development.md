@@ -53,11 +53,14 @@ limits) is `docs/development/nodes/vector-tool-contract.md`.
   and call their store through a link read at call time. The full app's is the
   module-level `appConnections` (`connectionEntry`, cleared with the
   connection caches); each frame has its own, so a confirmation shows only in
-  the document that asked. A frame's reset (an account change, the host
-  connection dropping) clears its own registry and forgets only its own
-  connection in the realm's caches (`connectionCaches.forgetKey`; a cache kept
-  per connection registers how to forget one): in rocket-ui the realm may also
-  run the full app and other documents.
+  the document that asked. A frame's reset clears its own registry. Only an
+  account change also forgets the frame's own connection in the realm's
+  caches (`connectionCaches.forgetKey`; a cache kept per connection registers
+  how to forget one, and the chat and uploads, which a frame never holds,
+  register none). The host connection dropping, or the identity becoming
+  unknown, forgets nothing there: in rocket-ui the realm may also run the full
+  app, which keeps a connection's saved views and filters, chat and uploads
+  across a reconnect.
 - `src/devtool/protocol.ts` is the contract: the `vector.*` ops (each answers
   a Reply and carries a deadline; a tool op is `{ key, input }` with the
   tool's own input, a write also names the calling frame as `origin`), the

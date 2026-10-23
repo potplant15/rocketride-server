@@ -17,7 +17,9 @@ import { SUMMON_EVENT, SUMMON_GRACE_MS, SUMMON_SETTLE_MS } from 'shared/explorer
 import { createDevToolHarness } from 'shared/explorer/devtool/testing';
 import { callVector, fetchChunks, fetchDocument, fetchStats, scoreChunks } from '../src/adapters/actions';
 import { connectionCaches, vectorEndpoints } from '../src/adapters/explorer';
-import { connectionEntry, existingEntry, savedFilters } from '../src/adapters/connections';
+import { connectionEntry, existingEntry, recommendExamples, reviewedDocuments, savedFilters, savedViews } from '../src/adapters/connections';
+import { chatSessionFor, heldConnections, ingestQueueFor } from '../src/chat/registry';
+import { CHAT_AND_INGEST_CACHE } from '../src/ingest/useIngest';
 import type { IConnectionEntry } from '../src/adapters/connections';
 import { remoteChannel } from '../src/devtool/frame';
 import { CONTROLLER_NOT_READY_TEXT } from '../src/devtool/frameText';
@@ -429,27 +431,65 @@ describe('a write the controller stopped waiting for (it may have run)', () => {
 	});
 });
 
-describe('a frame\'s reset clears its own objects and its own connection\'s caches, nothing of other mounts in the realm', () => {
-	it('rocket-ui (one realm): the full app\'s console objects and another connection\'s saved filters survive a frame\'s host drop; the frame\'s own are gone', async () => {
+describe('a frame\'s reset clears its own objects; only an identity reset forgets its connection in the realm\'s caches', () => {
+	it('rocket-ui (one realm): the full app\'s state for the SAME connection, and another connection\'s, survive a frame\'s host drop and unknown reset; an identity reset forgets the frame\'s connection only', async () => {
 		const run = await connected((key) => consoleUri(key));
-		const appEndpoint = { key: 'k1|app-only', nodeId: 'store_1', roles: {}, components: [] } as never;
-		const appEntry = connectionEntry(appEndpoint, null);
+		const key = run.key;
+		// The full app, in the same realm: its console objects, chat, uploads and per-connection caches for the frame's
+		// connection, and another connection's saved filters. A frame never populates chat or uploads.
+		const appEntry = connectionEntry(run.endpoint, null);
 		appEntry.selection.selectDocument({ objectId: 'doc-app', path: 'app.md' });
-		savedFilters.set('k1|app-only', [{ id: 'f-app', name: 'app', filter: {} } as never]);
-		savedFilters.set(run.key, [{ id: 'f-frame', name: 'frame', filter: {} } as never]);
-		const entry = entryOf(run);
-		assert.equal(run.frame.connections.count(), 1);
+		chatSessionFor(key, { ask: async () => ({}), makeQuestion: () => ({}), now: () => 0, announce: () => undefined } as never);
+		ingestQueueFor(key, { canProbe: false, canCount: false, callTool: async () => ({}), sendFiles: async () => ({}), onDocumentsChanged: () => undefined, announce: () => undefined } as never);
+		const appState = () => ({
+			entry: existingEntry(key) === appEntry,
+			document: appEntry.selection.getState().document?.objectId ?? null,
+			chatAndUploads: heldConnections().includes(key),
+			filters: savedFilters.has(key),
+			views: savedViews.has(key),
+			reviewed: reviewedDocuments.has(key),
+			examples: recommendExamples.has(key),
+			other: savedFilters.has('k1|app-only'),
+		});
+		const ALL_KEPT = { entry: true, document: 'doc-app', chatAndUploads: true, filters: true, views: true, reviewed: true, examples: true, other: true };
+		savedFilters.set(key, [{ id: 'f-app', name: 'app', filter: {} } as never]);
+		savedViews.set(key, [{ id: 'v-app', name: 'app' } as never]);
+		reviewedDocuments.set(key, new Set(['doc-app']));
+		recommendExamples.set(key, { positive: [], negative: [] } as never);
+		savedFilters.set('k1|app-only', [{ id: 'f-other', name: 'other', filter: {} } as never]);
+		assert.deepEqual(appState(), ALL_KEPT, 'the premise');
+		const frameObjects = () => {
+			const entry = entryOf(run);
+			assert.equal(run.frame.connections.count(), 1);
+			return entry;
+		};
 
+		let entry = frameObjects();
 		run.h.setHostConnection(false);
-		await until(() => run.frame.lastReset() === 'disconnected', 'the frame\'s reset');
+		await until(() => run.frame.lastReset() === 'disconnected', 'the frame\'s host-drop reset');
 		assert.equal(run.frame.connections.count(), 0, 'the frame\'s own objects are gone');
 		assert.equal(entry.selection.getState().connectionKey, null, 'and reset');
-		assert.equal(existingEntry('k1|app-only'), appEntry, 'the full app\'s console objects are untouched');
-		assert.deepEqual(appEntry.selection.getState().document, { objectId: 'doc-app', path: 'app.md' }, 'its selection too');
-		assert.ok(savedFilters.has('k1|app-only'), 'another connection\'s saved filters stay');
-		assert.ok(!savedFilters.has(run.key), 'the frame\'s connection\'s saved filters go');
+		assert.deepEqual(appState(), ALL_KEPT, 'a host drop leaves the full app\'s state for the same connection alone');
+
+		run.h.setHostConnection(true);
+		await until(() => run.frame.connected.get() === true, 'the host back');
+		entry = frameObjects();
+		run.engine.realm.root.disconnect();
+		await until(() => run.frame.lastReset() === 'unknown', 'the frame\'s unknown reset');
+		assert.equal(run.frame.connections.count(), 0, 'the frame\'s own objects are gone');
+		assert.equal(entry.selection.getState().connectionKey, null, 'and reset');
+		assert.deepEqual(appState(), ALL_KEPT, 'an unknown identity leaves the full app\'s state for the same connection alone');
+
+		run.engine.realm.root.connect(account('u1'));
+		await settle();
+		entry = frameObjects();
+		run.engine.realm.root.connect(account('u2'));
+		await until(() => run.frame.lastReset() === 'identity', 'the frame\'s identity reset');
+		assert.equal(run.frame.connections.count(), 0, 'the frame\'s own objects are gone');
+		assert.deepEqual(appState(), { ...ALL_KEPT, filters: false, views: false, reviewed: false, examples: false },
+			'an identity reset forgets the frame\'s connection in the per-connection caches; the app\'s registry, chat and uploads are the app\'s to clear, another connection is untouched');
+		assert.ok(!connectionCaches.forgetKey('k1|nothing').includes(CHAT_AND_INGEST_CACHE), 'chat and uploads have no per-connection forget');
 		connectionCaches.clearAll();
-		savedFilters.clear();
 		run.frame.dispose();
 		run.controller.dispose();
 	});
@@ -462,6 +502,31 @@ describe('a frame\'s reset clears its own objects and its own connection\'s cach
 		cache.forget('k1|a');
 		assert.equal(cache.peek(chunkTextScope('k1|a', 's-1'), ['doc', 0]), undefined);
 		assert.ok(cache.peek(chunkTextScope('k1|b', 's-1'), ['doc', 0]), 'another connection\'s text stays');
+	});
+
+	it('the chunk text cache drops a load in flight for the connection it forgets (or for every one, on clear) and keeps the others\' (NIT-5)', async () => {
+		const cache = createChunkTextCache();
+		const held = () => {
+			let release: () => void = () => undefined;
+			const fetch = (key: readonly [string, number]) => new Promise<never>((resolve) => { release = () => resolve({ ok: true, value: { key, text: 'chunk', length: 5 } } as never); });
+			return { fetch, release: () => release() };
+		};
+		const a = held();
+		const b = held();
+		const loadA = cache.load(chunkTextScope('k1|a', 's-1'), ['doc', 0], a.fetch);
+		const loadB = cache.load(chunkTextScope('k1|b', 's-1'), ['doc', 0], b.fetch);
+		cache.forget('k1|a');
+		a.release();
+		b.release();
+		await Promise.all([loadA, loadB]);
+		assert.equal(cache.peek(chunkTextScope('k1|a', 's-1'), ['doc', 0]), undefined, 'the forgotten connection\'s answer is not kept');
+		assert.ok(cache.peek(chunkTextScope('k1|b', 's-1'), ['doc', 0]), 'another connection\'s load in flight is kept');
+		const c = held();
+		const loadC = cache.load(chunkTextScope('k1|b', 's-2'), ['doc', 1], c.fetch);
+		cache.clear();
+		c.release();
+		await loadC;
+		assert.equal(cache.peek(chunkTextScope('k1|b', 's-2'), ['doc', 1]), undefined, 'a clear drops every load in flight');
 	});
 
 	it('the cache registry forgets one connection on request; a cache without a per-connection forget is left alone', () => {
