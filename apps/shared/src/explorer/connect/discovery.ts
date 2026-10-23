@@ -40,10 +40,22 @@
 //     pipeline fetch is needed (getTaskPipeline is only a fallback, bounded).
 //
 // A connection is a ROLE MAP, not a provider set: SQL and Graph pass one
-// `tools` role filled by any source; Vector passes `ingest_1` / `chat_1` /
-// `tools_1`, grouped into ONE connection per project, owner and run context.
-// Runs of different owners, teams or run kinds never merge, and a missing role
-// is reported as missing — never borrowed from another run.
+// `tools` role filled by any source; Vector passes ingest / chat / tools roles,
+// each filled by its declared source id (`ingest_1`, `chat_1`, `tools_1`) or by
+// a source of the role's providers (a `webhook` source fills ingest), grouped
+// into ONE connection per project, owner and run context. Runs of different
+// owners, teams or run kinds never merge, and a missing role is reported as
+// missing — never borrowed from another run.
+//
+// ANCHOR: the role whose token carries a connection's calls. It is the tools
+// role when a tools source runs; otherwise the first running role of the spec's
+// `readOnlyAnchors`, and the endpoint is then READ-ONLY (Vector's stock RAG
+// pipeline: webhook + chat, no Tools source, still opens as a card).
+//
+// MULTI-ROLE ENDPOINTS also carry the pipeline's components (id, provider,
+// name and control edges; never config), their anchor role and the read-only
+// flag. Single-role (SQL, Graph) endpoints carry none of the three, so their
+// snapshots and document payloads are exactly what they were.
 //
 // NAMES: getTasks names a run by its pipeline's name, or by its source id when
 // the pipeline has none. The readable name #2625 shows ("Shop Postgres.Tools",
@@ -64,8 +76,9 @@
 // with which run anchors the connection.
 //
 // TOKENS: a task token is read here and returned beside the endpoint, never
-// inside it. The caller (the store) puts it in a transient vault; nothing else
-// in the library ever sees it.
+// inside it: `token` (the anchor role's) and `roleTokens` (every running
+// role's). The caller (the store) puts them in its transient vaults; nothing
+// else in the library ever sees them.
 //
 // ANOTHER ORGANIZATION'S RUNS: getTasks also returns the caller's own runs
 // started in an organization they have since switched away from (the server
@@ -77,12 +90,63 @@
 
 import { isPlainObject } from '../checks';
 import { buildEndpointKey, legacyKeyFromKey, roleKeySource } from '../keys';
-import type { IExplorerClient, IExplorerComponent, IExplorerEndpoint, IExplorerIdentity, IExplorerPipeline, IExplorerTaskRow, IRoleBinding, IRoleSpec } from '../types';
+import type { IExplorerClient, IExplorerComponent, IExplorerEndpoint, IExplorerIdentity, IExplorerPipeline, IExplorerTaskRow, IMultiRoleEndpoint, IRoleBinding, IRoleDef, IRoleSpec, ITaskRef } from '../types';
 import { identityCanCallTools, runInIdentityOrganization } from './identity';
+
+// =============================================================================
+// CONSTANTS
+// =============================================================================
+
+/** `stateDetail` of an endpoint anchored on a role other than the tools role. */
+export const READ_ONLY_DETAIL = 'Read-only: no Tools source is running';
 
 // =============================================================================
 // TYPES
 // =============================================================================
+
+/**
+ * What a node filter is told about the connection a component belongs to.
+ * Frozen: one description serves every component of the group.
+ */
+export interface INodeFilterGroup {
+	/** The running source that fills the tools role, or null when none runs. */
+	readonly toolsSource: string | null;
+	/**
+	 * Every component of the pipeline that could fill the tools role (a declared
+	 * tools source id, or a source of a tools provider), running or not, in
+	 * pipeline order. Empty when the pipeline has no Tools source at all.
+	 */
+	readonly toolsSources: readonly string[];
+	/** The role whose token carries the connection's calls. */
+	readonly anchorRole: string;
+	/** The running roles, in spec order. */
+	readonly boundRoles: readonly string[];
+}
+
+/** Decides whether one matching component of a connection becomes an endpoint. */
+export type NodeFilter = (component: IExplorerComponent, group: INodeFilterGroup) => boolean;
+
+/**
+ * The node filter Vector Explorer uses: the nodes a Tools source controls.
+ *
+ * - A Tools source runs: only the nodes it controls (`component.control` has
+ *   an edge from it), so the chat path's second store never becomes a card.
+ * - The pipeline has a Tools source that is not running (read-only): the
+ *   nodes any of its Tools components controls. The card is the one the
+ *   callable connection shows, under the same key; the chat path's store
+ *   still never appears.
+ * - The pipeline has no Tools source at all (stock RAG): every node.
+ *
+ * @param component - The component, as the endpoint will carry it.
+ * @param group - The connection it belongs to.
+ * @returns True when the component becomes an endpoint.
+ */
+export function controlledByTools(component: IExplorerComponent, group: INodeFilterGroup): boolean {
+	const edges = component.control ?? [];
+	if (group.toolsSource !== null) return edges.some((edge) => edge.from === group.toolsSource);
+	if (group.toolsSources.length === 0) return true;
+	return edges.some((edge) => edge.from !== undefined && group.toolsSources.includes(edge.from));
+}
 
 /** What discovery needs to know. */
 export interface IDiscoveryOptions {
@@ -96,16 +160,49 @@ export interface IDiscoveryOptions {
 	concurrency?: number;
 	/** How long to wait for listTasks's names (default {@link TASK_NAMES_TIMEOUT_MS}). */
 	taskNamesTimeoutMs?: number;
+	/**
+	 * Which components of the app's providers become endpoints (default: all).
+	 * Called with the component as the endpoint will carry it (id, provider,
+	 * name, control edges) and a frozen description of its connection (see
+	 * {@link INodeFilterGroup}). Vector passes {@link controlledByTools}, so the
+	 * chat path's second store never becomes a card, running Tools source or not.
+	 */
+	nodeFilter?: NodeFilter;
+	/**
+	 * Told once per discovery, after the task listing answered, which tasks are
+	 * running: every usable row (one with a token and a source) as its project
+	 * id and source, never its token, in listing order. A row counts whether
+	 * or not it becomes an endpoint (another app's pipeline, the caller's own
+	 * run in another organization). The store uses it to stop looking for a
+	 * task whose start was announced before it ran (see store.ts, "WHEN IT
+	 * REFRESHES"). Not called when the task listing fails.
+	 */
+	onRunning?: (running: readonly ITaskRef[]) => void;
 }
 
 /** One discovered endpoint, with the secret that belongs in the vault. */
 export interface IDiscoveredEndpoint {
 	/** The token-free endpoint. */
 	endpoint: IExplorerEndpoint;
-	/** The tools role's task token — for the store's transient vault ONLY. */
+	/** The anchor role's task token (the tools role's, unless read-only) — for the store's transient vault ONLY. */
 	token: string | null;
 	/** Whether the identity can tell the caller may invoke tools (hint; undefined = unknown). */
 	callHint: boolean | undefined;
+	/** Role -> that role's task token, running roles only — for the store's role vault ONLY. */
+	roleTokens: Readonly<Record<string, string>>;
+	/** The role whose token is `token`. */
+	anchorRole: string;
+}
+
+/**
+ * Whether an endpoint was discovered over a multi-role spec, so its
+ * `components`, `anchorRole` and `readOnly` are present.
+ *
+ * @param endpoint - The endpoint.
+ * @returns True for a multi-role (Vector) endpoint.
+ */
+export function isMultiRoleEndpoint(endpoint: IExplorerEndpoint): endpoint is IMultiRoleEndpoint {
+	return Array.isArray(endpoint.components) && typeof endpoint.anchorRole === 'string' && typeof endpoint.readOnly === 'boolean';
 }
 
 // =============================================================================
@@ -290,8 +387,79 @@ function displayNameOf(toolsRow: IExplorerTaskRow | null, row: IExplorerTaskRow,
 interface IGroup {
 	/** Role name -> the row filling it (null = not running). */
 	byRole: Map<string, IExplorerTaskRow | null>;
+	/** The role whose token carries the connection's calls. */
+	anchorRole: string;
 	/** The row that supplies the pipeline components and identity fields. */
 	anchor: IExplorerTaskRow;
+}
+
+/**
+ * The provider of a row's own source component, read from the components the
+ * row carries (the server sends the whole pipeline on every row).
+ *
+ * @param row - The task row.
+ * @returns The provider, or null when the row does not say.
+ */
+function sourceProviderOf(row: IExplorerTaskRow): string | null {
+	const components = row.pipeline?.components;
+	if (!Array.isArray(components)) return null;
+	const own = components.find((component) => isPlainObject(component) && component.id === row.source);
+	return own !== undefined && typeof own.provider === 'string' ? own.provider : null;
+}
+
+/**
+ * How well a row fills a role: 2 = a declared source id, 1 = a source of one
+ * of the role's providers, 0 = not at all.
+ *
+ * @param def - The role.
+ * @param row - The row.
+ * @returns The match rank.
+ */
+function fillRank(def: IRoleDef, row: IExplorerTaskRow): number {
+	if (def.sources !== null && def.sources.includes(row.source)) return 2;
+	if (def.providers !== undefined) {
+		const provider = sourceProviderOf(row);
+		if (provider !== null && def.providers.includes(provider)) return 1;
+	}
+	return 0;
+}
+
+/**
+ * The role that anchors a connection: the tools role when it runs, else the
+ * first running role of `readOnlyAnchors`, else the tools role (which then has
+ * no token: nothing can be called).
+ *
+ * @param spec - The role spec.
+ * @param byRole - Role name -> the row filling it.
+ * @returns The anchor role.
+ */
+function anchorRoleOf(spec: IRoleSpec, byRole: Map<string, IExplorerTaskRow | null>): string {
+	if (byRole.get(spec.toolsRole)) return spec.toolsRole;
+	return spec.readOnlyAnchors?.find((role) => byRole.get(role)) ?? spec.toolsRole;
+}
+
+/**
+ * The ids of a pipeline's components that could fill the tools role (a
+ * declared source id, or a component of one of the role's providers), running
+ * or not, in pipeline order; plus the running tools source when the role takes
+ * any source (the single-role shape).
+ *
+ * @param spec - The role spec.
+ * @param components - The pipeline's components (raw).
+ * @param toolsRow - The row filling the tools role, or null.
+ * @returns The ids, without duplicates.
+ */
+function toolsSourcesOf(spec: IRoleSpec, components: readonly unknown[], toolsRow: IExplorerTaskRow | null): string[] {
+	const def = spec.roles[spec.toolsRole];
+	const ids: string[] = [];
+	for (const raw of components) {
+		if (!isPlainObject(raw) || typeof raw.id !== 'string' || raw.id === '' || ids.includes(raw.id)) continue;
+		const declared = def !== undefined && def.sources !== null && def.sources.includes(raw.id);
+		const byProvider = def?.providers !== undefined && typeof raw.provider === 'string' && def.providers.includes(raw.provider);
+		if (declared || byProvider) ids.push(raw.id);
+	}
+	if (toolsRow !== null && !ids.includes(toolsRow.source)) ids.push(toolsRow.source);
+	return ids;
 }
 
 /**
@@ -311,7 +479,8 @@ function isSingleRole(spec: IRoleSpec): boolean {
  *
  * Single-role: one group per row. Multi-role: rows are grouped by run kind,
  * owner kind, owner id, team and project, then each role takes the row whose
- * source it names (lowest source id first when several qualify). A row whose
+ * source it names, else a row whose source component has one of the role's
+ * providers (lowest source id first when several qualify). A row whose
  * pipeline carries no project id cannot be proven to belong to any other row's
  * project, so it is never grouped with another row.
  *
@@ -322,7 +491,7 @@ function isSingleRole(spec: IRoleSpec): boolean {
 function groupRows(rows: IExplorerTaskRow[], spec: IRoleSpec): IGroup[] {
 	const roleNames = Object.keys(spec.roles);
 	if (isSingleRole(spec)) {
-		return rows.map((row) => ({ byRole: new Map([[spec.toolsRole, row]]), anchor: row }));
+		return rows.map((row) => ({ byRole: new Map([[spec.toolsRole, row]]), anchorRole: spec.toolsRole, anchor: row }));
 	}
 
 	const buckets = new Map<string, IExplorerTaskRow[]>();
@@ -343,15 +512,19 @@ function groupRows(rows: IExplorerTaskRow[], spec: IRoleSpec): IGroup[] {
 		let matched = 0;
 		for (const role of roleNames) {
 			const def = spec.roles[role]!;
-			const sources = def.sources ?? [];
-			const candidates = bucket.filter((row) => sources.includes(row.source)).sort((a, b) => a.source.localeCompare(b.source));
-			byRole.set(role, candidates[0] ?? null);
+			// A declared source id beats a provider match; then the lowest source id.
+			const candidates = bucket
+				.map((row) => ({ row, rank: fillRank(def, row) }))
+				.filter((candidate) => candidate.rank > 0)
+				.sort((a, b) => b.rank - a.rank || a.row.source.localeCompare(b.row.source));
+			byRole.set(role, candidates[0]?.row ?? null);
 			if (candidates[0]) matched += 1;
 		}
 		// A project none of whose running sources fills a role is not this app's.
 		if (matched === 0) continue;
-		const anchor = byRole.get(spec.toolsRole) ?? [...byRole.values()].find((row): row is IExplorerTaskRow => row !== null)!;
-		groups.push({ byRole, anchor });
+		const anchorRole = anchorRoleOf(spec, byRole);
+		const anchor = byRole.get(anchorRole) ?? [...byRole.values()].find((row): row is IExplorerTaskRow => row !== null)!;
+		groups.push({ byRole, anchorRole, anchor });
 	}
 	return groups;
 }
@@ -404,13 +577,53 @@ async function componentsOf(client: IExplorerClient, group: IGroup): Promise<IEx
 }
 
 /**
+ * The slice of a component an endpoint may carry: id, provider, name and the
+ * control edges' `from` / `classType`. Everything else (config, input edges,
+ * UI state) is left behind, because endpoints are persisted and logged.
+ *
+ * @param raw - One element of the pipeline's components.
+ * @returns The slice, or null when the element has no string id.
+ */
+function safeComponent(raw: unknown): IExplorerComponent | null {
+	if (!isPlainObject(raw) || typeof raw.id !== 'string' || raw.id === '') return null;
+	const component: { id: string; provider?: string; name?: string; control?: Array<{ from?: string; classType?: string }> } = { id: raw.id };
+	if (typeof raw.provider === 'string') component.provider = raw.provider;
+	if (typeof raw.name === 'string') component.name = raw.name;
+	if (Array.isArray(raw.control)) {
+		const edges: Array<{ from?: string; classType?: string }> = [];
+		for (const edge of raw.control) {
+			if (!isPlainObject(edge)) continue;
+			const copy: { from?: string; classType?: string } = {};
+			if (typeof edge.from === 'string') copy.from = edge.from;
+			if (typeof edge.classType === 'string') copy.classType = edge.classType;
+			if (copy.from !== undefined || copy.classType !== undefined) edges.push(copy);
+		}
+		component.control = edges;
+	}
+	return component;
+}
+
+/**
+ * How strongly an endpoint claims a key that two groups share (only groups
+ * whose rows carry no project id can): a callable endpoint beats a read-only
+ * one, which beats a stopped one.
+ *
+ * @param endpoint - The endpoint.
+ * @returns The rank.
+ */
+function claimRank(endpoint: IExplorerEndpoint): number {
+	if (endpoint.state === 'stopped') return 0;
+	return endpoint.readOnly === true ? 1 : 2;
+}
+
+/**
  * Discover every tool node reachable through the caller's running tasks.
  *
  * Throws only when the initial `getTasks` fails; everything after it is
  * per-task and per-group and never aborts discovery of the rest.
  *
  * @param client - The shell's RocketRide client.
- * @param options - Providers, role map and identity.
+ * @param options - Providers, role map, identity and node filter.
  * @returns Endpoints (state `probing`, or `stopped` when a required role is not running), sorted by pipeline name, node id, key.
  */
 export async function discoverToolEndpoints(client: IExplorerClient, options: IDiscoveryOptions): Promise<IDiscoveredEndpoint[]> {
@@ -418,9 +631,10 @@ export async function discoverToolEndpoints(client: IExplorerClient, options: ID
 	const names = fetchTaskNames(client, options.taskNamesTimeoutMs ?? TASK_NAMES_TIMEOUT_MS);
 	const raw = await client.getTasks();
 	const identity = options.identity ?? null;
-	const rows = (Array.isArray(raw) ? raw : [])
-		.map(readTaskRow)
-		.filter((row): row is IExplorerTaskRow => row !== null && runInIdentityOrganization(identity, row.teamId));
+	const usable = (Array.isArray(raw) ? raw : []).map(readTaskRow).filter((row): row is IExplorerTaskRow => row !== null);
+	options.onRunning?.(usable.map((row) => ({ projectId: projectIdOf(row), source: row.source })));
+	const rows = usable.filter((row) => runInIdentityOrganization(identity, row.teamId));
+	const multiRole = !isSingleRole(options.roles);
 	const groups = groupRows(rows, options.roles);
 	const componentLists = await mapWithConcurrency(groups, options.concurrency ?? 4, (group) => componentsOf(client, group));
 	const taskNames = await names;
@@ -431,24 +645,42 @@ export async function discoverToolEndpoints(client: IExplorerClient, options: ID
 		const components = componentLists[groupIndex];
 		if (!components) return;
 		const toolsRow = group.byRole.get(options.roles.toolsRole) ?? null;
-		const { anchor } = group;
+		const { anchor, anchorRole } = group;
+		const anchorRow = group.byRole.get(anchorRole) ?? null;
+		const readOnly = anchorRole !== options.roles.toolsRole;
 		const ownerKind = ownerKindOf(anchor);
 		const projectId = projectIdOf(anchor);
 
 		const roles: Record<string, IRoleBinding | null> = {};
 		const keyRoles: Record<string, string> = {};
+		const roleTokens: Record<string, string> = {};
 		const missingRoles: string[] = [];
+		const boundRoles: string[] = [];
 		for (const role of Object.keys(options.roles.roles)) {
 			const row = group.byRole.get(role) ?? null;
 			roles[role] = row ? { source: row.source } : null;
 			keyRoles[role] = roleKeySource(options.roles.roles[role]!, row ? row.source : null);
-			if (!row) missingRoles.push(role);
+			if (row) {
+				roleTokens[role] = row.token;
+				boundRoles.push(role);
+			} else missingRoles.push(role);
 		}
 		const requiredMissing = missingRoles.filter((role) => options.roles.roles[role]?.required);
+		// Multi-role endpoints carry the pipeline's components (never config);
+		// one copy per group, shared by its endpoints.
+		const safeComponents = multiRole ? components.map(safeComponent).filter((c): c is IExplorerComponent => c !== null) : [];
+		// Frozen, so a filter cannot change what it is told about the next component.
+		const groupInfo: INodeFilterGroup = Object.freeze({
+			toolsSource: toolsRow ? toolsRow.source : null,
+			toolsSources: Object.freeze(toolsSourcesOf(options.roles, components, toolsRow)),
+			anchorRole,
+			boundRoles: Object.freeze([...boundRoles]),
+		});
 
 		for (const component of components) {
 			if (!component || typeof component.id !== 'string' || typeof component.provider !== 'string' || component.id === '') continue;
 			if (!options.providers.has(component.provider)) continue;
+			if (options.nodeFilter !== undefined && !options.nodeFilter(safeComponent(component)!, groupInfo)) continue;
 			const key = buildEndpointKey({
 				runKind: anchor.runKind,
 				ownerKind,
@@ -459,18 +691,6 @@ export async function discoverToolEndpoints(client: IExplorerClient, options: ID
 				nodeId: component.id,
 			});
 			const stopped = requiredMissing.length > 0;
-			// Two groups can only share a key when their rows carry no project id
-			// (see IExplorerEndpoint.projectId): that is not provable to be one
-			// project, so the groups stay unmerged and the CALLABLE one wins the
-			// key — a stopped duplicate must never hide a live connection.
-			const earlier = seen.get(key);
-			if (earlier !== undefined) {
-				if (found[earlier]!.endpoint.state !== 'stopped' || stopped) continue;
-				found.splice(earlier, 1);
-				seen.clear();
-				found.forEach((entry, index) => seen.set(entry.endpoint.key, index));
-			}
-			seen.set(key, found.length);
 			const endpoint: IExplorerEndpoint = {
 				key,
 				legacyKey: legacyKeyFromKey(key),
@@ -489,11 +709,32 @@ export async function discoverToolEndpoints(client: IExplorerClient, options: ID
 				state: stopped ? 'stopped' : 'probing',
 				running: !stopped,
 			};
+			if (multiRole) {
+				endpoint.components = safeComponents;
+				endpoint.anchorRole = anchorRole;
+				endpoint.readOnly = readOnly;
+			}
 			if (stopped) endpoint.stateDetail = `Not running: ${requiredMissing.join(', ')} ${requiredMissing.length === 1 ? 'source is' : 'sources are'} not running for this pipeline.`;
+			else if (readOnly) endpoint.stateDetail = READ_ONLY_DETAIL;
+			// Two groups can only share a key when their rows carry no project id
+			// (see IExplorerEndpoint.projectId): that is not provable to be one
+			// project, so the groups stay unmerged and the STRONGER claim wins the
+			// key (callable over read-only over stopped) — a stopped or read-only
+			// duplicate must never hide a callable connection.
+			const earlier = seen.get(key);
+			if (earlier !== undefined) {
+				if (claimRank(found[earlier]!.endpoint) >= claimRank(endpoint)) continue;
+				found.splice(earlier, 1);
+				seen.clear();
+				found.forEach((entry, index) => seen.set(entry.endpoint.key, index));
+			}
+			seen.set(key, found.length);
 			found.push({
 				endpoint,
-				token: toolsRow ? toolsRow.token : null,
+				token: anchorRow ? anchorRow.token : null,
 				callHint: identityCanCallTools(options.identity ?? null, ownerKind, anchor.ownerId),
+				roleTokens: { ...roleTokens },
+				anchorRole,
 			});
 		}
 	});

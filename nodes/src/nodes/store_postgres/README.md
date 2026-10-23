@@ -13,7 +13,7 @@ live beside the relational data and operational practices a team already uses.
 
 The node accepts embedded documents on its `documents` lane and can retrieve matching documents for incoming questions. It also exposes the store to an agent as tools. The target table is created when documents are first added, and semantic retrieval requires question embeddings. Pick it over a dedicated vector database when the corpus should remain in a PostgreSQL database and the operator can provide pgvector there.
 
-The created table contains content, document metadata, the embedding, its model name, and its vector size. That makes one table the store for both vector retrieval and keyword lookup, while the configured database retains PostgreSQL's normal connection and access controls.
+The created table contains content, document metadata, the embedding, its model name, and its vector size, plus a `meta` JSON column for metadata that has no column of its own (a file's size or ingest time, the chunker's offsets). That makes one table the store for both vector retrieval and keyword lookup, while the configured database retains PostgreSQL's normal connection and access controls. The node stores through the same pgvector driver as the RocketRide managed store (`rocketride_vector`).
 
 ## Lanes
 
@@ -33,8 +33,14 @@ The configured tool-server name defaults to `postgres`.
 | `search` | Searches the store for a non-empty `query`; accepts optional `top_k` and metadata `filter`, and returns matching content, metadata, and scores. |
 | `upsert` | Adds or updates a non-empty `documents` array. Each document requires content and an object ID; it can provide an embedding and embedding model or use the bound embedding provider. |
 | `delete` | Deletes documents for a non-empty `object_ids` array and returns the deleted count. |
+| `objdir` | Lists the stored document paths, optionally under a `parent` path, with `offset` and `limit`. |
+| `get` | Returns the chunks of one `object_id` in chunk order, with `offset` and `limit`. |
+| `stats` | Reports the number of stored rows, the embedding model and the vector size. |
+| `list_documents` | Lists the documents one by one with their path and chunk count, in pages ordered by path; pass `next_cursor` for the next page. `deleted: 'deleted'` (or `true`) lists the trash, and `parent` keeps one exact path. |
+| `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash: their chunks stay stored but leave search, `objdir`, `get` and the listing until `restore`. Returns `matched_chunks`, the chunks it moved. |
+| `restore` | Takes the documents of a non-empty `object_ids` array out of the trash; a document not in it is left as it is. |
 
-`search` requires a bound embedding provider for semantic similarity search. The three functions return a failure object when their required input or an embedding cannot be obtained.
+`search` requires a bound embedding provider for semantic similarity search. The functions return a failure object when their required input or an embedding cannot be obtained. The collection's control record (object ID `schema`) is never listed and can never be removed through a tool.
 
 `search` accepts an optional `filter` object honoring only `objectId`, `nodeId` and `parent`; any other key is rejected. `upsert` accepts an optional `metadata` object storing `nodeId`, `parent` and `chunkId`, defaulting to `"vectordb_tool"`, `"/"` and `0` respectively.
 
@@ -54,11 +60,12 @@ errors during the save-time probe point to these fields; an error about the
 
 The Table field names the table used for vectors; its default is `rocketride`. It must be a valid unquoted PostgreSQL identifier: at most 63 characters, starting with a letter or underscore, and thereafter containing only letters, digits, or underscores. The driver also accepts the legacy `collection` key, but the panel uses Table.
 
-Change the table when a corpus needs its own physical store. The runtime uses the
-name in its SQL statements and does not quote it, which is why punctuation,
-spaces, and a leading digit are rejected instead of being escaped. A valid new
-name produces a new table at first ingest; it does not migrate rows from the
-old table.
+Change the table when a corpus needs its own physical store. The runtime uses
+the name in lower case, as PostgreSQL reads an unquoted name (`MyDocs` is the
+table `mydocs`), so a table created by an earlier version of the node keeps its
+name; punctuation, spaces, and a leading digit are rejected. A valid new name
+produces a new table at first ingest; it does not migrate rows from the old
+table.
 
 ### Similarity Metric
 
@@ -75,15 +82,31 @@ without retesting the retrieval quality.
 ### Retrieval and embedding compatibility
 
 The first write creates the table with a vector column sized for its incoming
-embedding. Later semantic searches check the requested embedding model against
-the existing collection before executing. Keep documents produced by compatible
-embedding configurations in the same table; a model or vector-size mismatch is
-a sign to create or select a separate table, rather than to treat the failure
-as an ordinary relevance-tuning issue.
+embedding, an index on object ID and chunk ID and, up to 2,000 dimensions, an
+HNSW index whose operator class follows the similarity metric (`m` 16,
+`ef_construction` 64). Later writes check each document's embedding model and
+vector size against the collection's control record. Keep documents produced by
+compatible embedding configurations in the same table; a model or vector-size
+mismatch is a sign to create or select a separate table, rather than to treat
+the failure as an ordinary relevance-tuning issue.
 
 ### Tool Server Name
 
 The tool-server name defaults to `postgres` and prefixes the three agent functions. Change it when multiple PostgreSQL stores are connected to the same agent so their functions do not share a namespace.
+
+### Write switches
+
+Allow document management from tool calls (`allow_writes`) is off by default.
+Turn it on in the pipeline whose Tools source should be able to remove
+documents from the table, or add them with the `upsert` tool, through tool
+calls, for example the pipeline the Vector Explorer manages. Even when it is
+on, such a write is accepted only from a Tools source of the pipeline,
+addressed to this node; calls from the pipeline's chat or ingest sources are
+refused. Documents the pipeline's own lanes write are not affected by this
+switch.
+
+The switch does not apply to an agent in this pipeline: its `upsert` and
+`delete` calls work as they always have.
 
 ## Authentication
 
@@ -93,13 +116,14 @@ Provide the configured PostgreSQL host, port, user, password, and database. The 
 
 ### Search and document lifecycle
 
-Semantic search requires an embedding. Keyword search performs a `LIKE` match on content with the metadata filters. Re-ingesting an object deletes its existing rows before replacement chunks are inserted. The store can mark chunks deleted or active, and its default filters exclude marked-deleted chunks.
+Semantic search requires an embedding. Keyword search is a case-insensitive substring match of the question text on content, with the metadata filters. A batch that carries a document's first chunk replaces every row stored for that document; a later batch of the same document adds its chunks (replacing only the same chunk IDs), so a long document the embedding node sends in several batches is stored whole. The store can mark chunks deleted or active, and its default filters exclude marked-deleted chunks; a row with no deletion flag at all (one written by hand or by another client) counts as not deleted.
 
-Semantic search orders by the chosen pgvector distance operator and checks that
-the stored embedding model is compatible before searching. Unlike the other
-paths, it cannot take a non-zero result offset. This matters for callers that
-try to paginate semantic results: use a limit or a separate retrieval strategy
-instead of expecting SQL-style offset pagination.
+Semantic search orders by the chosen pgvector distance operator and honors the
+filter's offset and limit. Filtered searches keep scanning the HNSW index
+(pgvector's iterative scan, from version 0.8) until they have enough rows, so a
+search restricted to a few documents still returns up to its limit. With an
+older pgvector a filtered search can return fewer rows than its limit; the
+store then reports the caveat `filtered_search_may_underfill`.
 
 The metadata filters are translated to SQL predicates for node, parent,
 permissions, object IDs, chunk IDs, table data, and deletion state. Normal
@@ -109,12 +133,25 @@ managed store, not the routine way to restrict a query.
 
 ### Rendering
 
-Rendering retrieves an object's chunks in `chunkId` order and sends joined text to the callback in `renderChunkSize` groups. The node's document count is a count of rows in the table.
+Rendering retrieves an object's chunks in `chunkId` order and sends the joined text of each page of 1,000 chunks to the callback. The node's document count is a count of rows in the table.
 
-The runtime removes an object's existing rows and commits that deletion before
-it inserts the replacement chunks. Retain a source of truth that can be
-ingested again: if a replacement write fails, the previous rows have already
-been removed rather than preserved as a fallback copy.
+A batch's deletion and its inserts run in one transaction: if the write fails,
+the previous rows stay as they were.
+
+### Connections and older tables
+
+The node opens at most four connections, only when it needs them, and closes a
+connection that stayed idle for a minute. Every call runs in one short
+transaction that always ends: reads are read-only and limited to 30 seconds per
+statement, and writes to a table are applied one batch at a time, even across
+pipelines. Nothing is set for the database session, so the node works through
+a transaction-mode connection pooler. Errors never name the server, user or
+database.
+
+A table written by an earlier version of the node has no `meta` column; the
+node adds it when it starts. If another session holds the table at that moment,
+the node writes without it for now (the extra metadata is not stored) and tries
+again at most once a minute.
 
 ## Upstream docs
 
@@ -142,7 +179,6 @@ been removed rather than preserved as a fallback copy.
 ## Dependencies
 
 - `psycopg2-binary`
-- `pgvector`
 
 ## Source
 

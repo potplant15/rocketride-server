@@ -35,8 +35,26 @@
 //     lives. Endpoints, probes, snapshots, sessions and keys never contain one,
 //     so nothing the store hands out can leak one into a preference, a URL, a
 //     log, a copied JSON or a document payload;
+//   - the ROLE VAULT beside it: every running role's token of a multi-role
+//     connection (Vector's ingest, chat and tools sources). Set by each
+//     discovery, cleared with the endpoint's token on the stopped path and on
+//     reset, kept for a vanished endpoint; never in any snapshot;
 //   - the sessions it opens (`session(client, endpoint)`), which read the
-//     token from the vault at call time and never keep it.
+//     token from the vault at call time and never keep it, and the ROLE
+//     CHANNELS (`channel(client, endpoint, role)`), which call one role through
+//     that role's own token, read from the role vault at call time. Nothing on
+//     a channel is ever retried: an upload or a question sent twice would be
+//     ingested or answered twice.
+//
+// READ-ONLY CONNECTIONS
+//   A multi-role connection whose tools role is not running is anchored on a
+//   read-only role (the spec's `readOnlyAnchors`): its token is that role's,
+//   so the probe and the session ride on it, and the endpoint keeps the
+//   detail "Read-only: no Tools source is running" while it is ready. A probe
+//   of such a card that fails with "not found in pipeline" means the anchor
+//   source cannot reach that node: the card is `stopped`, "Not reachable from
+//   the <role> source". Like a probe that failed at the node, that answer is
+//   kept on refreshes nobody asked for (see "WHEN IT PROBES AGAIN").
 //
 // A VANISHED ENDPOINT KEEPS ITS TOKEN
 //   Discovery lists RUNNING tasks only, so a task that is restarting vanishes
@@ -56,9 +74,22 @@
 //
 // WHEN IT REFRESHES
 //   explicitly (`refresh`), on task events (debounced), and on window focus
-//   (debounced and rate-limited) — never on a timer. Concurrent refreshes
-//   coalesce: while one is running, any number of triggers produce exactly ONE
-//   follow-up. A newer refresh's result is never overwritten by an older one.
+//   (debounced and rate-limited) — never on an open-ended timer. Concurrent
+//   refreshes coalesce: while one is running, any number of triggers produce
+//   exactly ONE follow-up. A newer refresh's result is never overwritten by an
+//   older one.
+//
+//   A STARTED TASK IS LOOKED FOR. The engine announces a task's start (`begin`,
+//   `restart`) while the task is still loading, and discovery lists running
+//   tasks only, so the refresh that event asks for usually comes too early;
+//   nothing announces the moment the task runs. While attached, the store
+//   therefore remembers each task a start event named (project id and source)
+//   and looks again 1, 2, 4 and 8 s after the previous look, then every 15 s,
+//   until a discovery lists it, its `end` event arrives, or
+//   `startWatchMs` (default 5 min) has passed since its start event; a new
+//   start event begins the steps again. Detach and reset forget them. A look
+//   is a background refresh: discovery only, plus the probe of an endpoint
+//   that is new or came back, so a task nobody uses is not kept awake by it.
 //
 // WHEN IT PROBES AGAIN
 //   A probe is a tool call, and a tool call that reaches a task counts as
@@ -67,7 +98,9 @@
 //   when somebody asked: an explicit `refresh`, a restart or reconnect
 //   (`reprobe`), `probe` (Test connection), or a changed token. A refresh
 //   nobody asked for (focus, an ordinary task event, a rebind) keeps its last
-//   answer. An endpoint whose probe said its task is not running is cheap to
+//   answer. A read-only card whose node the anchor source cannot reach is kept
+//   the same way: that answer, too, came from the task. An endpoint whose
+//   probe said its task is not running is cheap to
 //   ask again (the server refuses before the task) and is probed on any refresh.
 //   An endpoint that vanished from discovery is not probed at all: `probe`
 //   sends nothing and answers null, and an answer to a probe that was in
@@ -80,14 +113,15 @@
 //   probe, so a previous session's connections cannot bleed into the next.
 // =============================================================================
 
-import { ExplorerToolError } from '../errors';
+import { ExplorerToolError, readErrorCode, readErrorMessage } from '../errors';
 import { checkObject, isPlainObject } from '../checks';
-import type { IExplorerClient, IExplorerEndpoint, IExplorerIdentity, IProbeResult, IRoleSpec } from '../types';
-import { discoverToolEndpoints, mapWithConcurrency } from './discovery';
-import type { IDiscoveredEndpoint } from './discovery';
+import type { IGenerationTicket } from '../generation';
+import type { IExplorerClient, IExplorerEndpoint, IExplorerIdentity, IProbeResult, IRoleSpec, ISendFile, ITaskRef } from '../types';
+import { READ_ONLY_DETAIL, discoverToolEndpoints, mapWithConcurrency } from './discovery';
+import type { IDiscoveredEndpoint, NodeFilter } from './discovery';
 import { identityFingerprint } from './identity';
 import { DEFAULT_TOOL_TIMEOUTS, createToolSession } from './session';
-import type { IToolSession, IToolSessionOptions } from './session';
+import type { IInvokeOptions, IToolSession, IToolSessionOptions } from './session';
 
 // =============================================================================
 // TYPES
@@ -110,10 +144,20 @@ export interface IEndpointState {
 	refreshedAt: number;
 }
 
+/** What a task lifecycle event tells the store. */
+export interface ITaskEventInfo {
+	/** Re-check endpoints that did not change identity (a restart). */
+	reprobe: boolean;
+	/** The task a `begin` or `restart` announced, when the event names it: look for it until it runs. */
+	started?: ITaskRef;
+	/** The task an `end` announced, when the event names it: stop looking for it. */
+	ended?: ITaskRef;
+}
+
 /** What woke the store up. */
 export interface IWatchHandlers {
-	/** A task event arrived; `reprobe` asks to re-check endpoints that did not change identity (a restart). */
-	onTaskEvent(info: { reprobe: boolean }): void;
+	/** A task event arrived (see {@link ITaskEventInfo}). */
+	onTaskEvent(info: ITaskEventInfo): void;
 	/** The window regained focus. */
 	onFocus(): void;
 	/** The identity changed or was cleared (sign-out). */
@@ -160,8 +204,71 @@ export interface IEndpointStoreOptions {
 	 * waiting forever.
 	 */
 	discoveryTimeoutMs?: number;
+	/**
+	 * How long after a start event the store keeps looking for the started
+	 * task (default {@link DEFAULT_START_WATCH_MS}; see "WHEN IT REFRESHES").
+	 */
+	startWatchMs?: number;
 	/** Clock and timers (default: real). */
 	clock?: IStoreClock;
+	/**
+	 * Which matching components of a group become endpoints (default: all);
+	 * passed to discovery (see `IDiscoveryOptions.nodeFilter`).
+	 */
+	nodeFilter?: NodeFilter;
+}
+
+/**
+ * How long `IRoleChannel.ask` waits for an answer when the caller names no
+ * timeout (120 s, Vector Explorer's chat wait). Pass `timeoutMs: null` to wait
+ * without a bound.
+ */
+export const DEFAULT_ASK_TIMEOUT_MS = 120_000;
+
+/**
+ * How long the store keeps looking for a task after its start event (5 min):
+ * longer than a first start that loads an embedding model (about 90 s on a
+ * laptop), short enough that a start it can never see costs a bounded number
+ * of task listings.
+ */
+export const DEFAULT_START_WATCH_MS = 300_000;
+
+/** The waits between looks for a started task; the last one repeats. */
+const START_LOOK_STEPS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000];
+
+/**
+ * One role of a multi-role connection (Vector Explorer: ingest, chat, tools),
+ * called through that role's own task token, which never leaves the store and
+ * is read at call time. Nothing on a channel is retried. Every failure is an
+ * {@link ExplorerToolError}: `unavailable` when the store holds no token for
+ * the role (not running, not in the spec, stopped, or after a reset), `upgrade`
+ * when the client cannot upload or chat, `raised` for what the SDK threw (with
+ * its `code`), `malformed`, `timeout` and `stale` as for sessions.
+ */
+export interface IRoleChannel {
+	/** The role name. */
+	readonly role: string;
+	/** Whether the store holds a token for the role right now (a running source fills it, or filled it before the pipeline vanished). */
+	readonly bound: boolean;
+	/**
+	 * Upload files through the role's data lane (`client.sendFiles`). Resolves
+	 * with one plain record per file, in order: a copy of the SDK's upload
+	 * result, or `{ action: 'error', filepath, error }` when none came back.
+	 * Not bounded by a client timeout, by design: a large upload legitimately
+	 * takes long, and the SDK reports its progress through its own events.
+	 */
+	sendFiles(files: ISendFile[], opts?: { maxConcurrent?: number }): Promise<Array<Record<string, unknown>>>;
+	/**
+	 * Ask the role's source a question (`client.chat`). `timeoutMs` bounds the
+	 * wait (default {@link DEFAULT_ASK_TIMEOUT_MS}; `null` waits without a
+	 * bound); an expired `generation` drops the answer as `stale`. Stream
+	 * events reach `onSSE` only while the question is pending and its
+	 * generation is current: those of a question that timed out, was replaced
+	 * or already settled are dropped.
+	 */
+	ask(question: unknown, opts?: { onSSE?: (type: string, data: Record<string, unknown>) => Promise<void>; timeoutMs?: number | null; generation?: IGenerationTicket }): Promise<Record<string, unknown>>;
+	/** Call a node tool through the role's token; `opts.nodeId` is required. Same checks and budgets as a session, never retried. */
+	invoke<T = unknown>(tool: string, input?: Record<string, unknown>, opts?: IInvokeOptions): Promise<T>;
 }
 
 /** One app's endpoint store. */
@@ -196,6 +303,15 @@ export interface IEndpointStore {
 	reset(): void;
 	/** Open a session on an endpoint. The token never leaves the store. */
 	session(client: IExplorerClient, endpoint: IExplorerEndpoint): IToolSession;
+	/**
+	 * A channel on one role of an endpoint's connection. Its calls reject with
+	 * `ExplorerToolError{kind:'unavailable'}` while the role is not bound; the
+	 * token is read at call time, so a channel made before the role's source
+	 * started works once it runs. The same channel is handed out for the same
+	 * endpoint key, role and client until `reset()`, so it may be kept for the
+	 * life of a card (and is stable as a React dependency).
+	 */
+	channel(client: IExplorerClient, endpoint: IExplorerEndpoint, role: string): IRoleChannel;
 }
 
 // =============================================================================
@@ -238,6 +354,7 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 	const debounceMs = options.debounceMs ?? 300;
 	const focusMinIntervalMs = options.focusMinIntervalMs ?? 5_000;
 	const discoveryTimeoutMs = options.discoveryTimeoutMs ?? 30_000;
+	const startWatchMs = options.startWatchMs ?? DEFAULT_START_WATCH_MS;
 	const clock: IStoreClock = options.clock ?? {
 		now: () => Date.now(),
 		setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -258,10 +375,14 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 
 	/** THE VAULT: the only place a task token lives. */
 	const vault = new Map<string, string>();
+	/** THE ROLE VAULT: endpoint key -> role -> that role's task token (running roles only). */
+	const roleVault = new Map<string, Readonly<Record<string, string>>>();
 	/** Whether the identity could tell a caller may invoke tools (hint, per endpoint key). */
 	const callHints = new Map<string, boolean | undefined>();
 	/** Sessions already opened, by endpoint key and client. */
 	const sessions = new Map<string, { client: IExplorerClient; session: IToolSession }>();
+	/** Role channels already handed out: endpoint key -> role -> the channel and its client. */
+	const channels = new Map<string, Map<string, { client: IExplorerClient; channel: IRoleChannel }>>();
 	/**
 	 * The last good `dialect` answer of an endpoint that vanished from discovery
 	 * while its token is kept (see "A VANISHED ENDPOINT KEEPS ITS TOKEN"). Read by
@@ -291,6 +412,14 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 	let pendingDebounce: { client: IExplorerClient; reprobe: boolean } | null = null;
 	let lastRefreshStartedAt = 0;
 	let attachedClient: IExplorerClient | null = null;
+	/**
+	 * Tasks a start event named that no discovery has listed yet: task ref key
+	 * -> give up at (epoch ms). See "A STARTED TASK IS LOOKED FOR".
+	 */
+	const awaitingStart = new Map<string, number>();
+	let startLookTimer: unknown = null;
+	/** Index into START_LOOK_STEPS_MS of the next wait. */
+	let startLookStep = 0;
 
 	/**
 	 * Replace the snapshot and notify.
@@ -351,6 +480,21 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 	}
 
 	/**
+	 * Whether a failed probe of a read-only card says the anchor source cannot
+	 * reach the node. The engine raises this as a plain error with no code
+	 * (packages/ai/src/ai/modules/data/data_conn.py, `Node "<id>" not found in
+	 * pipeline`), so its text is the only signal; a change of that wording
+	 * turns these cards `unreachable` instead.
+	 *
+	 * @param endpoint - The endpoint.
+	 * @param result - What its probe returned.
+	 * @returns True when the node is not reachable from the anchor source.
+	 */
+	function notReachableFromAnchor(endpoint: IExplorerEndpoint, result: IProbeResult | undefined): boolean {
+		return endpoint.readOnly === true && result !== undefined && !result.ok && result.error !== undefined && /not found in pipeline/i.test(result.error.message);
+	}
+
+	/**
 	 * Decide an endpoint's state from a probe result.
 	 *
 	 * @param endpoint - The endpoint.
@@ -358,8 +502,12 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 	 * @returns The state and a safe explanation.
 	 */
 	function classify(endpoint: IExplorerEndpoint, result: IProbeResult): { state: IExplorerEndpoint['state']; detail?: string } {
-		if (result.ok) return { state: 'ready' };
+		if (result.ok) return endpoint.readOnly === true ? { state: 'ready', detail: READ_ONLY_DETAIL } : { state: 'ready' };
 		const error = result.error;
+		if (notReachableFromAnchor(endpoint, result)) {
+			// The anchor source cannot reach this node (a read-only card can list a store it does not feed).
+			return { state: 'stopped', detail: `Not reachable from the ${endpoint.anchorRole ?? 'anchor'} source` };
+		}
 		if (error !== undefined && error.code !== undefined && NOT_RUNNING_CODES.has(error.code)) {
 			return { state: 'stopped', detail: 'The task is not running (it may be restarting). It will be checked again when it starts.' };
 		}
@@ -467,6 +615,165 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 		return created;
 	}
 
+	// ── Role channels ─────────────────────────────────────────────────────────
+
+	function channel(client: IExplorerClient, endpoint: IExplorerEndpoint, role: string): IRoleChannel {
+		let byRole = channels.get(endpoint.key);
+		const cached = byRole?.get(role);
+		if (cached && cached.client === client) return cached.channel;
+		const created = createChannel(client, endpoint, role);
+		if (byRole === undefined) {
+			byRole = new Map();
+			channels.set(endpoint.key, byRole);
+		}
+		byRole.set(role, { client, channel: created });
+		return created;
+	}
+
+	/**
+	 * Build a role channel (see {@link IRoleChannel}).
+	 *
+	 * @param client - The client.
+	 * @param endpoint - The endpoint.
+	 * @param role - The role.
+	 * @returns The channel.
+	 */
+	function createChannel(client: IExplorerClient, endpoint: IExplorerEndpoint, role: string): IRoleChannel {
+		const known = Object.prototype.hasOwnProperty.call(options.roles.roles, role);
+		/**
+		 * The role's token now, or undefined.
+		 *
+		 * @returns The token.
+		 */
+		const roleToken = (): string | undefined => {
+			const token = known ? roleVault.get(endpoint.key)?.[role] : undefined;
+			return typeof token === 'string' && token !== '' ? token : undefined;
+		};
+		/**
+		 * The role's token, or the `unavailable` error that says why there is none.
+		 *
+		 * @param tool - The operation, for the error.
+		 * @returns The token.
+		 */
+		const requireToken = (tool: string): string => {
+			const token = roleToken();
+			if (token !== undefined) return token;
+			const message = known
+				? `No running ${role} source for pipeline '${endpoint.pipelineName}'. Start it and retry.`
+				: `This connection has no '${role}' role.`;
+			throw new ExplorerToolError({ kind: 'unavailable', tool, message });
+		};
+		/**
+		 * Map anything the client threw onto the one error class (never retried).
+		 *
+		 * @param tool - The operation.
+		 * @param error - What was thrown.
+		 * @returns The error.
+		 */
+		const raised = (tool: string, error: unknown): ExplorerToolError => (error instanceof ExplorerToolError
+			? error
+			: new ExplorerToolError({ kind: 'raised', tool, message: readErrorMessage(error), code: readErrorCode(error) }));
+
+		// Tool calls: a session over the role's token with no rebind seam (so no retry).
+		const roleSession = createToolSession(client, endpoint, {
+			token: roleToken,
+			info: sessionDeps(client, endpoint).info,
+			now: clock.now,
+			setTimer: clock.setTimer,
+			clearTimer: clock.clearTimer,
+		}, sessionOptions);
+
+		async function sendFiles(files: ISendFile[], opts: { maxConcurrent?: number } = {}): Promise<Array<Record<string, unknown>>> {
+			const tool = 'sendFiles';
+			const token = requireToken(tool);
+			if (typeof client.sendFiles !== 'function') {
+				throw new ExplorerToolError({ kind: 'upgrade', tool, message: 'This client cannot upload files.' });
+			}
+			if (!Array.isArray(files)) throw new ExplorerToolError({ kind: 'malformed', tool, message: 'sendFiles needs a list of files' });
+			let results: unknown;
+			try {
+				results = await client.sendFiles(files, token, opts.maxConcurrent);
+			} catch (error) {
+				throw raised(tool, error);
+			}
+			if (!Array.isArray(results)) throw new ExplorerToolError({ kind: 'malformed', tool, message: 'The upload answered with something other than a list of results.' });
+			// The SDK's UPLOAD_RESULT has no index signature: copy each into a plain record.
+			return files.map((sent, index) => {
+				const result: unknown = results[index];
+				if (isPlainObject(result)) return { ...result };
+				return { action: 'error', filepath: sent?.file?.name ?? '', error: 'No upload result came back for this file.' };
+			});
+		}
+
+		async function ask(question: unknown, opts: { onSSE?: (type: string, data: Record<string, unknown>) => Promise<void>; timeoutMs?: number | null; generation?: IGenerationTicket } = {}): Promise<Record<string, unknown>> {
+			const tool = 'chat';
+			const token = requireToken(tool);
+			if (typeof client.chat !== 'function') {
+				throw new ExplorerToolError({ kind: 'upgrade', tool, message: 'This client cannot ask questions.' });
+			}
+			const ticket = opts.generation;
+			const dropIfStale = (): void => {
+				if (ticket !== undefined && !ticket.isCurrent()) {
+					throw new ExplorerToolError({ kind: 'stale', tool, message: 'The answer was dropped: a newer question replaced it.' });
+				}
+			};
+			const waitMs = opts.timeoutMs === undefined ? DEFAULT_ASK_TIMEOUT_MS : opts.timeoutMs;
+			// Stream events count only while this question is pending and current:
+			// nothing can cancel it, so a dropped question's stream is dropped here.
+			let pending = true;
+			const appSSE = opts.onSSE;
+			const onSSE = appSSE === undefined ? undefined : async (type: string, data: Record<string, unknown>): Promise<void> => {
+				if (!pending || (ticket !== undefined && !ticket.isCurrent())) return;
+				await appSSE(type, data);
+			};
+			let value: unknown;
+			try {
+				const call = client.chat({ token, question, ...(onSSE !== undefined ? { onSSE } : {}) });
+				value = waitMs === null ? await call : await new Promise<unknown>((resolve, reject) => {
+					const timer = clock.setTimer(() => {
+						pending = false;
+						call.catch(() => undefined);
+						reject(new ExplorerToolError({
+							kind: 'timeout',
+							tool,
+							message: `Stopped waiting for the answer after ${Math.round(waitMs / 1000)} s. The pipeline may still be answering; there is no way to cancel it from here.`,
+						}));
+					}, waitMs);
+					call.then(
+						(answer) => { clock.clearTimer(timer); resolve(answer); },
+						(error: unknown) => { clock.clearTimer(timer); reject(error); },
+					);
+				});
+			} catch (error) {
+				dropIfStale();
+				throw raised(tool, error);
+			} finally {
+				pending = false;
+			}
+			dropIfStale();
+			if (!isPlainObject(value)) throw new ExplorerToolError({ kind: 'malformed', tool, message: 'The chat answer is not an object.' });
+			return value;
+		}
+
+		async function invoke<T = unknown>(tool: string, input: Record<string, unknown> = {}, opts: IInvokeOptions = {}): Promise<T> {
+			if (typeof opts.nodeId !== 'string' || opts.nodeId === '') {
+				throw new ExplorerToolError({ kind: 'malformed', tool, message: `${tool} on the ${role} channel needs the target node id` });
+			}
+			requireToken(tool);
+			return roleSession.invoke<T>(tool, input, { ...opts, retry: false });
+		}
+
+		return {
+			role,
+			get bound(): boolean {
+				return roleToken() !== undefined;
+			},
+			sendFiles,
+			ask,
+			invoke,
+		};
+	}
+
 	// ── Refresh ───────────────────────────────────────────────────────────────
 
 	/**
@@ -491,7 +798,7 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 		const toProbe: IExplorerEndpoint[] = [];
 		const live = new Set<string>();
 
-		for (const { endpoint, token, callHint } of found) {
+		for (const { endpoint, token, callHint, roleTokens } of found) {
 			live.add(endpoint.key);
 			vanished.delete(endpoint.key);
 			callHints.set(endpoint.key, callHint);
@@ -502,10 +809,12 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 				vault.delete(endpoint.key);
 				keptInfo.delete(endpoint.key);
 			}
+			roleVault.set(endpoint.key, { ...roleTokens });
 
 			if (endpoint.state === 'stopped') {
 				// A required role is not running: nothing to probe, nothing to call.
 				vault.delete(endpoint.key);
+				roleVault.delete(endpoint.key);
 				keptInfo.delete(endpoint.key);
 				delete probes[endpoint.key];
 				next.push(endpoint);
@@ -517,8 +826,9 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 				next.push({ ...endpoint, state: 'ready', running: true });
 				continue;
 			}
-			const failedAtNode = before !== undefined && probes[endpoint.key]?.ok === false
-				&& (before.state === 'unreachable' || before.state === 'inaccessible');
+			const lastProbe = probes[endpoint.key];
+			const failedAtNode = before !== undefined && lastProbe?.ok === false
+				&& (before.state === 'unreachable' || before.state === 'inaccessible' || (before.state === 'stopped' && notReachableFromAnchor(before, lastProbe)));
 			if (failedAtNode && background && !reprobe && !tokenChanged) {
 				// Nobody asked: keep the last answer rather than call the node again.
 				const kept: IExplorerEndpoint = { ...endpoint, state: before.state, running: false };
@@ -552,17 +862,25 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 	 * failure) after the timeout is dropped.
 	 *
 	 * @param client - The client.
-	 * @returns What discovery found.
+	 * @returns What discovery found, and the tasks it saw running (token-free).
 	 */
-	function boundedDiscovery(client: IExplorerClient): Promise<IDiscoveredEndpoint[]> {
-		const discovery = discoverToolEndpoints(client, { providers: options.providers, roles: options.roles, identity: identityNow, concurrency });
-		return new Promise<IDiscoveredEndpoint[]>((resolve, reject) => {
+	function boundedDiscovery(client: IExplorerClient): Promise<{ found: IDiscoveredEndpoint[]; running: readonly ITaskRef[] }> {
+		let running: readonly ITaskRef[] = [];
+		const discovery = discoverToolEndpoints(client, {
+			providers: options.providers,
+			roles: options.roles,
+			identity: identityNow,
+			concurrency,
+			...(options.nodeFilter !== undefined ? { nodeFilter: options.nodeFilter } : {}),
+			onRunning: (tasks) => { running = tasks; },
+		});
+		return new Promise((resolve, reject) => {
 			const timer = clock.setTimer(() => {
 				discovery.catch(() => undefined);
 				reject(new Error(`The server did not answer within ${Math.round(discoveryTimeoutMs / 1000)} s with the list of running pipelines. Refresh to try again.`));
 			}, discoveryTimeoutMs);
 			discovery.then(
-				(found) => { clock.clearTimer(timer); resolve(found); },
+				(found) => { clock.clearTimer(timer); resolve({ found, running }); },
 				(error: unknown) => { clock.clearTimer(timer); reject(error); },
 			);
 		});
@@ -584,10 +902,11 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 
 		const run = (async (): Promise<void> => {
 			try {
-				const found = await boundedDiscovery(client);
+				const { found, running } = await boundedDiscovery(client);
 				if (epochAfterReset(startedEpoch)) return;
 				const toProbe = merge(found, opts.reprobe === true, opts.background === true);
 				setState({ ...state, status: 'ready', error: null, refreshedAt: clock.now() });
+				noteRunning(running);
 				const probes = mapWithConcurrency(toProbe, concurrency, (endpoint) => runProbe(client, endpoint));
 				// A re-discovery done to rebind a restarted endpoint must not wait on
 				// the probes it started; everything else resolves with final states.
@@ -596,6 +915,8 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 			} catch (error) {
 				if (epochAfterReset(startedEpoch)) return;
 				setState({ ...state, status: 'error', error: error instanceof Error ? error.message : String(error) });
+				// A failed listing says nothing about a started task: keep looking, within its window.
+				noteRunning([]);
 			}
 		})();
 		inFlight = run;
@@ -619,7 +940,7 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 	async function probe(client: IExplorerClient, endpointKey: string): Promise<IProbeResult | null> {
 		const endpoint = state.endpoints.find((candidate) => candidate.key === endpointKey);
 		if (endpoint === undefined || vanished.has(endpointKey) || !vault.has(endpointKey)) return null;
-		patchEndpoint(endpointKey, { state: 'probing', stateDetail: undefined }, null);
+		patchEndpoint(endpointKey, { state: 'probing', stateDetail: endpoint.readOnly === true ? READ_ONLY_DETAIL : undefined }, null);
 		return runProbe(client, endpoint);
 	}
 
@@ -651,15 +972,95 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 		}, debounceMs);
 	}
 
+	// ── Started tasks ─────────────────────────────────────────────────────────
+
+	/**
+	 * The map key of a task ref.
+	 *
+	 * @param ref - The task.
+	 * @returns Its key.
+	 */
+	function taskKey(ref: ITaskRef): string {
+		return JSON.stringify([ref.projectId, ref.source]);
+	}
+
+	/** Cancel the next look, if one is scheduled. */
+	function cancelStartLook(): void {
+		if (startLookTimer !== null) {
+			clock.clearTimer(startLookTimer);
+			startLookTimer = null;
+		}
+	}
+
+	/** Forget every started task and stop looking. */
+	function forgetStarts(): void {
+		cancelStartLook();
+		awaitingStart.clear();
+		startLookStep = 0;
+	}
+
+	/**
+	 * Remember a task a start event named, and begin the steps again.
+	 *
+	 * @param ref - The task.
+	 */
+	function awaitStart(ref: ITaskRef): void {
+		awaitingStart.set(taskKey(ref), clock.now() + startWatchMs);
+		// The refresh the event asks for looks first; the next look is 1 s after it.
+		cancelStartLook();
+		startLookStep = 0;
+	}
+
+	/**
+	 * Stop looking for a task its end event named.
+	 *
+	 * @param ref - The task.
+	 */
+	function endStart(ref: ITaskRef): void {
+		awaitingStart.delete(taskKey(ref));
+		if (awaitingStart.size === 0) forgetStarts();
+	}
+
+	/**
+	 * After a discovery: forget the started tasks it listed and those whose
+	 * window passed, and schedule the next look for the rest.
+	 *
+	 * @param running - The tasks the discovery saw running (empty when it failed).
+	 */
+	function noteRunning(running: readonly ITaskRef[]): void {
+		if (awaitingStart.size === 0) return;
+		for (const ref of running) awaitingStart.delete(taskKey(ref));
+		const now = clock.now();
+		for (const [key, until] of awaitingStart) {
+			if (until <= now) awaitingStart.delete(key);
+		}
+		if (awaitingStart.size === 0) {
+			forgetStarts();
+			return;
+		}
+		const client = attachedClient;
+		if (client === null || startLookTimer !== null) return;
+		const wait = START_LOOK_STEPS_MS[Math.min(startLookStep, START_LOOK_STEPS_MS.length - 1)]!;
+		startLookStep += 1;
+		startLookTimer = clock.setTimer(() => {
+			startLookTimer = null;
+			if (attachedClient !== client || awaitingStart.size === 0) return;
+			void refresh(client, { background: true });
+		}, wait);
+	}
+
 	function reset(): void {
 		resetCount += 1;
 		probing.clear();
 		cancelDebounce();
+		forgetStarts();
 		vault.clear();
+		roleVault.clear();
 		keptInfo.clear();
 		vanished.clear();
 		callHints.clear();
 		sessions.clear();
+		channels.clear();
 		inFlight = null;
 		followUp = null;
 		lastRefreshStartedAt = 0;
@@ -687,7 +1088,11 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 		applyIdentity(identity);
 
 		const unwatch = watch?.({
-			onTaskEvent: ({ reprobe }) => scheduleRefresh(client, reprobe),
+			onTaskEvent: ({ reprobe, started, ended }) => {
+				if (ended !== undefined) endStart(ended);
+				if (started !== undefined && attachedClient === client) awaitStart(started);
+				scheduleRefresh(client, reprobe);
+			},
 			onFocus: () => {
 				if (clock.now() - lastRefreshStartedAt < focusMinIntervalMs) return;
 				scheduleRefresh(client, false);
@@ -701,7 +1106,10 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 		return () => {
 			unwatch?.();
 			cancelDebounce();
-			if (attachedClient === client) attachedClient = null;
+			if (attachedClient === client) {
+				attachedClient = null;
+				forgetStarts();
+			}
 		};
 	}
 
@@ -716,6 +1124,7 @@ export function createEndpointStore(options: IEndpointStoreOptions): IEndpointSt
 		attach,
 		reset,
 		session,
+		channel,
 	};
 }
 

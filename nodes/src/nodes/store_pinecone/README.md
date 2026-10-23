@@ -33,6 +33,9 @@ The configured tool-server name defaults to `pinecone`.
 | `search` | Searches the store for a non-empty `query`; accepts optional `top_k` and metadata `filter`, and returns matching content, metadata, and scores. |
 | `upsert` | Adds or updates a non-empty `documents` array. Each document requires content and an object ID; it can provide an embedding and embedding model or use the bound embedding provider. |
 | `delete` | Deletes documents for a non-empty `object_ids` array and returns the deleted count. |
+| `list_documents` | Lists the documents one by one with their path and chunk count, in pages ordered by path; pass `next_cursor` for the next page. `deleted: 'deleted'` (or `true`) lists the trash, and `parent` keeps one exact path. |
+| `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash: their chunks stay stored but leave search, `objdir`, `get` and the listing until `restore`. Returns `matched_chunks`, the chunks it moved. |
+| `restore` | Takes the documents of a non-empty `object_ids` array out of the trash; a document not in it is left as it is. |
 
 `search` requires a bound embedding provider for semantic similarity search. The three functions return a failure object when their required input or an embedding cannot be obtained.
 
@@ -69,7 +72,7 @@ The collection is the Pinecone index name and defaults to `rocketride`. Validati
 
 The runtime accepts `cosine`, `euclidean`, or `dotproduct` as the similarity setting, defaulting to `cosine`; another value stops initialization. This value becomes the metric when the driver creates an index, so make it agree with the embedding data and leave an existing index's metric alone. Choosing the wrong metric changes ranking and can make good matches appear weak.
 
-Although the configuration value `score` is read with a default of `0.5`, the semantic-search filtering code reads the separately named `threshhold_search` attribute, whose initial value is `0.0`; therefore the configured score is not applied by this implementation. Do not rely on this setting to suppress weak Pinecone results. If relevance needs stricter filtering, apply a downstream constraint or use a store whose retrieval threshold is enforced until this implementation changes.
+The retrieval score (`score`, default `0.5`) filters results on the `questions` lane. The driver itself only drops matches below a floor of `0.0`, so the agent `search` function returns the weaker matches that the `questions` lane filters out. Scores are Pinecone's raw values: cosine similarity between `-1` and `1`, the dot product, or the squared euclidean distance. With `euclidean` a lower score is closer, so a retrieval score keeps the distant results rather than the near ones; prefer `cosine` or `dotproduct` when you rely on the threshold.
 
 ### API key
 
@@ -84,6 +87,20 @@ not see every index available to a broader application credential.
 
 The tool-server name defaults to `pinecone` and prefixes the three agent functions. Change it when multiple Pinecone stores are connected to the same agent so their functions do not share a namespace.
 
+### Write switches
+
+Allow document management from tool calls (`allow_writes`) is off by default.
+Turn it on in the pipeline whose Tools source should be able to remove
+documents from the index, or add them with the `upsert` tool, through tool
+calls, for example the pipeline the Vector Explorer manages. Even when it is
+on, such a write is accepted only from a Tools source of the pipeline,
+addressed to this node; calls from the pipeline's chat or ingest sources are
+refused. Documents the pipeline's own lanes write are not affected by this
+switch.
+
+The switch does not apply to an agent in this pipeline: its `upsert` and
+`delete` calls work as they always have.
+
 ## Authentication
 
 Set the API key for the selected Pinecone profile. The runtime creates its client with that key, and the save-time probe uses it to list indexes and check an existing index's deployment mode.
@@ -92,10 +109,13 @@ Set the API key for the selected Pinecone profile. The runtime creates its clien
 
 ### Search and document lifecycle
 
-Semantic search requires an embedding and does not accept a non-zero offset. Keyword search adds a content filter to the metadata filters. Re-ingesting an object deletes its existing chunks before replacement chunks are upserted. The store can mark chunks deleted or active, and its default filters exclude marked-deleted chunks.
+Semantic search requires an embedding and does not accept a non-zero offset. Keyword search is not supported: Pinecone dense indexes have no text matching, and a keyword request fails with a message saying so. A write that holds an object's chunk 0 starts a new version of the object and deletes its existing chunks first; later writes of the same object (embedding nodes send long documents in several batches) add to it. Each chunk is stored under an id derived from its object id and chunk number, so writing the same chunk again replaces it. Unset metadata fields are left out, because Pinecone rejects null metadata values; the file size, modification time and ingest time are stored when the pipeline provides them. The store can mark chunks deleted or active, and its default filters exclude marked-deleted chunks.
 
 The node retrieves semantic results with the requested limit (or 25 when no
-limit is supplied). It runs the collection-existence and embedding-model checks
+limit is supplied), at most 1,000, the most Pinecone returns with metadata.
+Reads by filter honour their offset and limit: up to 1,000 rows come from one
+query, and longer reads page through Pinecone's metadata fetch on serverless
+indexes (a pod-based index stops at 1,000). It runs the collection-existence and embedding-model checks
 before searching, which makes a missing index or incompatible model fail before
 results are returned.
 
@@ -107,13 +127,25 @@ defaults are not appropriate for the intended deployment.
 
 ### Rendering and paths
 
-Rendering retrieves an object's chunks in `chunkId` order and sends joined text to the callback in `renderChunkSize` groups. For path listing, the driver requests enough records for the requested offset and limit, then slices the results locally.
+Rendering retrieves an object's chunks in `chunkId` order and sends joined text to the callback in groups of at most 1,000 chunks. Path listing returns live documents only (never the collection's control record or deleted documents), applying the requested offset and limit.
 
 Metadata filters include document identity, parent path, permissions, table
 information, and deletion state. The driver defaults `isDeleted` to false in
 its Pinecone filter, so a soft-deleted source does not appear in normal
 retrieval. That makes reactivating or explicitly including deleted material a
-separate caller choice rather than an accidental result of broad searching.
+separate caller choice rather than an accidental result of broad searching. A
+caller that includes deleted material receives deleted and live chunks alike,
+as on the other stores.
+
+### Vector Explorer
+
+The Vector Explorer app supports Pinecone as **experimental**: its explorer functions are tested against an in-memory stand-in for the Pinecone client, not against Pinecone. What the app sees on Pinecone:
+
+- Pinecone cannot count with a filter, so the statistics show no document or chunk counts, the document list shows no chunk counts, and removing a document does not report how many chunks it removed.
+- The document list pages through each document's chunk 0 with Pinecone's metadata fetch, in storage order (the app sorts what it has loaded). A pod-based index has no metadata fetch: it lists the first 1,000 documents only. A document whose chunk 0 is in the trash but a later chunk is live (moved to the trash while it was still being uploaded) is listed after the others, from a read of up to 1,000 documents of the trash (the list says so when the trash holds more). Lists, chunk pages and samples take the active, deleted and all views; any other view is refused as invalid input.
+- Samples for the embedding map are taken in storage order on serverless indexes; a pod-based index cannot provide them. The neighbour graph is computed on the node.
+- Keyword search is reported as unsupported, and the scores shown are Pinecone's raw values.
+- When Pinecone fails (unreachable, or a request it rejects), the explorer, the store's tools and the pipeline's writes report `Pinecone <operation> failed: <error class> (code N)`, for reads, writes, marks, renders and the collection checks alike. The client's own message, which can name the server, is not passed on. An error raised by the node's own code is reported as it is.
 
 ## Upstream docs
 

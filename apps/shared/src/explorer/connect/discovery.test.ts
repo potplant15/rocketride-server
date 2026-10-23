@@ -26,11 +26,11 @@
 
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { TASK_NAMES_REQUEST, TASK_NAMES_TIMEOUT_MS, discoverToolEndpoints, mapWithConcurrency, readTaskRow } from './discovery';
-import type { IDiscoveredEndpoint, IDiscoveryOptions } from './discovery';
-import { fakeWorld, row } from './testing';
+import { READ_ONLY_DETAIL, TASK_NAMES_REQUEST, TASK_NAMES_TIMEOUT_MS, controlledByTools, discoverToolEndpoints, isMultiRoleEndpoint, mapWithConcurrency, readTaskRow } from './discovery';
+import type { IDiscoveredEndpoint, IDiscoveryOptions, INodeFilterGroup } from './discovery';
+import { CONFIG_SENTINEL, fakeWorld, projectRows, ragComponents, row, vectorComponents } from './testing';
 import { SINGLE_TOOLS_ROLE, VECTOR_ROLES } from '../types';
-import type { IExplorerClient, IExplorerIdentity, IRoleSpec } from '../types';
+import type { IExplorerClient, IExplorerComponent, IExplorerIdentity, IRoleSpec } from '../types';
 import { legacyKeyFromKey, parseEndpointKey } from '../keys';
 
 const DB = new Set(['db_postgres', 'db_mysql']);
@@ -254,16 +254,31 @@ describe('discoverToolEndpoints — one tools role (SQL, Graph)', () => {
 	});
 });
 
-describe('discoverToolEndpoints — role map (Vector\'s ingest_1 / chat_1 / tools_1, mocked)', () => {
+/**
+ * A multi-role spec that matches FIXED source ids only and requires its tools
+ * role (no providers, no read-only anchors): the shape every multi-role spec
+ * had before provider matching, still supported as is.
+ */
+const FIXED_ROLES: IRoleSpec = {
+	roles: {
+		ingest: { sources: ['ingest_1'], required: false },
+		chat: { sources: ['chat_1'], required: false },
+		tools: { sources: ['tools_1'], required: true },
+	},
+	toolsRole: 'tools',
+};
+
+describe('discoverToolEndpoints — fixed-source role map (ingest_1 / chat_1 / tools_1, tools required)', () => {
 	const vec = (source: string, over: Partial<ReturnType<typeof row>> = {}) => row({ source, pipeline: { project_id: 'vp', name: 'Vector', components: [{ id: 'vec_1', provider: 'rocketride_vector', name: 'Store' }] }, name: 'Vector', ...over });
 
 	/**
-	 * Discover over the vector role map.
+	 * Discover over the fixed-source role map.
 	 *
 	 * @param rows - Rows.
+	 * @param spec - The role spec.
 	 * @returns Found endpoints.
 	 */
-	async function discoverVector(rows: ReturnType<typeof row>[], spec: IRoleSpec = VECTOR_ROLES) {
+	async function discoverVector(rows: ReturnType<typeof row>[], spec: IRoleSpec = FIXED_ROLES) {
 		const world = fakeWorld(rows);
 		return discoverToolEndpoints(world.client, { providers: VECTOR, roles: spec });
 	}
@@ -573,6 +588,328 @@ describe('discoverToolEndpoints — readable names (one listTasks per discovery,
 		const toolsStopped = fakeWorld([ingest]);
 		(toolsStopped.client as IExplorerClient).listTasks = names;
 		assert.equal((await discoverToolEndpoints(toolsStopped.client, { providers: VECTOR, roles: VECTOR_ROLES }))[0]!.endpoint.pipelineName, 'Vector', 'the pipeline\'s name while the tools run is stopped, never the ingest run\'s');
+	});
+});
+
+describe('discoverToolEndpoints — Vector role map (providers, read-only anchors)', () => {
+	const STORES = new Set(['qdrant']);
+
+	/**
+	 * Discover over VECTOR_ROLES.
+	 *
+	 * @param rows - Rows.
+	 * @param extra - Further discovery options (nodeFilter).
+	 * @returns Found endpoints and the world.
+	 */
+	async function discoverVx(rows: ReturnType<typeof row>[], extra: Partial<IDiscoveryOptions> = {}) {
+		const world = fakeWorld(rows);
+		const found = await discoverToolEndpoints(world.client, { providers: STORES, roles: VECTOR_ROLES, ...extra });
+		return { world, found };
+	}
+
+	it('declares the contract role map: providers per role, nothing required, chat then ingest as read-only anchors', () => {
+		assert.deepEqual(VECTOR_ROLES, {
+			roles: {
+				ingest: { sources: ['ingest_1'], providers: ['dropper', 'webhook'], required: false },
+				chat: { sources: ['chat_1'], providers: ['chat'], required: false },
+				tools: { sources: ['tools_1'], providers: ['tools'], required: false },
+			},
+			toolsRole: 'tools',
+			readOnlyAnchors: ['chat', 'ingest'],
+		});
+	});
+
+	it('binds a role by the provider of the row\'s own source component, whatever its id', async () => {
+		const components = vectorComponents().map((c) => (c.id === 'ingest_1' ? { ...c, id: 'drop_7' } : c));
+		const { found } = await discoverVx(projectRows(['drop_7', 'chat_1', 'tools_1'], components));
+		assert.equal(found.length, 2);
+		for (const { endpoint } of found) {
+			assert.deepEqual(endpoint.roles, { ingest: { source: 'drop_7' }, chat: { source: 'chat_1' }, tools: { source: 'tools_1' } });
+			assert.deepEqual(endpoint.missingRoles, []);
+		}
+	});
+
+	it('fills ingest from a dropper or a webhook source, and prefers the declared source id when both run', async () => {
+		const both = vectorComponents().concat([{ id: 'a_webhook', provider: 'webhook' }]);
+		const { found } = await discoverVx(projectRows(['a_webhook', 'ingest_1', 'tools_1'], both));
+		assert.equal(found[0]!.endpoint.roles.ingest?.source, 'ingest_1');
+		const hook = (await discoverVx(projectRows(['webhook_1', 'chat_1'], ragComponents()))).found[0]!.endpoint;
+		assert.equal(hook.roles.ingest?.source, 'webhook_1');
+	});
+
+	it('anchors on the Tools source when it runs: callable, not read-only, the tools token, every bound role\'s token beside it', async () => {
+		const rows = projectRows(['ingest_1', 'chat_1', 'tools_1']);
+		const { found } = await discoverVx(rows, { nodeFilter: controlledByTools });
+		assert.equal(found.length, 1);
+		const { endpoint, token, roleTokens, anchorRole } = found[0]!;
+		assert.equal(anchorRole, 'tools');
+		assert.equal(endpoint.anchorRole, 'tools');
+		assert.equal(endpoint.readOnly, false);
+		assert.equal(endpoint.state, 'probing');
+		assert.equal(endpoint.stateDetail, undefined);
+		assert.equal(endpoint.source, 'tools_1');
+		assert.equal(endpoint.nodeId, 'store_1');
+		assert.equal(token, rows[2]!.token);
+		assert.deepEqual(roleTokens, { ingest: rows[0]!.token, chat: rows[1]!.token, tools: rows[2]!.token });
+		assert.equal(isMultiRoleEndpoint(endpoint), true);
+	});
+
+	it('gives the stock RAG shape (webhook + chat, no Tools source) ONE read-only card anchored on chat', async () => {
+		const rows = projectRows(['webhook_1', 'chat_1'], ragComponents());
+		const { found } = await discoverVx(rows, { nodeFilter: controlledByTools });
+		assert.equal(found.length, 1);
+		const { endpoint, token, roleTokens, anchorRole } = found[0]!;
+		assert.equal(endpoint.nodeId, 'store_1');
+		assert.equal(anchorRole, 'chat');
+		assert.equal(endpoint.anchorRole, 'chat');
+		assert.equal(endpoint.readOnly, true);
+		assert.equal(endpoint.state, 'probing');
+		assert.equal(endpoint.running, true);
+		assert.equal(endpoint.stateDetail, READ_ONLY_DETAIL);
+		assert.equal(READ_ONLY_DETAIL, 'Read-only: no Tools source is running');
+		assert.deepEqual(endpoint.missingRoles, ['tools']);
+		assert.equal(endpoint.source, '');
+		assert.equal(token, rows[1]!.token);
+		assert.deepEqual(roleTokens, { ingest: rows[0]!.token, chat: rows[1]!.token });
+	});
+
+	it('anchors on ingest when only an ingest source runs (chat first, then ingest)', async () => {
+		const rows = projectRows(['ingest_1']);
+		const { found } = await discoverVx(rows, { nodeFilter: controlledByTools });
+		assert.deepEqual(found.map((f) => f.endpoint.nodeId), ['store_1']);
+		for (const f of found) {
+			assert.equal(f.anchorRole, 'ingest');
+			assert.equal(f.endpoint.readOnly, true);
+			assert.equal(f.token, rows[0]!.token);
+		}
+	});
+
+	it('nodeFilter drops store_2: with a Tools source only the nodes it controls become cards', async () => {
+		const seen: Array<{ id: string | undefined } & INodeFilterGroup> = [];
+		const { found } = await discoverVx(projectRows(['ingest_1', 'chat_1', 'tools_1']), {
+			nodeFilter: (component, group) => {
+				seen.push({ id: component.id, ...group });
+				return controlledByTools(component, group);
+			},
+		});
+		assert.deepEqual(found.map((f) => f.endpoint.nodeId), ['store_1']);
+		// Asked only about components of the app's providers, with the group described.
+		assert.deepEqual(seen.map((s) => s.id), ['store_1', 'store_2']);
+		assert.deepEqual(seen[0], { id: 'store_1', toolsSource: 'tools_1', toolsSources: ['tools_1'], anchorRole: 'tools', boundRoles: ['ingest', 'chat', 'tools'] });
+		// Without a filter both store instances are listed.
+		const all = await discoverVx(projectRows(['ingest_1', 'chat_1', 'tools_1']));
+		assert.deepEqual(all.found.map((f) => f.endpoint.nodeId), ['store_1', 'store_2']);
+	});
+
+	it('never lists store_2, whether or not the Tools source runs: the read-only card is store_1, under the callable card\'s key', async () => {
+		const callable = (await discoverVx(projectRows(['ingest_1', 'chat_1', 'tools_1']), { nodeFilter: controlledByTools })).found;
+		assert.deepEqual(callable.map((f) => f.endpoint.nodeId), ['store_1']);
+		for (const [sources, anchor] of [[['ingest_1', 'chat_1'], 'chat'], [['chat_1'], 'chat'], [['ingest_1'], 'ingest']] as const) {
+			const { found } = await discoverVx(projectRows(sources), { nodeFilter: controlledByTools });
+			assert.deepEqual(found.map((f) => f.endpoint.nodeId), ['store_1'], `sources ${sources.join('+')}`);
+			assert.equal(found[0]!.endpoint.readOnly, true);
+			assert.equal(found[0]!.anchorRole, anchor);
+			assert.equal(found[0]!.endpoint.key, callable[0]!.endpoint.key);
+		}
+	});
+
+	it('tells the filter which Tools components the pipeline has, running or not (by source id or provider)', async () => {
+		const seen: INodeFilterGroup[] = [];
+		const record = (component: IExplorerComponent, group: INodeFilterGroup): boolean => {
+			seen.push(group);
+			return controlledByTools(component, group);
+		};
+		await discoverVx(projectRows(['chat_1']), { nodeFilter: record });
+		assert.deepEqual(seen[0], { toolsSource: null, toolsSources: ['tools_1'], anchorRole: 'chat', boundRoles: ['chat'] });
+		// A Tools source under another id is found by its provider.
+		seen.length = 0;
+		const renamed = vectorComponents().map((c) => (c.id === 'tools_1' ? { ...c, id: 'agent_tools' } : c.control ? { ...c, control: [{ classType: 'tool', from: 'agent_tools' }] } : c));
+		const { found } = await discoverVx(projectRows(['chat_1'], renamed), { nodeFilter: record });
+		assert.deepEqual(seen[0]!.toolsSources, ['agent_tools']);
+		assert.deepEqual(found.map((f) => f.endpoint.nodeId), ['store_1']);
+		// The stock RAG pipeline has no Tools component at all.
+		seen.length = 0;
+		await discoverVx(projectRows(['webhook_1', 'chat_1'], ragComponents()), { nodeFilter: record });
+		assert.deepEqual(seen[0]!.toolsSources, []);
+	});
+
+	it('keeps every store of a pipeline with no Tools component (stock RAG)', async () => {
+		const components = ragComponents().concat([{ id: 'store_9', provider: 'qdrant', name: 'Archive' }]);
+		const { found } = await discoverVx(projectRows(['webhook_1', 'chat_1'], components), { nodeFilter: controlledByTools });
+		assert.deepEqual(found.map((f) => f.endpoint.nodeId), ['store_1', 'store_9']);
+		assert.equal(found.every((f) => f.endpoint.readOnly === true), true);
+	});
+
+	it('controlledByTools: the running Tools source\'s nodes; else any Tools component\'s; else every node', () => {
+		const viaTools1 = { id: 'store_1', control: [{ from: 'tools_1', classType: 'tool' }] };
+		const viaTools2 = { id: 'store_3', control: [{ from: 'tools_2', classType: 'tool' }] };
+		const free = { id: 'store_2' };
+		const group = (toolsSource: string | null, toolsSources: string[]): INodeFilterGroup => ({ toolsSource, toolsSources, anchorRole: 'chat', boundRoles: [] });
+		const keep = (g: INodeFilterGroup) => [viaTools1, viaTools2, free].filter((c) => controlledByTools(c, g)).map((c) => c.id);
+		assert.deepEqual(keep(group('tools_1', ['tools_1', 'tools_2'])), ['store_1']);
+		assert.deepEqual(keep(group(null, ['tools_1', 'tools_2'])), ['store_1', 'store_3']);
+		assert.deepEqual(keep(group(null, [])), ['store_1', 'store_3', 'store_2']);
+	});
+
+	it('hands the filter a frozen description of the group, so one call cannot change what the next sees', async () => {
+		const seen: INodeFilterGroup[] = [];
+		await discoverVx(projectRows(['ingest_1', 'chat_1']), {
+			nodeFilter: (_component, group) => {
+				seen.push(group);
+				assert.throws(() => (group.boundRoles as string[]).push('tools'), TypeError);
+				assert.throws(() => (group.toolsSources as string[]).push('x'), TypeError);
+				return true;
+			},
+		});
+		assert.equal(seen.length, 2);
+		for (const group of seen) {
+			assert.equal(Object.isFrozen(group), true);
+			assert.deepEqual(group.boundRoles, ['ingest', 'chat']);
+			assert.deepEqual(group.toolsSources, ['tools_1']);
+		}
+	});
+
+	it('copies only id, provider, name and control edges of every component onto the endpoint, never config', async () => {
+		const { found } = await discoverVx(projectRows(['chat_1', 'tools_1']), { nodeFilter: controlledByTools });
+		const { endpoint } = found[0]!;
+		assert.deepEqual(endpoint.components?.map((c) => c.id), ['ingest_1', 'chat_1', 'tools_1', 'parse_1', 'embed_1', 'store_1', 'store_2', 'llm_1']);
+		assert.deepEqual(endpoint.components?.find((c) => c.id === 'store_1'), { id: 'store_1', provider: 'qdrant', name: 'Store', control: [{ from: 'tools_1', classType: 'tool' }] });
+		assert.deepEqual(endpoint.components?.find((c) => c.id === 'parse_1'), { id: 'parse_1', provider: 'parse' });
+		const text = JSON.stringify(found.map((f) => f.endpoint));
+		assert.equal(text.includes(CONFIG_SENTINEL), false);
+		assert.equal(text.includes('"config"'), false);
+		assert.equal(text.includes('"input"'), false);
+	});
+
+	it('drops malformed components and control edges instead of copying them', async () => {
+		const components = [
+			...vectorComponents(),
+			null, 'x', { provider: 'qdrant' }, { id: 7, provider: 'qdrant' },
+			{ id: 'odd_1', provider: 'parse', name: 3, control: [null, { from: 9 }, { from: 'tools_1', classType: 'tool', extra: CONFIG_SENTINEL }], secret: CONFIG_SENTINEL },
+		] as unknown as ReturnType<typeof vectorComponents>;
+		const { found } = await discoverVx(projectRows(['tools_1'], components), { nodeFilter: controlledByTools });
+		const odd = found[0]!.endpoint.components?.find((c) => c.id === 'odd_1');
+		assert.deepEqual(odd, { id: 'odd_1', provider: 'parse', control: [{ from: 'tools_1', classType: 'tool' }] });
+		assert.equal(found[0]!.endpoint.components?.length, 9);
+		assert.equal(JSON.stringify(found).includes(CONFIG_SENTINEL), false);
+	});
+
+	it('keeps the key stable while ingest_1 restarts, and whichever ingest source fills the role', async () => {
+		const keyOf = async (sources: string[], components = vectorComponents()) => (await discoverVx(projectRows(sources, components), { nodeFilter: controlledByTools })).found[0]!.endpoint.key;
+		const all = await keyOf(['ingest_1', 'chat_1', 'tools_1']);
+		assert.equal(await keyOf(['chat_1', 'tools_1']), all);
+		assert.equal(await keyOf(['tools_1']), all);
+		const hook = vectorComponents().map((c) => (c.id === 'ingest_1' ? { ...c, id: 'webhook_1', provider: 'webhook' } : c));
+		assert.equal(await keyOf(['webhook_1', 'chat_1', 'tools_1'], hook), all);
+		assert.deepEqual(parseEndpointKey(all)?.roles, { chat: '~chat', ingest: '~dropper+webhook', tools: '~tools' });
+		assert.equal(legacyKeyFromKey(all), null);
+	});
+
+	it('a read-only card and the callable card of the same node share one key (it is one connection)', async () => {
+		const readOnly = (await discoverVx(projectRows(['chat_1']), { nodeFilter: controlledByTools })).found.find((f) => f.endpoint.nodeId === 'store_1')!;
+		const callable = (await discoverVx(projectRows(['chat_1', 'tools_1']), { nodeFilter: controlledByTools })).found[0]!;
+		assert.equal(readOnly.endpoint.key, callable.endpoint.key);
+	});
+
+	it('never groups rows that carry no project_id; the tools card wins a shared key over a read-only lookalike', async () => {
+		const chat = projectRows(['chat_1'], vectorComponents(), { projectId: null })[0]!;
+		const tools = projectRows(['tools_1'], vectorComponents(), { projectId: null })[0]!;
+		for (const rows of [[chat, tools], [tools, chat]]) {
+			const { found } = await discoverVx(rows, { nodeFilter: controlledByTools });
+			const store1 = found.filter((f) => f.endpoint.nodeId === 'store_1');
+			assert.equal(store1.length, 1);
+			assert.equal(store1[0]!.endpoint.readOnly, false);
+			assert.equal(store1[0]!.endpoint.projectId, '');
+			// The chat row was NOT merged into the tools card.
+			assert.deepEqual(store1[0]!.endpoint.roles, { ingest: null, chat: null, tools: { source: 'tools_1' } });
+			assert.deepEqual(store1[0]!.roleTokens, { tools: tools.token });
+			// No phantom read-only store_2 from the chat row's own group.
+			assert.deepEqual(found.map((f) => f.endpoint.nodeId), ['store_1']);
+		}
+		// Alone, a chat row with no project id is its own read-only card.
+		const alone = await discoverVx([chat], { nodeFilter: controlledByTools });
+		assert.deepEqual(alone.found.map((f) => f.endpoint.nodeId), ['store_1']);
+		assert.equal(alone.found.every((f) => f.endpoint.readOnly === true && f.anchorRole === 'chat'), true);
+	});
+
+	it('never borrows a source across owners or run kinds', async () => {
+		const rows = [
+			...projectRows(['chat_1']),
+			...projectRows(['tools_1'], vectorComponents(), { runKind: 'deploy', ownerKind: 'team', ownerId: 'team-1' }),
+		];
+		const { found } = await discoverVx(rows, { nodeFilter: controlledByTools });
+		const dev = found.filter((f) => f.endpoint.runKind === 'dev');
+		const deploy = found.filter((f) => f.endpoint.runKind === 'deploy');
+		assert.equal(deploy.length, 1);
+		assert.deepEqual(deploy[0]!.endpoint.roles, { ingest: null, chat: null, tools: { source: 'tools_1' } });
+		assert.equal(dev.every((f) => f.endpoint.readOnly === true), true);
+		assert.notEqual(dev[0]!.endpoint.key, deploy[0]!.endpoint.key);
+	});
+
+	it('NEVER puts a role token inside an endpoint', async () => {
+		const rows = projectRows(['ingest_1', 'chat_1', 'tools_1']);
+		const { found } = await discoverVx(rows);
+		const text = JSON.stringify(found.map((f) => f.endpoint));
+		for (const r of rows) assert.equal(text.includes(r.token), false);
+		assert.equal(text.includes('tk_sentinel'), false);
+	});
+
+	it('ignores a project none of whose running sources fills a role', async () => {
+		const { found } = await discoverVx(projectRows(['other_1'], vectorComponents().concat([{ id: 'other_1', provider: 'scheduler' }])));
+		assert.deepEqual(found, []);
+	});
+
+	it('leaves single-role (SQL, Graph) endpoints exactly as before: no components, anchorRole or readOnly', async () => {
+		const world = fakeWorld([row()]);
+		const found = await discoverToolEndpoints(world.client, { providers: DB, roles: SINGLE_TOOLS_ROLE });
+		const { endpoint, roleTokens, anchorRole } = found[0]!;
+		assert.equal('components' in endpoint || 'anchorRole' in endpoint || 'readOnly' in endpoint, false);
+		assert.equal(isMultiRoleEndpoint(endpoint), false);
+		// The discovery result still names its role and token, for the store's vault only.
+		assert.equal(anchorRole, 'tools');
+		assert.deepEqual(roleTokens, { tools: world.rows[0]!.token });
+	});
+});
+
+describe('discoverToolEndpoints — onRunning (which tasks run, token-free)', () => {
+	it('reports every usable running row once, endpoint or not, as its project id and source only', async () => {
+		const rows = [
+			...projectRows(['tools_1', 'ingest_1'], vectorComponents('rocketride_vector')),
+			// Another app's pipeline: no endpoint here, but it is running.
+			row({ source: 'tools_9', pipeline: { project_id: 'other', components: [{ id: 'db_1', provider: 'db_postgres' }] } }),
+			// A pipeline with no project id.
+			row({ source: 'chat_7', pipeline: { components: [] } }),
+		];
+		const world = fakeWorld([...rows, { source: 'no_token' } as unknown as ReturnType<typeof row>]);
+		const reports: unknown[] = [];
+		const found = await discoverToolEndpoints(world.client, { providers: VECTOR, roles: VECTOR_ROLES, nodeFilter: controlledByTools, onRunning: (running) => reports.push(running) });
+		assert.deepEqual(found.map((f) => f.endpoint.nodeId), ['store_1']);
+		assert.equal(reports.length, 1);
+		assert.deepEqual(reports[0], [
+			{ projectId: 'vp', source: 'tools_1' },
+			{ projectId: 'vp', source: 'ingest_1' },
+			{ projectId: 'other', source: 'tools_9' },
+			{ projectId: '', source: 'chat_7' },
+		]);
+		const text = JSON.stringify(reports);
+		assert.equal(rows.some((r) => text.includes(r.token)), false);
+	});
+
+	it('also reports the caller\'s own run in another organization, which never becomes an endpoint', async () => {
+		const identity: IExplorerIdentity = { userId: 'u1', orgId: 'org-B', devTeam: 'team-b1', teamPermissions: { 'team-b1': ['task.data'] }, orgPermissions: [] };
+		const world = fakeWorld([row({ teamId: 'team-a1', source: 'own_dev_in_A' })]);
+		let reported: unknown = null;
+		const found = await discoverToolEndpoints(world.client, { providers: DB, roles: SINGLE_TOOLS_ROLE, identity, onRunning: (running) => { reported = running; } });
+		assert.deepEqual(found, []);
+		assert.deepEqual(reported, [{ projectId: 'proj-1', source: 'own_dev_in_A' }]);
+	});
+
+	it('is not called when the task listing fails', async () => {
+		// The listing fails: the fake cannot read its rows.
+		const world = fakeWorld(null as unknown as ReturnType<typeof row>[]);
+		let calls = 0;
+		await assert.rejects(discoverToolEndpoints(world.client, { providers: DB, roles: SINGLE_TOOLS_ROLE, onRunning: () => { calls += 1; } }));
+		assert.equal(calls, 0);
 	});
 });
 

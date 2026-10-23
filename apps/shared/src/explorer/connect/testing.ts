@@ -25,12 +25,13 @@
 // =============================================================================
 //
 // NOT part of the library surface (the barrel does not export it). Shared by
-// the discovery, session and store suites so each builds the same fake world:
-// a `getTasks` that returns what the real server returns, and a `tool` whose
-// behaviour a test scripts per call.
+// the discovery, session and store suites (and the apps' own suites) so each
+// builds the same fake world: a task listing that returns what the real
+// server returns, a `tool` whose behaviour a test scripts per call, and
+// `sendFiles` / `chat` for the role channels of a multi-role connection.
 // =============================================================================
 
-import type { IExplorerClient } from '../types';
+import type { IExplorerClient, ISendFile } from '../types';
 import type { IStoreClock } from './store';
 
 // =============================================================================
@@ -58,7 +59,23 @@ export interface IFakeRow {
 	/** Owner id. */
 	ownerId: string;
 	/** The project dict. */
-	pipeline: { project_id?: string; name?: string; components?: { id?: string; provider?: string; name?: string }[] } | null;
+	pipeline: { project_id?: string; name?: string; components?: IFakeComponent[] } | null;
+}
+
+/** A pipeline component as the server sends it (config included, which discovery must never copy). */
+export interface IFakeComponent {
+	/** Component id. */
+	id?: string;
+	/** Provider. */
+	provider?: string;
+	/** Display name. */
+	name?: string;
+	/** Data-lane edges into it. */
+	input?: { lane?: string; from?: string }[];
+	/** Control edges into it (`{ classType: 'tool', from: <tools source> }`). */
+	control?: { classType?: string; from?: string }[];
+	/** The node's configuration; tests put a secret sentinel here. */
+	config?: Record<string, unknown>;
 }
 
 /**
@@ -87,6 +104,73 @@ export function row(over: Partial<IFakeRow> = {}): IFakeRow {
 		},
 		...over,
 	};
+}
+
+// =============================================================================
+// MULTI-ROLE PIPELINES (Vector Explorer shapes)
+// =============================================================================
+
+/** A config value no endpoint, snapshot or key may ever contain. */
+export const CONFIG_SENTINEL = 'cfg_sentinel_secret';
+
+/**
+ * The Vector Explorer template's components: `ingest_1` (dropper), `chat_1`
+ * and `tools_1` sources; `store_1` and `embed_1` controlled by `tools_1`;
+ * `store_2`, the chat path's second instance of the same store, controlled by
+ * nothing.
+ *
+ * @param store - The store provider.
+ * @returns The components.
+ */
+export function vectorComponents(store = 'qdrant'): IFakeComponent[] {
+	const tool = [{ classType: 'tool', from: 'tools_1' }];
+	return [
+		{ id: 'ingest_1', provider: 'dropper', name: 'Ingest' },
+		{ id: 'chat_1', provider: 'chat', name: 'Chat' },
+		{ id: 'tools_1', provider: 'tools', name: 'Tools' },
+		{ id: 'parse_1', provider: 'parse', input: [{ lane: 'tags', from: 'ingest_1' }] },
+		{ id: 'embed_1', provider: 'embedding_transformer', name: 'Embedding', input: [{ lane: 'documents', from: 'parse_1' }], control: tool },
+		{ id: 'store_1', provider: store, name: 'Store', input: [{ lane: 'documents', from: 'embed_1' }], control: tool, config: { profile: 'local', local: { apikey: CONFIG_SENTINEL } } },
+		{ id: 'store_2', provider: store, name: 'Store (chat)', input: [{ lane: 'questions', from: 'embed_1' }], config: { apikey: CONFIG_SENTINEL } },
+		{ id: 'llm_1', provider: 'llm_openai_api', name: 'LLM', input: [{ lane: 'questions', from: 'store_2' }], config: { apikey: CONFIG_SENTINEL } },
+	];
+}
+
+/**
+ * The stock "RAG Chat" template's components: a `webhook_1` ingest source and
+ * a `chat_1` source, one store, no Tools source.
+ *
+ * @param store - The store provider.
+ * @returns The components.
+ */
+export function ragComponents(store = 'qdrant'): IFakeComponent[] {
+	return [
+		{ id: 'webhook_1', provider: 'webhook', name: 'Webhook' },
+		{ id: 'parse_1', provider: 'parse', input: [{ lane: 'tags', from: 'webhook_1' }] },
+		{ id: 'embedding_transformer_1', provider: 'embedding_transformer', input: [{ lane: 'questions', from: 'chat_1' }] },
+		{ id: 'store_1', provider: store, input: [{ lane: 'documents', from: 'embedding_transformer_1' }], config: { apikey: CONFIG_SENTINEL } },
+		{ id: 'chat_1', provider: 'chat', name: 'Chat' },
+		{ id: 'llm_1', provider: 'llm_openai', input: [{ lane: 'questions', from: 'store_1' }] },
+	];
+}
+
+/**
+ * One running task row per source of one multi-role project (each with its
+ * own token), all sharing the same pipeline.
+ *
+ * @param sources - The running source ids.
+ * @param components - The pipeline's components.
+ * @param over - Fields to override on every row (owner, run kind, project...).
+ * @returns The rows.
+ */
+export function projectRows(sources: readonly string[], components: IFakeComponent[] = vectorComponents(), over: Partial<IFakeRow> & { projectId?: string | null } = {}): IFakeRow[] {
+	const { projectId = 'vp', ...rest } = over;
+	return sources.map((source) => row({
+		name: 'Vector docs',
+		...rest,
+		source,
+		pipeline: { ...(projectId === null ? {} : { project_id: projectId }), name: 'Vector docs', components },
+	}));
 }
 
 // =============================================================================
@@ -127,6 +211,34 @@ export interface IFakeWorld {
 	pipelines: Record<string, Record<string, unknown> | undefined | 'throw'>;
 	/** Current and peak number of in-flight tool calls. */
 	inFlight: { now: number; peak: number };
+	/** Every `sendFiles` call, in order. */
+	uploads: IUploadCall[];
+	/** Decides each `sendFiles` outcome (default: one `complete` result per file); throw to fail it. */
+	uploadBehave: (call: IUploadCall, index: number) => unknown;
+	/** Every `chat` call, in order. */
+	chats: IChatCall[];
+	/** Decides each `chat` outcome (default: one answer); throw to fail it. */
+	chatBehave: (call: IChatCall, index: number) => unknown;
+}
+
+/** One recorded `sendFiles` call. */
+export interface IUploadCall {
+	/** The token the upload rode on. */
+	token: string;
+	/** The files. */
+	files: ISendFile[];
+	/** The concurrency asked for. */
+	maxConcurrent: number | undefined;
+}
+
+/** One recorded `chat` call. */
+export interface IChatCall {
+	/** The token the question rode on. */
+	token: string;
+	/** The question. */
+	question: unknown;
+	/** Whether an SSE callback was passed. */
+	onSSE: ((type: string, data: Record<string, unknown>) => Promise<void>) | undefined;
 }
 
 /**
@@ -145,6 +257,10 @@ export function fakeWorld(rows: IFakeRow[] = [], behave?: IFakeWorld['behave']):
 		pipelines: {},
 		inFlight: { now: 0, peak: 0 },
 		behave: behave ?? ((call) => (call.tool === 'dialect' ? { dialect: 'postgres' } : {})),
+		uploads: [],
+		uploadBehave: (call) => call.files.map((f) => ({ action: 'complete', filepath: f.file.name, bytes_sent: f.file.size, file_size: f.file.size, upload_time: 0 })),
+		chats: [],
+		chatBehave: () => ({ answers: ['[fake] answer'] }),
 		client: undefined as unknown as IExplorerClient,
 	};
 	world.client = {
@@ -169,6 +285,16 @@ export function fakeWorld(rows: IFakeRow[] = [], behave?: IFakeWorld['behave']):
 			} finally {
 				world.inFlight.now -= 1;
 			}
+		},
+		sendFiles: async (files: ISendFile[], token: string, maxConcurrent?: number) => {
+			const call: IUploadCall = { token, files, maxConcurrent };
+			world.uploads.push(call);
+			return Promise.resolve(world.uploadBehave(call, world.uploads.length - 1));
+		},
+		chat: async (options: { token: string; question: unknown; onSSE?: (type: string, data: Record<string, unknown>) => Promise<void> }) => {
+			const call: IChatCall = { token: options.token, question: options.question, onSSE: options.onSSE };
+			world.chats.push(call);
+			return Promise.resolve(world.chatBehave(call, world.chats.length - 1));
 		},
 	} as unknown as IExplorerClient;
 	return world;

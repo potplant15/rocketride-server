@@ -33,6 +33,8 @@ module:ui:
   - changed-files:
       - all-globs-to-any-file: ["apps/dropper-ui/**", "!**/scripts/**", "!**/docs/**"]
   - changed-files:
+      - all-globs-to-any-file: ["apps/vector-ui/**", "!**/scripts/**", "!**/docs/**"]
+  - changed-files:
       - all-globs-to-any-file: ["packages/shared-ui/**", "!**/scripts/**", "!**/docs/**"]
 
 module:vscode:

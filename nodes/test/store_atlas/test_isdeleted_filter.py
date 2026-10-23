@@ -22,7 +22,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Mock heavy dependencies BEFORE importing the atlas module
+# Stand in for heavy dependencies only where they are not installed: a stub
+# left in sys.modules would replace the real pymongo/numpy for every later test.
 # ---------------------------------------------------------------------------
 
 for mod_name in (
@@ -31,10 +32,12 @@ for mod_name in (
     'pymongo.database',
     'pymongo.errors',
     'pymongo.operations',
+    'numpy',
 ):
-    sys.modules.setdefault(mod_name, MagicMock())
-
-sys.modules.setdefault('numpy', MagicMock())
+    try:
+        importlib.import_module(mod_name)
+    except ImportError:
+        sys.modules.setdefault(mod_name, MagicMock())
 
 
 # ---------------------------------------------------------------------------

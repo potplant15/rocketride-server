@@ -66,6 +66,12 @@
 //  5. THE TOKEN IS A SECRET. The session reads it from the store's vault at
 //     call time and never keeps it, so nothing the session exposes (or logs,
 //     or serialises) contains one.
+//
+// A call may name another node of the same task (`opts.nodeId`; Vector calls
+// `embed` on its embedding node through the store's task). The endpoint
+// node's `dialect` answer says nothing about that node, so such a call skips
+// the capability check and the published-deadline budget (its spec's own
+// timeout, or the default, applies); everything else is the same.
 // =============================================================================
 
 import { isPlainObject } from '../checks';
@@ -180,6 +186,11 @@ export interface IInvokeOptions {
 	generation?: IGenerationTicket;
 	/** Forbid the retry for this call (probes use it so a restarting task cannot make probing recurse). */
 	retry?: false;
+	/**
+	 * Call this node of the same task instead of the endpoint's own node. The
+	 * endpoint node's capability check and published deadline do not apply to it.
+	 */
+	nodeId?: string;
 }
 
 /** One endpoint, one way to call it. */
@@ -282,12 +293,13 @@ export function createToolSession(client: IExplorerClient, endpoint: IExplorerEn
 	 *
 	 * @param spec - The tool's spec.
 	 * @param override - The per-call override.
+	 * @param info - The target node's dialect answer (null when the call targets another node).
 	 * @returns Milliseconds, or null for no client timeout.
 	 */
-	function budgetFor(spec: IToolSpec, override: number | null | undefined): number | null {
+	function budgetFor(spec: IToolSpec, override: number | null | undefined, info: Record<string, unknown> | null): number | null {
 		if (override !== undefined) return override;
 		if (spec.timeoutMs !== undefined) return spec.timeoutMs;
-		const deadline = publishedDeadlineMs(deps.info());
+		const deadline = publishedDeadlineMs(info);
 		return deadline !== undefined ? deadline + padMs : defaultTimeoutMs;
 	}
 
@@ -297,9 +309,10 @@ export function createToolSession(client: IExplorerClient, endpoint: IExplorerEn
 	 * @param tool - The tool.
 	 * @param input - Its input.
 	 * @param waitMs - The wait in ms, or null for none.
+	 * @param nodeId - The target node.
 	 * @returns The resolved value.
 	 */
-	async function attempt(tool: string, input: Record<string, unknown>, waitMs: number | null): Promise<unknown> {
+	async function attempt(tool: string, input: Record<string, unknown>, waitMs: number | null, nodeId: string): Promise<unknown> {
 		const token = deps.token();
 		if (token === undefined || token === '') {
 			throw new ExplorerToolError({ kind: 'unavailable', tool, message: `No running task for pipeline '${endpoint.pipelineName}'. Start the pipeline and retry.` });
@@ -307,7 +320,7 @@ export function createToolSession(client: IExplorerClient, endpoint: IExplorerEn
 		const call = client.tool({
 			token,
 			tool,
-			nodeId: endpoint.nodeId,
+			nodeId,
 			input,
 			...(waitMs === null ? {} : { timeout: waitMs + SDK_TIMEOUT_SLACK_MS }),
 		});
@@ -345,6 +358,13 @@ export function createToolSession(client: IExplorerClient, endpoint: IExplorerEn
 		if (!isPlainObject(input)) {
 			throw new ExplorerToolError({ kind: 'malformed', tool, message: `${tool} needs an object for its input` });
 		}
+		if (opts.nodeId !== undefined && (typeof opts.nodeId !== 'string' || opts.nodeId === '')) {
+			throw new ExplorerToolError({ kind: 'malformed', tool, message: `${tool} needs a node id (a non-empty string) when it names one` });
+		}
+		const nodeId = opts.nodeId ?? endpoint.nodeId;
+		// The endpoint node's dialect answer describes that node only.
+		const ownNode = nodeId === endpoint.nodeId;
+		const info = ownNode ? deps.info() : null;
 		const spec: IToolSpec = options.tools[tool] ?? {};
 		const ticket = opts.generation;
 		const dropIfStale = (): void => {
@@ -355,7 +375,7 @@ export function createToolSession(client: IExplorerClient, endpoint: IExplorerEn
 
 		// A tool that needs a capability the node does not advertise is refused
 		// before anything is sent, and never falls back to another tool.
-		if (spec.capability !== undefined && !hasCapability(deps.info(), spec.capability)) {
+		if (ownNode && spec.capability !== undefined && !hasCapability(info, spec.capability)) {
 			throw new ExplorerToolError({
 				kind: 'upgrade',
 				tool,
@@ -364,13 +384,13 @@ export function createToolSession(client: IExplorerClient, endpoint: IExplorerEn
 		}
 
 		const idempotent = opts.idempotent ?? spec.idempotent ?? false;
-		const waitMs = budgetFor(spec, opts.timeoutMs);
+		const waitMs = budgetFor(spec, opts.timeoutMs, info);
 		const started = now();
 		const deadlineAt = waitMs === null ? Number.POSITIVE_INFINITY : started + waitMs;
 
 		let value: unknown;
 		try {
-			value = await attempt(tool, input, waitMs);
+			value = await attempt(tool, input, waitMs, nodeId);
 		} catch (first) {
 			dropIfStale();
 			const failure = toToolError(tool, first);
@@ -393,7 +413,7 @@ export function createToolSession(client: IExplorerClient, endpoint: IExplorerEn
 			const left = deadlineAt - now();
 			if (!back || !(left > 0)) throw failure;
 			try {
-				value = await attempt(tool, input, waitMs === null ? null : left);
+				value = await attempt(tool, input, waitMs === null ? null : left, nodeId);
 			} catch (second) {
 				dropIfStale();
 				throw toToolError(tool, second);

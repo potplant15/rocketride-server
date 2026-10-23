@@ -88,6 +88,23 @@ task. Every request on the pipe (`write`, `close`, ...) carries that same
 followed immediately by the `\n` byte and the raw payload bytes -- `data` never
 appears in the JSON itself.
 
+A **tool call** uses the same command with `subcommand: "tool"`: it names the
+`tool`, optionally the `nodeId` that owns it (without one, the first node that
+has the tool answers), and its `input`; the response `body.result` is the tool's
+answer. The engine attaches the caller to every tool call itself (the kind of
+key the connection signed in with: account key, task token or public task key;
+plus the task's team and organization) and replaces any `caller` argument a
+client sends. Node tools that change data use it to decide whether to act.
+
+```json
+{
+	"type": "request",
+	"seq": 5,
+	"command": "rrext_process",
+	"arguments": { "subcommand": "tool", "tool": "stats", "nodeId": "store_1", "input": {}, "token": "$TASK_TOKEN" }
+}
+```
+
 ### Responses
 
 The engine answers each request with a **response** that echoes the original

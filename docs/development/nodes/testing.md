@@ -533,6 +533,60 @@ Integration tests execute the test cases defined in `services*.json` through a l
 ./builder nodes:test-full --pytest-pattern="llm"
 ```
 
+### Live database tests
+
+Some suites drive a node's real driver against a real database server:
+`test_rocketride_db_full.py`, `test_rocketride_vector_tools_full.py`,
+`test_vector_store_writes_full.py` and `test_store_postgres_full.py`
+(PostgreSQL with pgvector), `test_store_qdrant_full.py` (Qdrant) and
+`test_store_chroma_full.py` (Chroma). These stub the engine surface themselves.
+`test_vector_toolpath_full.py` does not: it starts the engine in `dist/server`
+(build it first) with a stand-in for the cloud database broker, starts each
+shipped Vector Explorer template (`apps/vector-ui/templates`) against the test
+servers, and calls its store and `embed` tools through the Python SDK (its
+first start installs the embedding node's requirements and loads
+all-MiniLM-L6-v2). `test_vector_wire_fixtures_full.py` regenerates vector-ui's
+wire fixtures (`apps/vector-ui/tests/fixtures/v1/live`) the same way and
+compares them. None of them needs the test server, but they cannot run in the
+mocked pass: `nodes/test/mocks` replaces `psycopg2`, `pgvector` and the vector
+store clients for the whole engine. They are listed in `DB_LIVE_SUITES` in
+`nodes/scripts/tasks.js`, which `nodes:test` ignores in its mocked pass and
+then runs in a separate pass without mocks:
+
+```bash
+./builder nodes:test-db                        # only the live database pass; the databases are required
+RR_REQUIRE_DB_TESTS=0 ./builder nodes:test-db  # the same, skipping suites whose server is unreachable
+RR_REQUIRE_DB_TESTS=1 ./builder nodes:test     # as CI runs it
+```
+
+When the databases are optional (`nodes:test` without `RR_REQUIRE_DB_TESTS`),
+each suite skips when its server is unreachable. When they are required
+(`nodes:test-db` by default, or `RR_REQUIRE_DB_TESTS` set, which the Linux CI
+leg does once its database containers are healthy), an unreachable server fails
+the suite, a suite in which no test passed fails the run, and so does any test
+that skips for a reason that does not start with `NOT RUN:`. That prefix marks a
+deliberate skip for something the CI servers do not offer, such as a
+legacy-shaped table or collection they are not seeded with.
+
+The pgvector suites (`test_store_postgres_full.py` and the `rocketride_vector`
+cases of `test_rocketride_db_full.py`) also run through a transaction-mode
+pooler, the way the cloud reaches tenant databases. With
+`RR_TEST_PGVECTOR_POOLER_DSN` set (CI points it at a PgBouncer in front of its
+pgvector container) each case runs once directly and once through the pooler,
+in the same live pass, and a required run fails unless both suites passed at
+least one pooled case; without it those cases skip with `NOT RUN:` and the task
+output says so. `scripts/acceptance/vector-explorer/validate_all.sh` always sets
+it, to the `vx-pgbouncer` container from that folder's README unless you point
+it elsewhere, so a local gate run includes the pooled cases. The servers and
+their environment variables (`RR_TEST_PG_DSN`, `RR_TEST_PGVECTOR_DSN` for the
+toolpath and wire-fixture suites, `RR_TEST_PGVECTOR_POOLER_DSN`,
+`RR_TEST_QDRANT_URL`, `RR_TEST_CHROMA_URL`, ...) are the ones
+`.github/workflows/_build.yaml` starts; run the same images locally to
+reproduce a CI failure (`scripts/acceptance/vector-explorer/containers/start.sh`
+starts them, with Qdrant, Chroma and PgBouncer pinned by the same digests and
+pgvector by the same tag). A new live suite goes into `DB_LIVE_SUITES` and is
+named `test_*_full.py`, so the mocked pass never collects it.
+
 ### Test dependencies
 
 A node installs its `requirements.txt` only when a pipeline first loads it. A test

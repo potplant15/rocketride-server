@@ -105,17 +105,25 @@ export interface IEndpointKeyParts {
 /**
  * The source a role contributes to a key.
  *
- * A BOUND role contributes the source that fills it, because distinct sources
- * are distinct connections. An UNBOUND role contributes its single declared
- * source when it has exactly one, so a connection's key does not change when
- * one of its sources starts or stops (a Vector connection's key must survive
- * `ingest_1` coming and going), and '' otherwise.
+ * A PROVIDER-MATCHED role (one with `providers`) contributes a fixed marker,
+ * `~` followed by its providers joined with `+` (Vector's ingest role:
+ * `~dropper+webhook`), whether or not a source fills it and whichever source
+ * does: such a role may be filled by `ingest_1` today and `webhook_1` in
+ * another run of the same pipeline, and the connection must keep its key (and
+ * its history) through both and through the source restarting. Generated
+ * component ids are `<provider>_<n>`, so a `~` marker does not read as one.
+ *
+ * Otherwise a BOUND role contributes the source that fills it, because distinct
+ * sources are distinct connections. An UNBOUND role contributes its single
+ * declared source when it has exactly one, so a connection's key does not
+ * change when one of its sources starts or stops, and '' otherwise.
  *
  * @param def - The role definition.
  * @param bound - The source bound to the role right now, or null.
  * @returns The source to put in the key.
  */
 export function roleKeySource(def: IRoleDef, bound: string | null): string {
+	if (def.providers !== undefined) return `~${def.providers.join('+')}`;
 	if (bound !== null) return bound;
 	return def.sources !== null && def.sources.length === 1 ? (def.sources[0] as string) : '';
 }

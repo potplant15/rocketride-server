@@ -167,12 +167,16 @@ def tools_env(monkeypatch):
                 allow_write=allow_write,
             )
 
-    yield _Tools, raw_conn
+    # The calls run as an agent's: past the node's two switches every write also
+    # runs the store write gate, which needs the engine's call context.
+    from ai.common.tool_context import ToolCallContext, tool_call
+
+    with tool_call(ToolCallContext(origin='agent', source_type=None, targeted=True, caller={'auth': 'agent'})):
+        yield _Tools, raw_conn
 
     for store in stores:
-        if store.client is not None:
-            store.client.close()
-            store.client = None
+        # The shared pgvector driver owns a connection pool; close() releases it.
+        store.close()
     with raw_conn.cursor() as cur:
         cur.execute(f'DROP TABLE IF EXISTS {TABLE}')
         raw_conn.commit()
@@ -210,7 +214,14 @@ def test_writes_are_refused_until_the_node_allows_them(tools_env):
     assert delete['success'] is False and 'rrvector.delete is disabled' in delete['error']
     # Nothing touched the database: the table was never created.
     assert not _table_exists(raw_conn)
-    assert tools.stats({}) == {'success': True, 'count': 0, 'model': '', 'vector_size': 0}
+    stats = tools.stats({})
+    # The branch's stats answer adds document and chunk counts; these four keep their meaning.
+    assert {k: stats[k] for k in ('success', 'count', 'model', 'vector_size')} == {
+        'success': True,
+        'count': 0,
+        'model': '',
+        'vector_size': 0,
+    }
 
 
 def test_tools_round_trip_on_the_real_store(tools_env):
@@ -221,11 +232,18 @@ def test_tools_round_trip_on_the_real_store(tools_env):
 
     # upsert: three documents, distinct parent paths, pre-computed embeddings
     result = tools.upsert({'documents': _docs(vectors)})
-    assert result == {'success': True, 'count': 3, 'skipped': 0}
+    # The reply also carries the write's audit block.
+    assert {k: result[k] for k in ('success', 'count', 'skipped')} == {'success': True, 'count': 3, 'skipped': 0}
     assert _table_exists(raw_conn)
 
     # stats: rows (the three documents plus the store's own schema row), model and width
-    assert tools.stats({}) == {'success': True, 'count': 4, 'model': 'test-model', 'vector_size': DIMS}
+    stats = tools.stats({})
+    assert {k: stats[k] for k in ('success', 'count', 'model', 'vector_size')} == {
+        'success': True,
+        'count': 4,
+        'model': 'test-model',
+        'vector_size': DIMS,
+    }
 
     # objdir: one entry per distinct parent path
     listing = tools.objdir({})
@@ -248,7 +266,8 @@ def test_tools_round_trip_on_the_real_store(tools_env):
     assert found['results'][0]['score'] > 0.99
 
     # delete: gone from the count and the listing
-    assert tools.delete({'object_ids': ['obj-c']}) == {'success': True, 'deleted_count': 1}
+    deleted = tools.delete({'object_ids': ['obj-c']})
+    assert (deleted['success'], deleted['deleted_count']) == (True, 1)
     assert tools.stats({})['count'] == 3
     assert '/c' not in tools.objdir({})['paths']
 
@@ -411,15 +430,16 @@ def test_the_shipped_profile_resolves_through_the_real_node(tools_env, monkeypat
         glb, inst = make({'collection': TABLE, 'expose_tools': True})
         assert glb.expose_tools is True and glb.allow_write is False
         if real_collector:
-            assert set(inst._collect_tool_methods()) == {'search', 'objdir', 'get', 'stats'}
+            reads = set(inst._collect_tool_methods())
+            assert {'search', 'objdir', 'get', 'stats', 'dialect', 'list_documents'} <= reads
+            assert reads.isdisjoint({'upsert', 'delete', 'soft_delete', 'restore'})
 
         glb, inst = make({'collection': TABLE, 'expose_tools': True, 'allow_write': True})
         assert glb.expose_tools is True and glb.allow_write is True
         if real_collector:
-            assert set(inst._collect_tool_methods()) == {'search', 'objdir', 'get', 'stats', 'upsert', 'delete'}
+            assert set(inst._collect_tool_methods()) == reads | {'upsert', 'delete', 'soft_delete', 'restore'}
     finally:
         for glb in opened:
             store = getattr(glb, 'store', None)
-            if store is not None and getattr(store, 'client', None) is not None:
-                store.client.close()
-                store.client = None
+            if store is not None:
+                store.close()

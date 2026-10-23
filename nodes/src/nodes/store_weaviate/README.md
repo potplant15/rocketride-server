@@ -33,6 +33,9 @@ The configured tool-server name defaults to `weaviate`.
 | `search` | Searches the store for a non-empty `query`; accepts optional `top_k` and metadata `filter`, and returns matching content, metadata, and scores. |
 | `upsert` | Adds or updates a non-empty `documents` array. Each document requires content and an object ID; it can provide an embedding and embedding model or use the bound embedding provider. |
 | `delete` | Deletes documents for a non-empty `object_ids` array and returns the deleted count. |
+| `list_documents` | Lists the documents one by one with their path and chunk count, in pages ordered by path; pass `next_cursor` for the next page. `deleted: 'deleted'` (or `true`) lists the trash, and `parent` keeps one exact path. |
+| `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash: their chunks stay stored but leave search, `objdir`, `get` and the listing until `restore`. Returns `matched_chunks`, the chunks it moved. |
+| `restore` | Takes the documents of a non-empty `object_ids` array out of the trash; a document not in it is left as it is. |
 
 `search` requires a bound embedding provider for semantic similarity search. The three functions return a failure object when their required input or an embedding cannot be obtained.
 
@@ -69,7 +72,7 @@ The collection is the destination for stored chunks and is created with no vecto
 
 The runtime accepts `cosine`, `dot`, `l2-squared`, `hamming`, or `manhattan` as the similarity setting, defaulting to `cosine`; another value stops initialization. It passes the selected value to the HNSW index when it creates a collection, so make the choice match the embedding space before the first ingest. Changing the setting does not recreate an existing collection's index.
 
-The retrieval score defaults to `0.5`, while the conversion code also drops results below a hard `0.20` before returning them. Raise the configured threshold if weak documents crowd the context; lower it when expected material is omitted, remembering that nothing below `0.20` can be returned. Cosine scores are converted as `(distance + 1) / 2`; the other supported metrics use a sigmoid conversion, so threshold values are not directly comparable after a metric change.
+The retrieval score defaults to `0.5`, while the conversion code also drops results below a floor of `0.20` before returning them. Raise the configured threshold if weak documents crowd the context; lower it when expected material is omitted, remembering that nothing below `0.20` can be returned. Scores are higher for closer results on every metric: cosine distance is converted as `(2 - distance) / 2` (an identical vector scores `1.0`), `dot` reports the dot product, and `l2-squared`, `hamming` and `manhattan` use `1 / (1 + distance)`. Threshold values are therefore not directly comparable after a metric change. Collections searched by an earlier release scored cosine results as `(distance + 1) / 2`, which ranked the farthest results first; thresholds tuned against those scores need retuning.
 
 ### Connection timeouts
 
@@ -84,6 +87,20 @@ key instead of treating it as a retrieval-score problem.
 
 The tool-server name defaults to `weaviate` and prefixes the three agent functions. Change it when multiple Weaviate stores are connected to the same agent so their functions do not share a namespace.
 
+### Write switches
+
+Allow document management from tool calls (`allow_writes`) is off by default.
+Turn it on in the pipeline whose Tools source should be able to remove
+documents from the collection, or add them with the `upsert` tool, through
+tool calls, for example the pipeline the Vector Explorer manages. Even when it
+is on, such a write is accepted only from a Tools source of the pipeline,
+addressed to this node; calls from the pipeline's chat or ingest sources are
+refused. Documents the pipeline's own lanes write are not affected by this
+switch.
+
+The switch does not apply to an agent in this pipeline: its `upsert` and
+`delete` calls work as they always have.
+
 ## Authentication
 
 For a cloud profile, provide the API key; the runtime uses it for the cloud connection. For a local profile, the key is optional: an empty key connects without credentials, while a supplied key is used for local authentication.
@@ -92,7 +109,7 @@ For a cloud profile, provide the API key; the runtime uses it for the cloud conn
 
 ### Search and document lifecycle
 
-Semantic search requires an embedding and does not accept a non-zero offset. Keyword search matches content with the metadata filters. Re-ingesting an object deletes its existing chunks before replacement chunks are added. The store can mark chunks deleted or active, and its default filters exclude marked-deleted chunks.
+Semantic search requires an embedding and does not accept a non-zero offset. Keyword search matches the question text against the stored content with the metadata filters. A write that holds an object's chunk 0 starts a new version of the object and deletes its existing chunks first; later writes of the same object (embedding nodes send long documents in several batches) add to it. Each chunk is stored under an id derived from its object id and chunk number, so writing the same chunk again replaces it. The file size, modification time and ingest time are stored with each chunk when the pipeline provides them. Paged reads honour their offset. The store can mark chunks deleted or active, and its default filters exclude marked-deleted chunks.
 
 Before semantic search, the driver checks that the collection is compatible with
 the query's embedding model. The collection's batch import reports an error if
@@ -108,11 +125,22 @@ scoped at query time without using collection names as routine access filters.
 
 Rendering retrieves an object's chunks in `chunkId` order and sends joined text to the callback in `renderChunkSize` groups. The node's document count is a count of stored vectors (chunks).
 
-When an object is re-ingested, the driver deletes its existing objects before
-adding replacements through Weaviate's dynamic batch API. A batch with failed
-objects raises an error after the batch ends. Keep the original source
-available for a retry, since the replacement behavior is not an all-or-nothing
-transaction across the prior objects and the new batch.
+When an object is re-ingested from its chunk 0, the driver deletes its existing
+objects before adding replacements through Weaviate's dynamic batch API. A batch
+with failed objects raises an error after the batch ends. Keep the original
+source available for a retry, since the replacement behavior is not an
+all-or-nothing transaction across the prior objects and the new batch.
+
+### Vector Explorer
+
+The Vector Explorer app supports Weaviate as **experimental**: its explorer functions are tested against an in-memory stand-in for the Weaviate client, not against a live server. What the app sees on Weaviate:
+
+- The document list pages through each document's chunk 0 by offset, in storage order (the app sorts what it has loaded), with chunk counts grouped by object id. A document whose chunk 0 is missing is not listed but is still counted in the statistics, so the list's total (documents with a chunk 0) can be lower than the statistics' document count. A document whose chunk 0 is in the trash but a later chunk is live (moved to the trash while it was still being uploaded) is listed after the others, from a read of up to 1,000 documents of the trash (the list says so when the trash holds more). Weaviate does not page past 10,000 results, so a longer list ends there with a note.
+- New collections declare the file size, modification time and ingest time of each chunk (`size`, `modifyTime` and `ingestedAt`). On a collection created by an earlier release, Weaviate's auto-schema types them on the first write (the ingest time as a date, the numbers as decimals); the app still shows them as they were written.
+- Chunk and document counts honour the active, deleted and all views (any other view is refused as invalid input); the collection's control record is never counted or listed, and its embedding model and dimension are reported from it.
+- Samples for the embedding map are taken in object-id order, and the neighbour graph is computed on the node, not by Weaviate.
+- Removing a document reports the number of chunks it removed.
+- When Weaviate fails (unreachable, or a request it rejects), the explorer, the store's tools and the pipeline's writes report `Weaviate <operation> failed: <error class> (code N)`, for reads, writes, marks, renders and the collection checks alike. The client's own message, which can name the server, is not passed on. An error raised by the node's own code is reported as it is.
 
 ## Upstream docs
 

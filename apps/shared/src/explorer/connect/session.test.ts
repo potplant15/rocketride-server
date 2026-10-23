@@ -529,3 +529,52 @@ describe('invoke — at most one retry, only when a restart is demonstrable', ()
 		assert.equal(rig.rebinds.length, 0);
 	});
 });
+
+// =============================================================================
+// PER-CALL NODE (role channels, Vector's `embed` on the embedding node)
+// =============================================================================
+
+describe('invoke — a per-call nodeId targets another node of the same task', () => {
+	it('sends the call to opts.nodeId on the endpoint\'s token, and to the endpoint\'s node without it', async () => {
+		const rig = makeSession(() => ({ vectors: [[0.1]] }));
+		await rig.invoke('embed', { texts: ['q'] }, { nodeId: 'embed_1' });
+		await rig.invoke('dialect', {});
+		assert.deepEqual(rig.world.calls.map((c) => ({ token: c.token, tool: c.tool, nodeId: c.nodeId })), [
+			{ token: 'tk_sentinel_A', tool: 'embed', nodeId: 'embed_1' },
+			{ token: 'tk_sentinel_A', tool: 'dialect', nodeId: 'g_1' },
+		]);
+	});
+
+	it('applies the endpoint node\'s capability check and deadline only to calls on that node', async () => {
+		const rig = makeSession(() => ROWS, { info: OLD_NODE_INFO });
+		// read_query needs a capability the endpoint's own (old) node lacks: refused there...
+		const own = await outcome(rig.invoke('read_query', { cypher: 'RETURN 1' }, { nodeId: 'g_1' }));
+		assert.equal((own.error as ExplorerToolError).kind, 'upgrade');
+		// ...but that node's dialect says nothing about another node, so the call is sent.
+		await rig.invoke('read_query', { cypher: 'RETURN 1' }, { nodeId: 'other_1' });
+		assert.deepEqual(rig.world.calls.map((c) => c.nodeId), ['other_1']);
+		// The endpoint node's published deadline is not another node's: the default wait applies.
+		const timed = makeSession(() => ROWS);
+		await timed.invoke('read_query', { cypher: 'RETURN 1' }, { nodeId: 'other_1' });
+		await timed.invoke('read_query', { cypher: 'RETURN 1' });
+		assert.deepEqual(timed.world.calls.map((c) => c.timeout), [DEFAULT_TIMEOUT_MS + 1_000, 30_000 + 10_000 + 1_000]);
+	});
+
+	it('refuses an empty or non-string nodeId before sending anything', async () => {
+		const rig = makeSession(() => ROWS);
+		for (const bad of ['', 7, null]) {
+			const { error } = await outcome(rig.invoke('dialect', {}, { nodeId: bad as unknown as string }));
+			assert.equal((error as ExplorerToolError).kind, 'malformed');
+		}
+		assert.equal(rig.world.calls.length, 0);
+	});
+
+	it('retries a per-node idempotent read like any other, on the same node', async () => {
+		const rig = makeSession((_call, index) => {
+			if (index === 0) throw codedError('Task was stopped', TRANSIENT_TASK_CODE);
+			return ROWS;
+		});
+		await rig.invoke('read_query', { cypher: 'RETURN 1' }, { nodeId: 'other_1', idempotent: true });
+		assert.deepEqual(rig.world.calls.map((c) => c.nodeId), ['other_1', 'other_1']);
+	});
+});

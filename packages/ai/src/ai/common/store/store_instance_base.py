@@ -44,8 +44,9 @@ from rocketlib import Entry
 from ai.common.schema import Doc, Question
 from ai.common.transform import IInstanceTransform
 
-from .document_store import VectorStoreToolMixin
+from .document_store import VectorStoreToolMixin, metadataValue
 from .store_global_base import StoreGlobalBase
+from .vx_types import CONTROL_OBJECT_ID
 
 
 class StoreInstanceBase(VectorStoreToolMixin, IInstanceTransform, ABC):
@@ -66,10 +67,19 @@ class StoreInstanceBase(VectorStoreToolMixin, IInstanceTransform, ABC):
         """Take a list of documents and add them to the vector store.
 
         Any chunks in the database that have the same object id will be removed.
+        A document whose objectId is the reserved ``'schema'`` (the collection's
+        control record) fails the write before anything is stored.
         """
         # Check it
         if self.IGlobal.store is None:
             raise Exception('No document store')
+
+        # The control record is written only by createCollection, never by the data lane
+        for document in documents:
+            if metadataValue(document, 'objectId') == CONTROL_OBJECT_ID:
+                raise Exception(
+                    f"reserved objectId '{CONTROL_OBJECT_ID}': it names the collection's control record and cannot be written"
+                )
 
         # Add the document chunks
         self.IGlobal.store.addChunks(documents)

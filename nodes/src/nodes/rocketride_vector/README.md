@@ -1,19 +1,26 @@
 # rocketride_vector
 
 A RocketRide vector store node that stores embedded document chunks and retrieves
-them by keyword or semantic similarity from the managed tenant database. Pick it
-over the SQL and graph nodes for retrieval-augmented document search.
+them by keyword or semantic similarity from a managed RocketRide database: your
+organization's, your team's or your own (see Database). Pick it over the SQL and
+graph nodes for retrieval-augmented document search.
 
 ## What it does
 
-The node writes documents from the documents lane into a pgvector-backed table,
-replacing existing chunks for the same object IDs. Questions can produce
-matching documents, answers, or enriched questions through the three configured
-question outputs. Use it when retrieval should flow through a pipeline. The
-same store can be offered to an agent or app as tools once Expose as tools is
-on; the write tools also need Allow writes through tools. Both are off by
-default because the table lives in the team's managed database. There is no
-raw-SQL execution surface.
+The node writes documents from the documents lane into a pgvector-backed table.
+A batch that carries a document's first chunk replaces every chunk stored for
+that document; a later batch of the same document adds its chunks, so a long
+document that the embedding node sends in several batches is stored whole.
+Questions can produce matching documents, answers, or enriched questions through
+the three configured question outputs. The same store can be offered to an agent
+or app as tools once Expose as tools is on, and the Vector Explorer app browses,
+maps and edits it through a Tools source; the write tools also need Allow writes
+through tools. Both are off by default because the table lives in a managed
+database. There is no raw-SQL execution surface.
+
+It stores through the same pgvector driver as the PostgreSQL store
+(`store_postgres`); the two differ only in how they reach the database and in
+their configuration.
 
 ## Lanes
 
@@ -32,51 +39,62 @@ An agent node in the same pipeline sees each function as
 function name and this node's id (`tool='search', node_id='rrvector_1'`); with
 no node id the call goes to the first node in the pipeline that owns a tool of
 that name. The functions are offered only while Expose as tools is on, which
-is off by default because the table lives in the team's managed database and
-`objdir` and `get` together return all of it. `upsert` and `delete` are offered
-only while Allow writes through tools is also on, because they change that
-table. While a switch is off the affected functions are left out of the tool
-list: an agent's call fails with "not found in tool catalog", an app's
-`client.tool` call fails with the engine's "No handler found for tool" error,
-and a direct call returns a failure object naming the switch.
+is off by default because the table lives in a managed database and `objdir`
+and `get` together return all of it. The write functions (`upsert`, `delete`,
+`soft_delete` and `restore`) are offered only while Allow
+writes through tools is also on, because they change that table. While a
+switch is off the affected functions are left out of the tool list: an agent's
+call fails with "not found in tool catalog", an app's `client.tool` call fails
+with the engine's "No handler found for tool" error, and a direct call returns
+a failure object naming the switch.
 `examples/rocketride-vector-agent.pipe` in the repository is a chat agent
 wired to this node's tools.
 
 | Function | Description |
 | --- | --- |
 | `search` | Searches the store for a non-empty `query`; accepts optional `top_k` and a metadata `filter` (`objectId`, `nodeId`, `parent`) and returns matching content, metadata, and scores. Needs the node's Embedding setting (the embedding sub-block under Parameters) configured; without it the tool returns a failure object naming the node. |
-| `objdir` | Lists the distinct parent paths in the table as a map of parent path to one object ID each; accepts optional `parent`, `offset`, and `limit`. Documents that share a parent path appear as one entry, so give each document its own parent to list them all. Deleted documents are not listed. |
-| `get` | Returns up to `limit` chunks of one document by `object_id`, sorted by chunk ID; use `offset` to retrieve subsequent pages. The reply carries `total` (the document's chunk count), `has_more`, and `truncated`. The tool pages the document itself, ordering chunks by chunk ID and then content, so `offset` behaves the same on every store; a document is read up to 10,000 chunks, and `truncated` is true when that ceiling was hit. |
-| `stats` | Returns the row (chunk) count of the whole table, including the store's one internal schema row and soft-deleted documents, the embedding model name, and the vector size. |
-| `upsert` | Adds or replaces a non-empty `documents` array (content, object ID, optional metadata, optional embedding and model). Offered only while writes are allowed. |
-| `delete` | Deletes the chunks of a non-empty `object_ids` array. `deleted_count` is the number of IDs requested, not the number of documents found. Offered only while writes are allowed. |
+| `objdir` | Lists the stored document paths, optionally under a `parent` path, with `offset` and `limit`. Deleted documents and the collection's control record are not listed. |
+| `get` | Returns up to `limit` chunks of one document by `object_id`, sorted by chunk ID; use `offset` to retrieve subsequent pages. The reply carries `total` (the document's chunk count), `has_more`, and `truncated`. The tool pages the document itself, so `offset` behaves the same on every store; a document is read up to 10,000 chunks, and `truncated` is true when that ceiling was hit. |
+| `stats` | Reports the number of stored rows, the embedding model and the vector size. |
+| `upsert` | Adds or replaces a non-empty `documents` array; each needs `content` and an `object_id`. Offered only while writes are allowed. |
+| `delete` | Removes every chunk of the documents in a non-empty `object_ids` array. Offered only while writes are allowed. |
+| `list_documents` | Lists the documents one by one with their path and chunk count, in pages ordered by path; pass `next_cursor` for the next page. `deleted: 'deleted'` (or `true`) lists the trash, and `parent` keeps one exact path. |
+| `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash: their chunks stay stored but leave search, `objdir`, `get` and the listing until `restore`. Returns `matched_chunks`. Offered only while writes are allowed. |
+| `restore` | Takes the documents of a non-empty `object_ids` array out of the trash. Offered only while writes are allowed. |
 
-The functions return `{"success": false, "error": "..."}` for a missing or
-invalid input, a missing embedding provider, or a refused write. `upsert`
-reports database errors the same way. `search` falls back to a keyword search
-when the semantic search fails and reports a failure object only if that fails
-too; `delete`, `objdir`, `get`, and `stats` raise database errors. `get` and
-`objdir` require integer pagination values (integer strings are accepted;
-booleans and floats are rejected), with `offset` at least 0 and `limit` at
-least 1. Invalid values return a failure object without querying the store.
-Missing or null values use the defaults: offset 0, limit 100 for `get`, and
-limit 1000 for `objdir`. Larger limits are capped at 100 chunks for `get`
-and 1000 paths for `objdir`.
+The Vector Explorer reads the store through the same tool surface (`dialect`,
+`list_documents`, `chunks`, `vectors`, `sample`, `project`, `neighbors` and the
+other functions of the vector tool contract), so it too needs Expose as tools.
+
+Past those two switches, every write still passes the store's write gate. An
+agent's `upsert` or `delete` goes through. A call from a Tools source (an SDK
+script, or the Vector Explorer) also needs Allow document management from tool
+calls, which is off by default, and must come from a Tools source of the
+pipeline, addressed to this node. A call the engine did not identify as coming
+from an agent or a Tools source is always refused. The collection's control
+record (object ID `schema`) can never be removed or overwritten through a tool.
+
+A refused call or an invalid input returns `{"success": false, "code": "...",
+"error": "..."}` (a call refused by one of the two switches above carries no
+`code`). `get` and `objdir` require integer pagination values, with `offset` at
+least 0 and `limit` at least 1; missing or null values use the defaults
+(offset 0, limit 100 for `get` and 1000 for `objdir`), and larger limits are
+capped at those values.
 
 ## Configuration
 
 The single cloud profile provides a table, cosine similarity, a score threshold,
-and HNSW index defaults. RocketRide provisions a per-tenant database for its
-managed database nodes, and this node resolves it from the signed-in RocketRide
-identity instead of a host, user, password, or database name you enter. On a
-server without a RocketRide cloud database (for example, a local or self-hosted
-engine with no database broker) the task fails at start with a message that
-says so; use PostgreSQL (pgvector), provider `postgres`, with your own connection
-settings there. On RocketRide Cloud, missing broker configuration is a server
-configuration error: contact the server operator to restore it and retry.
-Bind an
-embedding module for semantic search; the embedding dimension is taken from the
-first stored document rather than from a configuration field.
+and HNSW index defaults. The node uses the managed database chosen under
+Database (Organization by default); the RocketRide server authorizes it for the
+run and delivers its connection at task start, instead of a host, user,
+password, or database name you enter. On a server without a
+RocketRide cloud database (for example, a local or self-hosted engine with no
+database broker) the task fails at start with a message that says so; use
+PostgreSQL (pgvector), provider `postgres`, with your own connection settings
+there. On RocketRide Cloud, missing broker configuration is a server
+configuration error: contact the server operator to restore it and retry. Bind
+an embedding module for semantic search; the embedding dimension is taken from
+the first stored document rather than from a configuration field.
 
 ### Table
 
@@ -85,7 +103,12 @@ and embeddings. Choose a distinct table when separate corpora need separate
 retrieval indexes or retention behavior. The node accepts only an unquoted
 PostgreSQL identifier: it must start with a letter or underscore, use only
 letters, digits, and underscores, and be at most 63 characters. Invalid names
-are rejected during configuration validation and at startup.
+are rejected during configuration validation and at startup. The name is used
+in lower case, as PostgreSQL itself would read it (`MyDocs` is the table
+`mydocs`).
+
+The table is shared by every pipeline that names it on the same database: they
+all read and write the same rows.
 
 ### Score threshold and similarity metric
 
@@ -130,12 +153,24 @@ not restricted to the matches above the questions lane's score threshold;
 
 ### Allow writes through tools
 
-Off by default, and read only while Expose as tools is on. When off, `upsert`
-and `delete` are not offered: an agent's call fails with "not found in tool
-catalog", an app's with the engine's "No handler found for tool" error.
+Off by default, and read only while Expose as tools is on. When off, `upsert`,
+`delete`, `soft_delete` and `restore` are not offered: an agent's call fails with
+"not found in tool catalog", an app's with the engine's "No handler found for
+tool" error.
 `search`, `objdir`, `get`, and `stats` keep working, and the documents lane
 still writes. Turn it on only for a pipeline whose agent or app is meant to
 manage the documents in this table.
+
+### Allow document management from tool calls
+
+Off by default (`allow_writes`), and read only while Expose as tools and Allow
+writes through tools are on. Turn it on in the pipeline whose Tools source
+should be able to add and remove documents in the table, for example the
+pipeline the Vector Explorer manages. Even when it is on, a write is accepted
+only from a Tools source of the pipeline, addressed to this node; calls from
+the pipeline's chat or ingest sources are refused. Because the table is shared
+by every pipeline that names it in the same database, removing a document
+removes it for all of them. Agents need only Allow writes through tools.
 
 ### Database
 
@@ -174,17 +209,34 @@ for.
 
 ### Storage and retrieval behavior
 
-The node creates the table on the first write and creates a metric-compatible
-HNSW index then. pgvector cannot create that index for embeddings wider than
-2,000 dimensions, so the node warns and searches without the index in that
-case. Keyword search uses a content LIKE match; semantic search needs an
-embedding bound to the question and raises if none is available. Missing tables
-produce empty search results rather than an error.
+The node creates the table on the first write, with an index on object ID and
+chunk ID and, up to 2,000 dimensions, a metric-compatible HNSW index. pgvector
+cannot create the HNSW index for wider embeddings, so the node warns and
+searches without it in that case. Metadata the table has no column for, such as
+a file's size or ingest time, is kept in a `meta` JSON column. A table written by
+an earlier version of the node gets that column when the node starts; if
+another session holds the table at that moment, the node writes without it for
+now (the extra metadata is not stored) and tries again at most once a minute.
 
-Deleted objects are excluded by default, while document rendering reassembles
-stored chunks by chunkId. The store removes all existing chunks for incoming
-object IDs before inserting the replacement chunks, preventing duplicate data
-for a re-ingested object.
+Keyword search is a case-insensitive substring match on the question text.
+Semantic search needs an embedding bound to the question and raises if none is
+available; filtered searches keep scanning the HNSW index until they have enough
+rows (pgvector 0.8 and later; with an older pgvector a filtered search can
+return fewer rows than its limit, reported as the caveat
+`filtered_search_may_underfill`). Missing tables produce empty search results rather than an error. Deleted
+objects are excluded by default (a row with no deletion flag at all counts as
+not deleted), while document rendering reassembles stored chunks in chunkId
+order.
+
+### Connections
+
+The node opens at most four connections to the database, only when it needs
+them, and closes a connection that stayed idle for a minute. Every call runs in
+one short transaction that always ends: reads are read-only and limited to 30
+seconds per statement, and a batch of writes is applied together or not at all,
+one batch at a time across every pipeline writing the table. Nothing is set for
+the database session, so the node works through a transaction-mode connection
+pooler. Errors never name the database server, user or database.
 
 <!-- ROCKETRIDE:GENERATED:PARAMS START -->
 <!-- Generated by nodes:docs-generate. Do not edit by hand. -->
@@ -193,9 +245,10 @@ for a re-ingested object.
 
 | Field | Type | Description | Default |
 |---|---|---|---|
-| `rrvector.allow_write` | `boolean` | **Allow writes through tools**<br/>Permit the upsert and delete tool functions to change this table in your RocketRide cloud database. Applies only while Expose as tools is on. Leave OFF unless a trusted application or agent needs to manage documents through tools; the documents lane and the read tools (search, objdir, get, stats) are unaffected. | `false` |
+| `rrvector.allow_write` | `boolean` | **Allow writes through tools**<br/>Permit the upsert, delete, soft_delete and restore tool functions (soft_delete and restore move documents into and out of the trash; delete removes them for good) to change this table in your RocketRide cloud database. Applies only while Expose as tools is on; a call from a Tools source also needs Allow document management from tool calls. Leave OFF unless a trusted application or agent needs to manage documents through tools; the documents lane and the read tools (search, objdir, get, stats, list_documents and the Vector Explorer's) are unaffected. | `false` |
+| `rrvector.allow_writes` | `boolean` | **Allow document management from tool calls**<br/>Lets a Tools source of this pipeline add, trash, restore and remove documents through tool calls (the Vector Explorer, and the upsert, soft_delete, restore and delete tools). Off by default, and read only while Expose as tools and Allow writes through tools are on. The table is shared by every pipeline that names it in the same database. | `false` |
 | `rrvector.collection` | `string` | **Table**<br/>Name of the table to store vectors in your RocketRide cloud database. | `"rocketride"` |
-| `rrvector.expose_tools` | `boolean` | **Expose as tools**<br/>Offer this table to agents and apps as tool functions: search, objdir, get and stats, plus upsert and delete when writes through tools are allowed. Leave OFF unless a trusted application or agent in this pipeline is meant to read the table through tools; objdir and get together return the whole table, not only the matches the questions lane returns. The documents and questions lanes are unaffected. | `false` |
+| `rrvector.expose_tools` | `boolean` | **Expose as tools**<br/>Offer this table to agents and apps as tool functions: search, objdir, get, stats and list_documents (and the Vector Explorer's read tools), plus upsert, delete, soft_delete and restore when writes through tools are allowed. Leave OFF unless a trusted application or agent in this pipeline is meant to read the table through tools; objdir and get together return the whole table, not only the matches the questions lane returns. The documents and questions lanes are unaffected. | `false` |
 | `rrvector.hnsw_ef_construction` | `integer` | **HNSW ef_construction**<br/>HNSW build-time candidate list size used when the index is first created. | `64` |
 | `rrvector.hnsw_m` | `integer` | **HNSW m**<br/>HNSW graph degree (max connections per layer) used when the index is first created. | `16` |
 | `rrvector.profile` | `string` | **RocketRide cloud database**<br/>Connect to... | `"cloud"` |
@@ -209,7 +262,6 @@ for a re-ingested object.
 ## Dependencies
 
 - `psycopg2-binary`
-- `pgvector`
 
 ## Source
 

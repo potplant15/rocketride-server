@@ -34,7 +34,12 @@
 //                    The event body names the task but not its owner, so ANY
 //                    task event just asks for a (debounced) re-discovery; a
 //                    `restart` additionally asks for a re-probe, because the
-//                    node behind the same token may have changed.
+//                    node behind the same token may have changed. A `begin`
+//                    or `restart` is sent while the task is still loading, so
+//                    it also names the task (project id and source) for the
+//                    store to look for until discovery lists it, and an `end`
+//                    names the task to stop looking for (see readTaskEvent and
+//                    store.ts, "A STARTED TASK IS LOOKED FOR").
 //   window focus     `focus` and `visibilitychange` (the store rate-limits).
 //   identity         `shell:logout`, `shell:login`, `shell:accountUpdate`,
 //                    `shell:orgChanged`: a sign-out or a different user /
@@ -47,12 +52,42 @@
 import { ConnectionManager } from 'shell';
 import { isPlainObject } from './checks';
 import { identityFromConnectResult } from './connect/identity';
-import type { EndpointWatch } from './connect/store';
-import type { IExplorerClient } from './types';
+import type { EndpointWatch, ITaskEventInfo } from './connect/store';
+import type { IExplorerClient, ITaskRef } from './types';
 
 /** The monitor key and event type that deliver task lifecycle events. */
 const TASK_MONITOR_KEY = { token: '*' };
 const TASK_MONITOR_TYPES = ['task'];
+
+/**
+ * The task an `apaevt_task` body names: its `projectId` (or the stamped
+ * `project_id`) and its `source`.
+ *
+ * @param body - The event body.
+ * @returns The task, or null when the body does not say which task.
+ */
+function taskRefOf(body: Record<string, unknown>): ITaskRef | null {
+	const projectId = typeof body.projectId === 'string' ? body.projectId : typeof body.project_id === 'string' ? body.project_id : null;
+	const source = typeof body.source === 'string' && body.source !== '' ? body.source : null;
+	return projectId === null || source === null ? null : { projectId, source };
+}
+
+/**
+ * Read one `shell:event` message as what it asks of the endpoint store.
+ *
+ * @param message - The message (anything; it arrives from the network).
+ * @returns What the store is told, or null when it is not an `apaevt_task` event.
+ */
+export function readTaskEvent(message: unknown): ITaskEventInfo | null {
+	if (!isPlainObject(message) || message.event !== 'apaevt_task') return null;
+	const body = isPlainObject(message.body) ? message.body : null;
+	const action = body?.action;
+	const info: ITaskEventInfo = { reprobe: action === 'restart' };
+	const ref = body === null ? null : taskRefOf(body);
+	if (ref !== null && (action === 'begin' || action === 'restart')) info.started = ref;
+	else if (ref !== null && action === 'end') info.ended = ref;
+	return info;
+}
 
 /**
  * Build the watch an endpoint store attaches with.
@@ -70,10 +105,8 @@ export function createShellWatch(client: IExplorerClient): EndpointWatch {
 		void client.addMonitor?.(TASK_MONITOR_KEY, TASK_MONITOR_TYPES)?.catch(() => undefined);
 
 		unsubscribers.push(manager.on('shell:event', ({ event }) => {
-			const message = event as unknown;
-			if (!isPlainObject(message) || message.event !== 'apaevt_task') return;
-			const body = isPlainObject(message.body) ? message.body : null;
-			handlers.onTaskEvent({ reprobe: body?.action === 'restart' });
+			const info = readTaskEvent(event as unknown);
+			if (info !== null) handlers.onTaskEvent(info);
 		}));
 		unsubscribers.push(manager.on('shell:logout', () => handlers.onIdentity(null)));
 		unsubscribers.push(manager.on('shell:login', ({ user }) => handlers.onIdentity(identityFromConnectResult(user))));

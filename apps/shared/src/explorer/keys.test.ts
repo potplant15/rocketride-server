@@ -105,8 +105,20 @@ describe('roleKeySource', () => {
 	});
 
 	it('keeps a fixed-source role in the key while it is NOT running, so the key survives it stopping', () => {
-		assert.equal(roleKeySource(VECTOR_ROLES.roles.ingest!, null), 'ingest_1');
-		assert.equal(roleKeySource(VECTOR_ROLES.roles.ingest!, 'ingest_1'), 'ingest_1');
+		const ingest = { sources: ['ingest_1'], required: false };
+		assert.equal(roleKeySource(ingest, null), 'ingest_1');
+		assert.equal(roleKeySource(ingest, 'ingest_1'), 'ingest_1');
+	});
+
+	it('keys a provider-matched role on a fixed ~provider marker, whichever source fills it or none', () => {
+		const ingest = VECTOR_ROLES.roles.ingest!;
+		assert.equal(roleKeySource(ingest, null), '~dropper+webhook');
+		assert.equal(roleKeySource(ingest, 'ingest_1'), '~dropper+webhook');
+		assert.equal(roleKeySource(ingest, 'webhook_1'), '~dropper+webhook');
+		assert.equal(roleKeySource(VECTOR_ROLES.roles.tools!, 'tools_1'), '~tools');
+		// The marker survives the key's percent-encoding round trip.
+		const key = buildEndpointKey({ runKind: 'dev', ownerKind: 'user', ownerId: 'u1', teamId: '', projectId: 'p', roles: { ingest: '~dropper+webhook', tools: '~tools' }, nodeId: 'store_1' });
+		assert.deepEqual(parseEndpointKey(key)?.roles, { ingest: '~dropper+webhook', tools: '~tools' });
 	});
 
 	it('contributes nothing for an any-source role that is not bound', () => {

@@ -8,7 +8,10 @@ Tests for Qdrant store markDeleted / markActive payload path.
 
 Validates that soft-delete flags are written to the nested ``meta.isDeleted``
 path (matching the query filter and payload index) instead of a top-level
-``isDeleted`` field.
+``isDeleted`` field, and that the update names ``meta`` as the target key:
+Qdrant's ``set_payload`` overwrites top-level keys, so sending
+``{'meta': {'isDeleted': True}}`` would replace the whole ``meta`` object and
+drop ``objectId``, ``chunkId`` and the rest.
 
 Usage:
     python -m pytest nodes/test/store_qdrant/test_mark_deleted.py -v
@@ -52,33 +55,36 @@ class _FakeDocumentStoreBase:
         return True
 
 
-# Install module-level stubs before any qdrant imports
-_mock_store_mod = MagicMock()
-_mock_store_mod.DocumentStoreBase = _FakeDocumentStoreBase
+# Stub the client (and numpy) only while qdrant.py executes, then restore
+# sys.modules: a stub left behind would shadow the real modules for every
+# later test in the same process.
+_STUBS = (
+    'numpy',
+    'qdrant_client',
+    'qdrant_client.models',
+    'qdrant_client.http',
+    'qdrant_client.http.models',
+    'qdrant_client.conversions',
+    'qdrant_client.conversions.common_types',
+)
+_saved = {name: sys.modules.get(name) for name in _STUBS}
+try:
+    for name in _STUBS:
+        sys.modules[name] = MagicMock()
 
-_mock_config_mod = MagicMock()
-_mock_schema_mod = MagicMock()
-
-for name, mock in {
-    'numpy': MagicMock(),
-    'qdrant_client': MagicMock(),
-    'qdrant_client.models': MagicMock(),
-    'qdrant_client.http': MagicMock(),
-    'qdrant_client.http.models': MagicMock(),
-    'qdrant_client.conversions': MagicMock(),
-    'qdrant_client.conversions.common_types': MagicMock(),
-}.items():
-    sys.modules.setdefault(name, mock)
-
-
-# ---------------------------------------------------------------------------
-# Import qdrant.py DIRECTLY (bypassing __init__.py which pulls IEndpoint etc.)
-# ---------------------------------------------------------------------------
-
-_qdrant_path = NODES_SRC / 'store_qdrant' / 'qdrant.py'
-_spec = importlib.util.spec_from_file_location('_qdrant_store', str(_qdrant_path))
-_qdrant_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_qdrant_mod)
+    # -----------------------------------------------------------------------
+    # Import qdrant.py DIRECTLY (bypassing __init__.py which pulls IEndpoint etc.)
+    # -----------------------------------------------------------------------
+    _qdrant_path = NODES_SRC / 'store_qdrant' / 'qdrant.py'
+    _spec = importlib.util.spec_from_file_location('_qdrant_store', str(_qdrant_path))
+    _qdrant_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_qdrant_mod)
+finally:
+    for name, module in _saved.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
 
 Store = _qdrant_mod.Store
 
@@ -110,28 +116,26 @@ class TestQdrantMarkDeleted:
     """Verify markDeleted writes to the correct nested payload path."""
 
     def test_markDeleted_writes_meta_isDeleted_true(self):
-        """MarkDeleted must set meta.isDeleted = True, not top-level isDeleted."""
+        """MarkDeleted must set meta.isDeleted = True inside meta, not replace meta."""
         store = _make_store()
 
         store.markDeleted(['obj-1', 'obj-2'])
 
         store.client.set_payload.assert_called_once()
         _, kwargs = store.client.set_payload.call_args
-        assert kwargs['payload'] == {'meta': {'isDeleted': True}}, (
-            f'Expected {{"meta": {{"isDeleted": true}}}} but got {kwargs["payload"]}'
-        )
+        assert kwargs['payload'] == {'isDeleted': True}, kwargs['payload']
+        assert kwargs['key'] == 'meta'
 
     def test_markActive_writes_meta_isDeleted_false(self):
-        """MarkActive must set meta.isDeleted = False, not top-level isDeleted."""
+        """MarkActive must set meta.isDeleted = False inside meta, not replace meta."""
         store = _make_store()
 
         store.markActive(['obj-1'])
 
         store.client.set_payload.assert_called_once()
         _, kwargs = store.client.set_payload.call_args
-        assert kwargs['payload'] == {'meta': {'isDeleted': False}}, (
-            f'Expected {{"meta": {{"isDeleted": false}}}} but got {kwargs["payload"]}'
-        )
+        assert kwargs['payload'] == {'isDeleted': False}, kwargs['payload']
+        assert kwargs['key'] == 'meta'
 
     def test_markDeleted_skips_when_collection_missing(self):
         """MarkDeleted is a no-op when the collection does not exist."""

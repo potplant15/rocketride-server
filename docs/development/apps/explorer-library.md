@@ -85,7 +85,7 @@ A connection is a **role map**, not a provider set
 | Spec | Roles | Use |
 |---|---|---|
 | `SINGLE_TOOLS_ROLE` | one `tools` role, any source | SQL, Graph |
-| `VECTOR_ROLES` | `ingest_1`, `chat_1`, `tools_1` (`tools` required) | Vector (tested with mocks; no Vector app ships) |
+| `VECTOR_ROLES` | `ingest` (`ingest_1`, or a `dropper` or `webhook` source), `chat` (`chat_1` or a `chat` source), `tools` (`tools_1` or a `tools` source); none required; read-only anchors `chat`, then `ingest` | Vector |
 
 Multi-role specs group the running sources of **one project, owner kind, owner,
 team and run kind** into one connection. Runs that differ in any of those never
@@ -94,6 +94,52 @@ connections). A role with no running source is reported as `null` in
 `endpoint.roles` and listed in `missingRoles`; it is never borrowed from another
 run. A missing **required** role makes the endpoint `stopped`. Rows whose
 pipeline has no `project_id` are never grouped with other rows (multi-role specs).
+
+**Which row fills a role.** A row fills a role when the role's `sources` names
+its source id, or when the role's `providers` names the provider of the row's
+own source component (the component whose id is the row's `source`, read from
+the row's `pipeline.components`; a row that carries no components cannot be
+matched by provider). A declared source id wins over a provider match, then the
+lowest source id. So the stock "RAG Chat" pipeline, whose ingest source is
+`webhook_1`, fills Vector's ingest role.
+
+**Anchor and read-only connections.** The anchor role's token carries the
+connection's calls (probe, session). It is the tools role when a tools source
+runs; otherwise the first running role of the spec's `readOnlyAnchors`. An
+endpoint anchored on any other role than the tools role is **read-only**:
+`readOnly: true`, `source: ''`, and `stateDetail` "Read-only: no Tools source is
+running" (`READ_ONLY_DETAIL`) while it is probing or ready. Without
+`readOnlyAnchors`, a connection whose tools role is not running has no token,
+as before. When two groups share a key (only rows without a `project_id` can),
+a callable endpoint wins over a read-only one, which wins over a stopped one.
+
+**Multi-role endpoints** also carry `components` (every component of the
+pipeline as id, provider, name and control edges; never its config or input
+edges), `anchorRole` and `readOnly`. Single-role (SQL, Graph) endpoints carry
+none of the three, so their snapshots, document payloads and history keys are
+byte-identical to what they were; `isMultiRoleEndpoint(endpoint)` narrows an
+endpoint to `IMultiRoleEndpoint`, where the three are required.
+
+**`nodeFilter`** (an option of `createEndpointStore` and of discovery) decides
+which components of the app's providers become endpoints. It receives the
+component as the endpoint will carry it and a frozen `INodeFilterGroup`:
+
+| Field | Value |
+|---|---|
+| `toolsSource` | the running source that fills the tools role, or `null` |
+| `toolsSources` | every component of the pipeline that could fill the tools role (a declared source id or a tools provider), running or not; empty when the pipeline has no Tools source at all |
+| `anchorRole` | the role whose token carries the connection's calls |
+| `boundRoles` | the running roles, in spec order |
+
+Vector passes `controlledByTools`, exported beside it:
+
+- a Tools source runs: only the nodes it controls (`component.control` has an
+  edge from `toolsSource`), so the chat path's second instance of the same
+  store never becomes a card;
+- the pipeline has a Tools source that is not running (read-only): the nodes
+  any of `toolsSources` controls. That is the card the callable connection
+  shows, under the same key, and the chat path's store still never appears;
+- the pipeline has no Tools source (the stock RAG shape): every store.
 
 ## Endpoint keys
 
@@ -108,7 +154,12 @@ with every field percent-encoded, so a key never contains a raw `:` or `|` and
 the documents' "strip one trailing `:segment`" address rule stays exact. Role
 bindings are sorted, and a fixed-source role keeps its source in the key while
 not running, so a connection's key survives an optional source starting and
-stopping. A key is **never derived from a token**.
+stopping. A role with `providers` keys on a fixed marker, `~` and its providers
+joined with `+` (`ingest=~dropper+webhook`), whichever source fills it and
+whether one runs or not, so a Vector connection keeps its key while `ingest_1`
+restarts, when a `webhook_1` fills the role instead, and when it turns
+read-only because its tools source stopped. A key is **never derived from a
+token**.
 
 `legacyKey` is SQL Explorer's old `projectId:source:nodeId`. It is set only for
 `runKind === 'dev'`, `ownerKind === 'user'` with a known project id and a
@@ -128,14 +179,15 @@ show as one card.
 |---|---|
 | `probing` | discovered; the one `dialect` probe is pending |
 | `ready` | the probe answered |
-| `stopped` | its task is not running (kept in the list after it disappears), or a required role is missing |
+| `stopped` | its task is not running (kept in the list after it disappears), or a required role is missing, or (read-only endpoints only) its anchor source answered "not found in pipeline": "Not reachable from the `<role>` source". The engine raises that answer with no code (`packages/ai/src/ai/modules/data/data_conn.py`), so its text is the only signal; if the wording changes, these cards show `unreachable` instead |
 | `unreachable` | running, but the probe failed (not wired to a tools source, node error, timeout) |
 | `inaccessible` | the probe failed and the identity's team permissions lack `task.data` for that run's team (a hint, never a gate) |
 
 The probe runs once per endpoint, with bounded concurrency (default 4), and one
 failure never affects another. A `ready` endpoint is not probed again unless a
 refresh asks for it, its token changes, or it disappears and returns. An
-`unreachable` or `inaccessible` endpoint is probed again only on an explicit
+`unreachable` or `inaccessible` endpoint, and a read-only endpoint that is
+"Not reachable from the `<role>` source", is probed again only on an explicit
 `store.refresh()`, a restart or reconnect, `store.probe()` (Test connection) or
 a changed token, never on a focus or an ordinary task event: a probe is a tool
 call, and a tool call that reaches the task counts as activity for its idle
@@ -170,6 +222,13 @@ answers `TASK_NOT_REGISTERED` at once. A call is refused locally as
 or reported it `stopped` (a required role not running); its token is dropped
 then.
 
+A multi-role connection's other roles have tokens too. The store keeps every
+running role's token in a **role vault** beside the token vault: each discovery
+sets it, the `stopped` path (a required role not running) and `reset()` clear
+it, and a vanished endpoint keeps it, like its token. Role tokens reach no
+snapshot, endpoint, channel or session. Call a role only through
+`store.channel(client, endpoint, role)` (see [Role channels](#role-channels)).
+
 `store.reset()` forgets endpoints, probes, tokens and sessions, and drops probes
 that were in flight. It runs on sign-out and when the identity fingerprint
 (`userId|orgId|devTeam`, [`connect/identity.ts`](../../../apps/shared/src/explorer/connect/identity.ts))
@@ -180,6 +239,20 @@ Refresh is debounced (300 ms) for task events, rate-limited (5 s) for focus, and
 concurrent refreshes coalesce into one follow-up. One discovery may take at most
 30 s (`discoveryTimeoutMs`); after that the refresh ends with status `error`, so
 a server that never answers cannot leave the list refreshing forever.
+
+The engine sends a task's `begin` (or `restart`) event while the task is still
+loading, and the task listing holds running tasks only, so the refresh that event
+triggers usually comes too early, and no event follows when the task starts
+running. The store therefore remembers the task the event names (project id
+and source; `readTaskEvent` in `shellBinding.ts`) and looks again 1, 2, 4 and
+8 s after the previous look, then every 15 s, until a discovery lists that
+task, its `end` event arrives, or `startWatchMs` (default 5 minutes) has passed
+since the start event. These looks are background refreshes: they probe only
+an endpoint that is new or came back, never a `ready` one, so they do not keep
+an idle task awake. Detaching and `reset()` stop them. Without them, a card
+whose pipeline started after the list was loaded, or a Vector connection whose
+ingest source restarted, stayed out of date until the next focus or explicit
+refresh.
 
 ## Calling a tool
 
@@ -229,6 +302,38 @@ expired throw `kind: 'stale'`, which callers ignore.
 key that must be `true`; otherwise the call is refused locally as `upgrade`
 before anything is sent. The library never falls back to another tool (for
 example from `read_query` to `execute`).
+
+**Another node of the same task.** `invoke(tool, input, { nodeId })` sends the
+call to `nodeId` instead of the endpoint's node, on the same token (Vector
+calls `embed` on its embedding node). The endpoint node's `dialect` answer says
+nothing about another node, so such a call skips the capability gate and the
+published-deadline budget: the tool spec's `timeoutMs`, or the 40 s default,
+applies. An empty or non-string `nodeId` is refused as `malformed`.
+
+### Role channels
+
+`store.channel(client, endpoint, role)` returns an `IRoleChannel` on one role
+of a multi-role connection, called on **that role's own token**, read from the
+role vault at call time (a channel made before its source started works once
+it runs). `bound` says whether the store holds a token for the role. The store
+hands out the same channel for the same endpoint key, role and client until
+`reset()`, so a card may keep its channels (and use them as React
+dependencies).
+
+| Method | Calls | Notes |
+|---|---|---|
+| `sendFiles(files, { maxConcurrent? })` | `client.sendFiles` | resolves with one plain record per file, in order: a copy of the SDK's upload result, or `{ action: 'error', filepath, error }` when none came back. No client timeout, by design: a large upload legitimately takes long, and the SDK reports its progress through its own events |
+| `ask(question, { onSSE?, timeoutMs?, generation? })` | `client.chat` | `timeoutMs` bounds the wait (`timeout`; default `DEFAULT_ASK_TIMEOUT_MS`, 120 s; `null` waits without a bound), an expired `generation` drops the answer (`stale`), a non-object answer is `malformed`. Stream events reach `onSSE` only while the question is pending and its generation is current; those of a question that timed out, was replaced or already settled are dropped |
+| `invoke(tool, input, { nodeId, ... })` | `client.tool` | `nodeId` is required; the same checks and budgets as a session |
+
+**Nothing on a channel is retried**, not even an idempotent tool on
+`TASK_STOPPED`: an upload or a question sent twice is ingested or answered
+twice. A role that is not running, not in the spec, stopped or forgotten by a
+reset fails as `unavailable` before anything is sent; a client without
+`sendFiles` or `chat` fails as `upgrade`; whatever the SDK throws is `raised`
+with its `code`. `IExplorerClient.sendFiles` is typed `Promise<object[]>` so the
+SDK client (whose `UPLOAD_RESULT` has no index signature) satisfies it; the
+channel does the copy into records, so apps never see that type.
 
 ### The one retry
 
@@ -351,7 +456,8 @@ document-URI key rule), and the drawer's selection and probe rules
    `execute` is not (a call may still mark one statement it knows is a read,
    see "The one retry").
 4. Mount `useEndpointStoreLifecycle(store, client, identity)` once at the app
-   root, and call tools only through `store.session`. The store resets when
+   root, and call tools only through `store.session` (and, for a multi-role
+   connection, the other roles only through `store.channel`). The store resets when
    the identity fingerprint changes (sign-out included); the app must then
    close every connection-scoped document (keep the Connections landing) and
    clear its per-connection caches, such as schema snapshots, cached sessions
@@ -364,8 +470,11 @@ document-URI key rule), and the drawer's selection and probe rules
 5. Wire the runner's hooks and the shared components; keep the language
    (lexer, classifier, row limits, failure wording) in the app.
 6. Tests: pure logic runs under the app's `*:test` action; for `shared:test`,
-   keep suites beside the code. `connect/testing.ts` has a fake client and a
-   manual clock (not exported from the barrel).
+   keep suites beside the code. `connect/testing.ts` has a fake client (with
+   `sendFiles` and `chat` recorders), a manual clock, and multi-role pipelines:
+   `vectorComponents()` (the Vector template), `ragComponents()` (the stock RAG
+   pipeline) and `projectRows()` (one running row per source). It is not
+   exported from the barrel.
 
 ## Running the library in a dev-tool controller
 
@@ -758,7 +867,11 @@ retained registry, imported from source by relative path.
 - The React hook and the components that import from `shell` are type-checked
   and bundled but have no DOM tests: the repository has no component test
   harness. The runner's rules are covered by the pure batch suite.
-- Vector roles are tested with mocks only.
+- The multi-role API (provider roles, read-only anchors, role channels) is
+  tested with fakes in `shared:test`; Vector Explorer is its only consumer.
+- Matching a role by provider needs the row's own `pipeline.components`; the
+  `getTaskPipeline` fallback runs after grouping, so it cannot help a row that
+  carries none.
 - A pipeline launched without `project_id` can collide with a lookalike (see
   [Endpoint keys](#endpoint-keys)).
 - The server has no `TASK_RESTARTING` code and no permission-denied code, so

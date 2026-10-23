@@ -26,17 +26,29 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEndpointStore } from './store';
+import { DEFAULT_ASK_TIMEOUT_MS, DEFAULT_START_WATCH_MS, createEndpointStore } from './store';
 import type { EndpointWatch, IEndpointStore, IWatchHandlers } from './store';
-import { codedError, fakeWorld, manualClock, row } from './testing';
-import type { IFakeWorld, IManualClock, IToolCall } from './testing';
+import { CONFIG_SENTINEL, codedError, fakeWorld, manualClock, projectRows, ragComponents, row } from './testing';
+import type { IFakeRow, IFakeWorld, IManualClock, IToolCall } from './testing';
+import { READ_ONLY_DETAIL, controlledByTools } from './discovery';
 import { SINGLE_TOOLS_ROLE, VECTOR_ROLES } from '../types';
-import type { IExplorerIdentity } from '../types';
+import type { IExplorerIdentity, IRoleSpec, ISendFile } from '../types';
+import { createGeneration } from '../generation';
 import { identityFingerprint, identityFromConnectResult } from './identity';
 import { ExplorerToolError } from '../errors';
 import { checkRowEnvelope } from '../checks';
 
 const DB = new Set(['db_postgres']);
+
+/** A multi-role spec whose tools role is REQUIRED (no providers, no read-only anchors). */
+const TOOLS_REQUIRED: IRoleSpec = {
+	roles: {
+		ingest: { sources: ['ingest_1'], required: false },
+		chat: { sources: ['chat_1'], required: false },
+		tools: { sources: ['tools_1'], required: true },
+	},
+	toolsRole: 'tools',
+};
 const NEO4J_INFO = { dialect: 'neo4j', engine: { name: 'Neo4j', version: '5.26.31' }, capabilities: { read_query: true }, limits: { statement_timeout_ms: 30000 } };
 
 /** A watch that records its handlers so a test can fire task events, focus and identity changes by hand. */
@@ -527,9 +539,9 @@ describe('refresh — a vanished endpoint is stopped, a returning one is probed 
 		assert.equal(store.getState().endpoints[0]!.state, 'stopped');
 	});
 
-	it('a vector connection missing its tools source is listed stopped with no probe', async () => {
+	it('a multi-role connection missing its REQUIRED tools source is listed stopped with no probe', async () => {
 		const vec = (source: string) => row({ source, pipeline: { project_id: 'vp', components: [{ id: 'v_1', provider: 'rocketride_vector' }] } });
-		const { store, world } = make([vec('ingest_1'), vec('chat_1')], undefined, { providers: new Set(['rocketride_vector']), roles: VECTOR_ROLES });
+		const { store, world } = make([vec('ingest_1'), vec('chat_1')], undefined, { providers: new Set(['rocketride_vector']), roles: TOOLS_REQUIRED });
 		await store.refresh(world.client);
 		assert.equal(store.getState().endpoints[0]!.state, 'stopped');
 		assert.equal(probes(world), 0);
@@ -650,6 +662,209 @@ describe('refresh discipline — coalescing, debounce, focus, cleanup', () => {
 		await clock.advance(1_000);
 		// The stale handler may re-arm a timer, but the detached store's client is gone from the watch.
 		assert.equal(watch.subscribed, 1);
+	});
+});
+
+// =============================================================================
+// A STARTED TASK IS LOOKED FOR UNTIL IT RUNS
+// =============================================================================
+
+describe('a task that starts is looked for until discovery lists it (its start event comes before it runs)', () => {
+	const VX_INFO = { dialect: 'qdrant', capabilities: { remove: true }, limits: { statement_timeout_ms: 30000 } };
+	const INGEST = { projectId: 'vp', source: 'ingest_1' };
+	const NEW_TASK = { projectId: 'p-new', source: 'tools_1' };
+
+	/**
+	 * A Vector store over a fake world.
+	 *
+	 * @param rows - Task rows.
+	 * @returns The rig.
+	 */
+	function makeVx(rows: IFakeRow[]): IRig {
+		return make(rows, (call) => (call.tool === 'dialect' ? VX_INFO : { success: true }), {
+			providers: new Set(['qdrant']),
+			roles: VECTOR_ROLES,
+			nodeFilter: controlledByTools,
+			tools: { stats: { idempotent: true } },
+		});
+	}
+
+	/**
+	 * Count the discoveries a store starts: every refresh publishes `loading`
+	 * once before its one task listing, follow-ups included.
+	 *
+	 * @param store - The store.
+	 * @returns A function answering how many discoveries have started so far.
+	 */
+	function discoveries(store: IEndpointStore): () => number {
+		let started = 0;
+		let last = store.getState().status;
+		store.subscribe(() => {
+			const now = store.getState().status;
+			if (now === 'loading' && last !== 'loading') started += 1;
+			last = now;
+		});
+		return () => started;
+	}
+
+	it('gives an open connection its ingest source back after that source restarts, with no further event and no refresh', async () => {
+		const rows = projectRows(['ingest_1', 'chat_1', 'tools_1']);
+		const ingestRow = rows.find((r) => r.source === 'ingest_1')!;
+		const { store, world, clock } = makeVx(rows);
+		const looked = discoveries(store);
+		const watch = watchProbe();
+		const detach = store.attach(world.client, null, watch.watch);
+		await store.refresh(world.client);
+		const endpoint = (): ReturnType<IEndpointStore['getState']>['endpoints'][number] => store.getState().endpoints[0]!;
+		assert.deepEqual(endpoint().roles.ingest, { source: 'ingest_1' });
+
+		// ingest_1 stops: its `end` event, and discovery no longer lists it.
+		world.rows.splice(world.rows.indexOf(ingestRow), 1);
+		watch.handlers!.onTaskEvent({ reprobe: false, ended: INGEST });
+		await clock.advance(300);
+		assert.equal(endpoint().roles.ingest, null);
+		assert.equal(store.channel(world.client, endpoint(), 'ingest').bound, false);
+
+		// It starts again. Its `begin` event arrives while it is still loading,
+		// so the debounced discovery does not list it yet.
+		watch.handlers!.onTaskEvent({ reprobe: false, started: INGEST });
+		await clock.advance(300);
+		assert.equal(endpoint().roles.ingest, null);
+		const whileLoading = looked();
+
+		// Nothing announces the moment it runs: the store looks again by itself.
+		await clock.advance(5_000);
+		assert.ok(looked() > whileLoading, 'the store looked again without an event');
+		world.rows.push(ingestRow);
+		await clock.advance(15_000);
+		assert.deepEqual(endpoint().roles.ingest, { source: 'ingest_1' });
+		assert.deepEqual(endpoint().missingRoles, []);
+		assert.equal(endpoint().state, 'ready');
+		assert.equal(store.channel(world.client, endpoint(), 'ingest').bound, true);
+		// Those looks are background refreshes: the ready node was not called again.
+		assert.equal(probes(world), 1);
+
+		// Found: it stops looking.
+		const whenFound = looked();
+		await clock.advance(600_000);
+		assert.equal(looked(), whenFound);
+		assert.equal(clock.pending(), 0);
+		detach();
+	});
+
+	it('looks after 1, 2, 4 and 8 s, then every 15 s, and gives up after the start window', async () => {
+		const { store, world, clock } = make();
+		const looked = discoveries(store);
+		const watch = watchProbe();
+		const detach = store.attach(world.client, null, watch.watch);
+		await store.refresh(world.client);
+		watch.handlers!.onTaskEvent({ reprobe: false, started: NEW_TASK });
+		await clock.advance(300);
+		assert.equal(looked(), 2);
+		const looks: number[] = [];
+		for (const step of [1_000, 2_000, 4_000, 8_000, 15_000, 15_000]) {
+			await clock.advance(step - 1);
+			looks.push(looked());
+			await clock.advance(1);
+			looks.push(looked());
+		}
+		assert.deepEqual(looks, [2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8]);
+		await clock.advance(DEFAULT_START_WATCH_MS);
+		const atGiveUp = looked();
+		assert.ok(atGiveUp <= 8 + Math.ceil(DEFAULT_START_WATCH_MS / 15_000), `bounded looks (${atGiveUp})`);
+		assert.equal(clock.pending(), 0);
+		await clock.advance(600_000);
+		assert.equal(looked(), atGiveUp);
+		detach();
+	});
+
+	it('starts the steps over on a new start event', async () => {
+		const { store, world, clock } = make();
+		const looked = discoveries(store);
+		const watch = watchProbe();
+		const detach = store.attach(world.client, null, watch.watch);
+		await store.refresh(world.client);
+		watch.handlers!.onTaskEvent({ reprobe: false, started: NEW_TASK });
+		await clock.advance(300 + 1_000 + 2_000 + 4_000 + 8_000);
+		const before = looked();
+		// The next look was 15 s away; another start brings it back to 1 s after its own discovery.
+		watch.handlers!.onTaskEvent({ reprobe: false, started: { projectId: 'p-other', source: 'tools_1' } });
+		await clock.advance(300);
+		assert.equal(looked(), before + 1);
+		await clock.advance(1_000);
+		assert.equal(looked(), before + 2);
+		detach();
+	});
+
+	it('does not keep looking after an event that names no started task', async () => {
+		const { store, world, clock } = make();
+		const looked = discoveries(store);
+		const watch = watchProbe();
+		const detach = store.attach(world.client, null, watch.watch);
+		await store.refresh(world.client);
+		watch.handlers!.onTaskEvent({ reprobe: false });
+		watch.handlers!.onTaskEvent({ reprobe: false, ended: NEW_TASK });
+		await clock.advance(600_000);
+		assert.equal(looked(), 2);
+		assert.equal(clock.pending(), 0);
+		detach();
+	});
+
+	it('stops looking when the started task ends, when the store detaches, and on reset', async () => {
+		const { store, world, clock } = make();
+		const looked = discoveries(store);
+		const watch = watchProbe();
+		let detach = store.attach(world.client, null, watch.watch);
+		await store.refresh(world.client);
+
+		watch.handlers!.onTaskEvent({ reprobe: false, started: NEW_TASK });
+		await clock.advance(1_300);
+		watch.handlers!.onTaskEvent({ reprobe: false, ended: NEW_TASK });
+		await clock.advance(300);
+		const afterEnd = looked();
+		await clock.advance(600_000);
+		assert.equal(looked(), afterEnd);
+
+		watch.handlers!.onTaskEvent({ reprobe: false, started: NEW_TASK });
+		await clock.advance(300);
+		detach();
+		assert.equal(clock.pending(), 0);
+		const afterDetach = looked();
+		await clock.advance(600_000);
+		assert.equal(looked(), afterDetach);
+
+		detach = store.attach(world.client, null, watch.watch);
+		watch.handlers!.onTaskEvent({ reprobe: false, started: NEW_TASK });
+		await clock.advance(300);
+		store.reset();
+		assert.equal(clock.pending(), 0);
+		const afterReset = looked();
+		await clock.advance(600_000);
+		assert.equal(looked(), afterReset);
+		detach();
+	});
+
+	it('keeps looking after a failed discovery, within the same window', async () => {
+		const { store, world, clock } = make();
+		const looked = discoveries(store);
+		const watch = watchProbe();
+		const detach = store.attach(world.client, null, watch.watch);
+		await store.refresh(world.client);
+		// The listing fails: the fake cannot read its rows.
+		const rows = world.rows;
+		world.rows = undefined as unknown as IFakeRow[];
+		watch.handlers!.onTaskEvent({ reprobe: false, started: NEW_TASK });
+		await clock.advance(300);
+		assert.equal(store.getState().status, 'error');
+		world.rows = rows;
+		world.rows.push(row({ source: 'tools_1', pipeline: { project_id: 'p-new', components: [{ id: 'db_9', provider: 'db_postgres' }] } }));
+		await clock.advance(1_000);
+		assert.equal(store.getState().status, 'ready');
+		assert.deepEqual(store.getState().endpoints.map((e) => e.projectId).sort(), ['p-new', 'proj-1']);
+		const whenFound = looked();
+		await clock.advance(600_000);
+		assert.equal(looked(), whenFound);
+		detach();
 	});
 });
 
@@ -963,5 +1178,466 @@ describe('factory isolation — SQL, Graph and a mocked Vector store side by sid
 		await a.store.refresh(a.world.client);
 		assert.ok(aHits > 0);
 		assert.equal(bHits, 0);
+	});
+});
+
+// =============================================================================
+// MULTI-ROLE CONNECTIONS (Vector Explorer): role vault, read-only anchors, channels
+// =============================================================================
+
+describe('multi-role connections — role tokens, read-only anchors and role channels', () => {
+	const VX_INFO = { dialect: 'qdrant', capabilities: { remove: true }, limits: { statement_timeout_ms: 30000 } };
+	const FILE = (name: string): ISendFile => ({ file: { name, size: 3 } as unknown as File, objinfo: { name } });
+
+	/**
+	 * A Vector store over a fake world.
+	 *
+	 * @param rows - Task rows.
+	 * @param behave - Tool behaviour (default: dialect answers a qdrant node).
+	 * @param over - Store option overrides.
+	 * @returns The rig.
+	 */
+	function makeVx(rows: IFakeRow[], behave?: IFakeWorld['behave'], over: Partial<Parameters<typeof createEndpointStore>[0]> = {}): IRig {
+		return make(rows, behave ?? ((call) => (call.tool === 'dialect' ? VX_INFO : { success: true })), {
+			providers: new Set(['qdrant']),
+			roles: VECTOR_ROLES,
+			nodeFilter: controlledByTools,
+			tools: { stats: { idempotent: true }, embed: {} },
+			...over,
+		});
+	}
+
+	/**
+	 * The token a row set gives a source.
+	 *
+	 * @param rows - The rows.
+	 * @param source - The source id.
+	 * @returns Its token.
+	 */
+	const tokenOf = (rows: IFakeRow[], source: string): string => rows.find((r) => r.source === source)!.token;
+
+	it('lists only the nodes the Tools source controls (nodeFilter): store_2 never becomes a card', async () => {
+		const { store, world } = makeVx(projectRows(['ingest_1', 'chat_1', 'tools_1']));
+		await store.refresh(world.client);
+		const { endpoints } = store.getState();
+		assert.deepEqual(endpoints.map((e) => e.nodeId), ['store_1']);
+		assert.equal(endpoints[0]!.state, 'ready');
+		assert.equal(endpoints[0]!.readOnly, false);
+		assert.equal(endpoints[0]!.anchorRole, 'tools');
+		assert.equal(endpoints[0]!.stateDetail, undefined);
+	});
+
+	it('calls each role on ITS OWN token: tools invoke, chat ask, ingest upload', async () => {
+		const rows = projectRows(['ingest_1', 'chat_1', 'tools_1']);
+		const { store, world } = makeVx(rows);
+		await store.refresh(world.client);
+		const endpoint = store.getState().endpoints[0]!;
+		const tools = store.channel(world.client, endpoint, 'tools');
+		const chat = store.channel(world.client, endpoint, 'chat');
+		const ingest = store.channel(world.client, endpoint, 'ingest');
+		assert.deepEqual([tools.role, tools.bound, chat.bound, ingest.bound], ['tools', true, true, true]);
+
+		assert.deepEqual(await tools.invoke('embed', { texts: ['q'] }, { nodeId: 'embed_1' }), { success: true });
+		const last = world.calls[world.calls.length - 1]!;
+		assert.deepEqual({ token: last.token, tool: last.tool, nodeId: last.nodeId }, { token: tokenOf(rows, 'tools_1'), tool: 'embed', nodeId: 'embed_1' });
+
+		const streamed: string[] = [];
+		const sse = async (type: string): Promise<void> => { streamed.push(type); };
+		world.chatBehave = async (call) => {
+			await call.onSSE?.('token', { text: 'a' });
+			return { answers: ['[fake] answer'] };
+		};
+		assert.deepEqual(await chat.ask({ text: 'hello' }, { onSSE: sse }), { answers: ['[fake] answer'] });
+		assert.deepEqual(world.chats.map((c) => ({ token: c.token, question: c.question })), [{ token: tokenOf(rows, 'chat_1'), question: { text: 'hello' } }]);
+		// Stream events of the pending question reach the app's callback.
+		assert.deepEqual(streamed, ['token']);
+
+		const results = await ingest.sendFiles([FILE('a.pdf'), FILE('b.md')], { maxConcurrent: 2 });
+		assert.deepEqual(world.uploads.map((u) => ({ token: u.token, files: u.files.map((f) => f.file.name), maxConcurrent: u.maxConcurrent })), [{ token: tokenOf(rows, 'ingest_1'), files: ['a.pdf', 'b.md'], maxConcurrent: 2 }]);
+		assert.deepEqual(results.map((r) => [r.action, r.filepath]), [['complete', 'a.pdf'], ['complete', 'b.md']]);
+	});
+
+	it('copies each upload result into a plain record, one per file in order, and reports a missing one as an error', async () => {
+		const { store, world } = makeVx(projectRows(['ingest_1', 'tools_1']));
+		await store.refresh(world.client);
+		const original = { action: 'complete', filepath: 'a.pdf', bytes_sent: 3, file_size: 3, upload_time: 0.1 };
+		world.uploadBehave = () => [original, undefined];
+		const results = await store.channel(world.client, store.getState().endpoints[0]!, 'ingest').sendFiles([FILE('a.pdf'), FILE('b.md')]);
+		assert.deepEqual(results[0], original);
+		assert.notEqual(results[0], original);
+		assert.equal(results[1]!.action, 'error');
+		assert.equal(results[1]!.filepath, 'b.md');
+		assert.equal(typeof results[1]!.error, 'string');
+		// A non-array answer is malformed, not silently empty.
+		world.uploadBehave = () => ({ nope: true });
+		const bad = await store.channel(world.client, store.getState().endpoints[0]!, 'ingest').sendFiles([FILE('a.pdf')]).catch((e: unknown) => e);
+		assert.equal((bad as ExplorerToolError).kind, 'malformed');
+	});
+
+	it('refuses a missing role (not running, or not in the spec) as `unavailable` and sends nothing', async () => {
+		const { store, world } = makeVx(projectRows(['chat_1', 'tools_1']));
+		await store.refresh(world.client);
+		const endpoint = store.getState().endpoints[0]!;
+		const ingest = store.channel(world.client, endpoint, 'ingest');
+		assert.equal(ingest.bound, false);
+		const upload = await ingest.sendFiles([FILE('a.pdf')]).catch((e: unknown) => e);
+		assert.ok(upload instanceof ExplorerToolError);
+		assert.equal(upload.kind, 'unavailable');
+		assert.match(upload.message, /ingest/);
+		const unknown = store.channel(world.client, endpoint, 'nope');
+		assert.equal(unknown.bound, false);
+		for (const call of [unknown.ask('q'), unknown.invoke('stats', {}, { nodeId: 'store_1' }), unknown.sendFiles([])]) {
+			assert.equal(((await call.catch((e: unknown) => e)) as ExplorerToolError).kind, 'unavailable');
+		}
+		assert.equal(world.uploads.length + world.chats.length, 0);
+		assert.equal(world.calls.filter((c) => c.tool !== 'dialect').length, 0);
+	});
+
+	it('reads the role token at call time: a channel made while ingest was down works once it runs', async () => {
+		const rows = projectRows(['chat_1', 'tools_1']);
+		const { store, world } = makeVx(rows);
+		await store.refresh(world.client);
+		const ingest = store.channel(world.client, store.getState().endpoints[0]!, 'ingest');
+		assert.equal(ingest.bound, false);
+		world.rows.push(...projectRows(['ingest_1']));
+		await store.refresh(world.client);
+		// Same key while ingest_1 came up: the open connection is the same one.
+		assert.equal(store.getState().endpoints.length, 1);
+		assert.equal(ingest.bound, true);
+		await ingest.sendFiles([FILE('a.pdf')]);
+		assert.equal(world.uploads[0]!.token, world.rows[2]!.token);
+	});
+
+	it('NEVER retries anything on a channel, even an idempotent tool on the transient code', async () => {
+		const { store, world } = makeVx(projectRows(['ingest_1', 'chat_1', 'tools_1']), (call) => {
+			if (call.tool === 'dialect') return VX_INFO;
+			throw codedError('Task was stopped', 'TASK_STOPPED');
+		});
+		await store.refresh(world.client);
+		const before = store.getState();
+		const endpoint = before.endpoints[0]!;
+		world.chatBehave = () => { throw codedError('Task was stopped', 'TASK_STOPPED'); };
+		world.uploadBehave = () => { throw codedError('Task was stopped', 'TASK_STOPPED'); };
+		const errors = [
+			await store.channel(world.client, endpoint, 'tools').invoke('stats', {}, { nodeId: 'store_1' }).catch((e: unknown) => e),
+			await store.channel(world.client, endpoint, 'chat').ask('q').catch((e: unknown) => e),
+			await store.channel(world.client, endpoint, 'ingest').sendFiles([FILE('a.pdf')]).catch((e: unknown) => e),
+		] as ExplorerToolError[];
+		assert.deepEqual(errors.map((e) => [e.kind, e.code]), [['raised', 'TASK_STOPPED'], ['raised', 'TASK_STOPPED'], ['raised', 'TASK_STOPPED']]);
+		assert.equal(world.calls.filter((c) => c.tool === 'stats').length, 1);
+		assert.equal(world.chats.length, 1);
+		assert.equal(world.uploads.length, 1);
+		// No re-discovery was started to look for a restart: the snapshot never changed.
+		assert.equal(store.getState(), before);
+	});
+
+	it('requires opts.nodeId on a channel invoke', async () => {
+		const { store, world } = makeVx(projectRows(['tools_1']));
+		await store.refresh(world.client);
+		const tools = store.channel(world.client, store.getState().endpoints[0]!, 'tools');
+		const error = await tools.invoke('stats', {}).catch((e: unknown) => e);
+		assert.equal((error as ExplorerToolError).kind, 'malformed');
+		assert.equal(world.calls.filter((c) => c.tool === 'stats').length, 0);
+	});
+
+	it('bounds ask() by its own timeout and drops an answer whose generation expired', async () => {
+		const { store, world, clock } = makeVx(projectRows(['chat_1', 'tools_1']));
+		await store.refresh(world.client);
+		const chat = store.channel(world.client, store.getState().endpoints[0]!, 'chat');
+		world.chatBehave = () => new Promise(() => undefined);
+		const pending = chat.ask('slow', { timeoutMs: 5_000 }).catch((e: unknown) => e);
+		await clock.advance(5_000);
+		const timeout = (await pending) as ExplorerToolError;
+		assert.equal(timeout.kind, 'timeout');
+		assert.equal(clock.pending(), 0);
+
+		world.chatBehave = () => ({ answers: ['late'] });
+		const generation = createGeneration();
+		const ticket = generation.next();
+		generation.invalidate();
+		const stale = (await chat.ask('q', { generation: ticket }).catch((e: unknown) => e)) as ExplorerToolError;
+		assert.equal(stale.kind, 'stale');
+
+		world.chatBehave = () => 'not an object';
+		assert.equal(((await chat.ask('q').catch((e: unknown) => e)) as ExplorerToolError).kind, 'malformed');
+
+		// A client that throws before returning a promise still fails as one error class.
+		const throwing = { ...world.client, chat: () => { throw new Error('Question cannot be empty'); } };
+		const early = (await store.channel(throwing, store.getState().endpoints[0]!, 'chat').ask(null).catch((e: unknown) => e)) as ExplorerToolError;
+		assert.ok(early instanceof ExplorerToolError);
+		assert.equal(early.kind, 'raised');
+		assert.equal(early.message, 'Question cannot be empty');
+	});
+
+	it('refuses as `upgrade` when the client cannot upload or chat, before sending anything', async () => {
+		const { store, world } = makeVx(projectRows(['ingest_1', 'chat_1', 'tools_1']));
+		await store.refresh(world.client);
+		const endpoint = store.getState().endpoints[0]!;
+		const bare = { ...world.client, sendFiles: undefined, chat: undefined };
+		assert.equal(((await store.channel(bare, endpoint, 'ingest').sendFiles([FILE('a')]).catch((e: unknown) => e)) as ExplorerToolError).kind, 'upgrade');
+		assert.equal(((await store.channel(bare, endpoint, 'chat').ask('q').catch((e: unknown) => e)) as ExplorerToolError).kind, 'upgrade');
+	});
+
+	it('keeps role tokens for a vanished endpoint, so a restarting source still answers', async () => {
+		const rows = projectRows(['chat_1', 'tools_1']);
+		const { store, world } = makeVx(rows);
+		await store.refresh(world.client);
+		const endpoint = store.getState().endpoints[0]!;
+		const chatToken = tokenOf(rows, 'chat_1');
+		world.rows.length = 0;
+		await store.refresh(world.client);
+		assert.equal(store.getState().endpoints[0]!.state, 'stopped');
+		const chat = store.channel(world.client, endpoint, 'chat');
+		assert.equal(chat.bound, true);
+		await chat.ask('still there?');
+		assert.equal(world.chats[0]!.token, chatToken);
+	});
+
+	it('clears role tokens when a required role is not running (the stopped path) and on reset', async () => {
+		const rows = projectRows(['chat_1', 'tools_1']);
+		const { store, world } = makeVx(rows, undefined, { roles: TOOLS_REQUIRED });
+		await store.refresh(world.client);
+		const endpoint = store.getState().endpoints[0]!;
+		assert.equal(store.channel(world.client, endpoint, 'chat').bound, true);
+		// tools_1 stops: discovery reports the connection stopped (required role missing).
+		world.rows.splice(world.rows.findIndex((r) => r.source === 'tools_1'), 1);
+		await store.refresh(world.client);
+		assert.equal(store.getState().endpoints[0]!.state, 'stopped');
+		const chat = store.channel(world.client, endpoint, 'chat');
+		assert.equal(chat.bound, false);
+		assert.equal(((await chat.ask('q').catch((e: unknown) => e)) as ExplorerToolError).kind, 'unavailable');
+
+		const fresh = makeVx(projectRows(['chat_1', 'tools_1']));
+		await fresh.store.refresh(fresh.world.client);
+		const kept = fresh.store.getState().endpoints[0]!;
+		fresh.store.reset();
+		const after = fresh.store.channel(fresh.world.client, kept, 'tools');
+		assert.equal(after.bound, false);
+		assert.equal(((await after.invoke('stats', {}, { nodeId: 'store_1' }).catch((e: unknown) => e)) as ExplorerToolError).kind, 'unavailable');
+		assert.equal(world.chats.length + fresh.world.chats.length, 0);
+	});
+
+	it('NEVER lets a role token or a component config reach the snapshot, a channel or a serialised copy', async () => {
+		const rows = projectRows(['ingest_1', 'chat_1', 'tools_1']);
+		const { store, world } = makeVx(rows);
+		await store.refresh(world.client);
+		const text = JSON.stringify(store.getState());
+		for (const r of rows) assert.equal(text.includes(r.token), false);
+		assert.equal(text.includes('tk_sentinel'), false);
+		assert.equal(text.includes(CONFIG_SENTINEL), false);
+		const endpoint = store.getState().endpoints[0]!;
+		for (const role of ['ingest', 'chat', 'tools']) {
+			assert.equal(JSON.stringify(store.channel(world.client, endpoint, role)).includes('tk_sentinel'), false);
+		}
+	});
+
+	it('opens the stock RAG shape read-only on its chat token, and keeps the read-only detail once ready', async () => {
+		const rows = projectRows(['webhook_1', 'chat_1'], ragComponents());
+		const { store, world } = makeVx(rows);
+		await store.refresh(world.client);
+		const [endpoint] = store.getState().endpoints;
+		assert.equal(endpoint!.nodeId, 'store_1');
+		assert.equal(endpoint!.state, 'ready');
+		assert.equal(endpoint!.readOnly, true);
+		assert.equal(endpoint!.anchorRole, 'chat');
+		assert.equal(endpoint!.stateDetail, READ_ONLY_DETAIL);
+		// The probe and the session ride on the anchor (chat) token.
+		const dialect = world.calls.filter((c) => c.tool === 'dialect');
+		assert.deepEqual(dialect.map((c) => c.token), [tokenOf(rows, 'chat_1')]);
+		await store.session(world.client, endpoint!).invoke('stats', {});
+		assert.equal(world.calls[world.calls.length - 1]!.token, tokenOf(rows, 'chat_1'));
+		// No Tools source: the tools channel is not bound.
+		assert.equal(store.channel(world.client, endpoint!, 'tools').bound, false);
+		// Test connection keeps the detail; a later refresh keeps it too.
+		await store.probe(world.client, endpoint!.key);
+		assert.equal(store.getState().endpoints[0]!.stateDetail, READ_ONLY_DETAIL);
+		await store.refresh(world.client);
+		assert.equal(store.getState().endpoints[0]!.stateDetail, READ_ONLY_DETAIL);
+	});
+
+	/** A stock RAG pipeline (no Tools component) with a second store its chat source does not reach. */
+	const ragWithArchive = () => ragComponents().concat([{ id: 'store_9', provider: 'qdrant', name: 'Archive' }]);
+	/** The engine's answer for a node outside the calling source's pipeline. */
+	const unreachableArchive: IFakeWorld['behave'] = (call) => {
+		if (call.nodeId === 'store_9') throw new Error('Node "store_9" not found in pipeline');
+		return VX_INFO;
+	};
+
+	it('classifies a read-only card whose node the anchor source cannot reach as stopped, naming the role', async () => {
+		const rows = projectRows(['webhook_1', 'chat_1'], ragWithArchive());
+		const { store, world } = makeVx(rows, unreachableArchive);
+		await store.refresh(world.client);
+		const byNode = Object.fromEntries(store.getState().endpoints.map((e) => [e.nodeId, e]));
+		assert.equal(byNode.store_1!.state, 'ready');
+		assert.equal(byNode.store_9!.state, 'stopped');
+		assert.equal(byNode.store_9!.stateDetail, 'Not reachable from the chat source');
+		// The same answer on a callable (tools-anchored) card stays `unreachable`.
+		const tools = makeVx(projectRows(['tools_1']), () => { throw new Error("Component 'store_1' not found in pipeline"); });
+		await tools.store.refresh(tools.world.client);
+		assert.equal(tools.store.getState().endpoints[0]!.state, 'unreachable');
+	});
+
+	it('does not re-probe a Not reachable read-only card on refreshes nobody asked for; does when asked', async () => {
+		const rows = projectRows(['webhook_1', 'chat_1'], ragWithArchive());
+		const { store, world, clock } = makeVx(rows, unreachableArchive);
+		const archiveProbes = (): number => world.calls.filter((c) => c.tool === 'dialect' && c.nodeId === 'store_9').length;
+		const watch = watchProbe();
+		const detach = store.attach(world.client, null, watch.watch);
+		await store.refresh(world.client);
+		assert.equal(archiveProbes(), 1);
+		const firstDiscovery = store.getState().refreshedAt;
+		for (let i = 0; i < 3; i += 1) {
+			await clock.advance(6_000);
+			watch.handlers!.onFocus();
+			await clock.advance(300);
+			watch.handlers!.onTaskEvent({ reprobe: false });
+			await clock.advance(300);
+		}
+		assert.ok(store.getState().refreshedAt > firstDiscovery, 'the background refreshes did run discovery');
+		assert.equal(archiveProbes(), 1, 'background refreshes must not re-probe');
+		const archive = store.getState().endpoints.find((e) => e.nodeId === 'store_9')!;
+		assert.equal(archive.state, 'stopped');
+		assert.equal(archive.stateDetail, 'Not reachable from the chat source');
+		// An explicit refresh, a restart event and Test connection still re-probe.
+		await store.refresh(world.client);
+		assert.equal(archiveProbes(), 2);
+		watch.handlers!.onTaskEvent({ reprobe: true });
+		await clock.advance(300);
+		assert.equal(archiveProbes(), 3);
+		await store.probe(world.client, archive.key);
+		assert.equal(archiveProbes(), 4);
+		detach();
+	});
+
+	it('lists only store_1 while the Tools source is stopped: read-only on the chat token, under the callable card\'s key', async () => {
+		const rows = projectRows(['ingest_1', 'chat_1', 'tools_1']);
+		const { store, world } = makeVx(rows);
+		await store.refresh(world.client);
+		const callable = store.getState().endpoints[0]!;
+		world.rows.splice(world.rows.findIndex((r) => r.source === 'tools_1'), 1);
+		await store.refresh(world.client);
+		const { endpoints } = store.getState();
+		assert.deepEqual(endpoints.map((e) => e.nodeId), ['store_1']);
+		assert.equal(endpoints[0]!.key, callable.key);
+		assert.equal(endpoints[0]!.readOnly, true);
+		assert.equal(endpoints[0]!.anchorRole, 'chat');
+		assert.equal(store.channel(world.client, endpoints[0]!, 'tools').bound, false);
+	});
+
+	it('drops stream events of a question that timed out, was replaced, or already settled', async () => {
+		const { store, world, clock } = makeVx(projectRows(['chat_1', 'tools_1']));
+		await store.refresh(world.client);
+		const chat = store.channel(world.client, store.getState().endpoints[0]!, 'chat');
+		const streamed: string[] = [];
+		const onSSE = async (type: string): Promise<void> => { streamed.push(type); };
+		let finish: (answer: unknown) => void = () => undefined;
+		world.chatBehave = () => new Promise((resolve) => { finish = resolve; });
+		const emit = async (type: string): Promise<void> => { await world.chats[world.chats.length - 1]!.onSSE?.(type, {}); };
+
+		// Timed out: events after the timeout are dropped.
+		const timedOut = chat.ask('slow', { onSSE, timeoutMs: 5_000 }).catch((e: unknown) => e);
+		await emit('before-timeout');
+		await clock.advance(5_000);
+		assert.equal(((await timedOut) as ExplorerToolError).kind, 'timeout');
+		await emit('after-timeout');
+		assert.deepEqual(streamed, ['before-timeout']);
+
+		// Replaced: events after the generation expired are dropped.
+		const generation = createGeneration();
+		const replaced = chat.ask('old', { onSSE, generation: generation.next() }).catch((e: unknown) => e);
+		await emit('current');
+		generation.invalidate();
+		await emit('after-invalidate');
+		finish({ answers: ['late'] });
+		assert.equal(((await replaced) as ExplorerToolError).kind, 'stale');
+		assert.deepEqual(streamed, ['before-timeout', 'current']);
+
+		// Settled: nothing is delivered once the answer came back.
+		const answered = chat.ask('q', { onSSE });
+		finish({ answers: ['done'] });
+		await answered;
+		await emit('after-answer');
+		assert.deepEqual(streamed, ['before-timeout', 'current']);
+	});
+
+	it('bounds ask() by DEFAULT_ASK_TIMEOUT_MS when no timeout is given; null waits without a bound', async () => {
+		assert.equal(DEFAULT_ASK_TIMEOUT_MS, 120_000);
+		const { store, world, clock } = makeVx(projectRows(['chat_1', 'tools_1']));
+		await store.refresh(world.client);
+		const chat = store.channel(world.client, store.getState().endpoints[0]!, 'chat');
+		world.chatBehave = () => new Promise(() => undefined);
+		const bounded: { outcome: unknown } = { outcome: 'pending' };
+		void chat.ask('slow').catch((e: unknown) => { bounded.outcome = e; });
+		await clock.advance(DEFAULT_ASK_TIMEOUT_MS - 1);
+		assert.equal(String(bounded.outcome), 'pending');
+		await clock.advance(1);
+		assert.equal((bounded.outcome as ExplorerToolError).kind, 'timeout');
+		assert.equal(clock.pending(), 0);
+
+		const unbounded: { outcome: unknown } = { outcome: 'pending' };
+		void chat.ask('slow', { timeoutMs: null }).catch((e: unknown) => { unbounded.outcome = e; });
+		await clock.settle();
+		assert.equal(clock.pending(), 0, 'no timer for an explicit opt-out');
+		await clock.advance(10 * DEFAULT_ASK_TIMEOUT_MS);
+		assert.equal(unbounded.outcome, 'pending');
+	});
+
+	it('hands out one channel per endpoint, role and client, until reset', async () => {
+		const { store, world } = makeVx(projectRows(['chat_1', 'tools_1']));
+		await store.refresh(world.client);
+		const endpoint = store.getState().endpoints[0]!;
+		const chat = store.channel(world.client, endpoint, 'chat');
+		assert.equal(store.channel(world.client, { ...endpoint }, 'chat'), chat);
+		assert.notEqual(store.channel(world.client, endpoint, 'tools'), chat);
+		const other = { ...world.client };
+		assert.notEqual(store.channel(other, endpoint, 'chat'), chat);
+		store.reset();
+		assert.notEqual(store.channel(world.client, endpoint, 'chat'), chat);
+	});
+
+	it('gives single-role (SQL, Graph) stores a tools channel too, on the endpoint\'s token', async () => {
+		const { store, world } = make();
+		await store.refresh(world.client);
+		const endpoint = store.getState().endpoints[0]!;
+		const tools = store.channel(world.client, endpoint, 'tools');
+		assert.equal(tools.bound, true);
+		await tools.invoke('dialect', {}, { nodeId: 'db_1' });
+		assert.equal(world.calls[world.calls.length - 1]!.token, world.rows[0]!.token);
+	});
+});
+
+// =============================================================================
+// SQL AND GRAPH SNAPSHOTS (byte-identical to the single-role library)
+// =============================================================================
+
+describe('single-role (SQL, Graph) snapshots stay byte-identical', () => {
+	/**
+	 * The serialised snapshot of a single-role store after one refresh over a
+	 * fixed world. The expected strings were produced by the library before
+	 * multi-role connections existed; a change here changes what SQL and Graph
+	 * Explorer persist and show.
+	 *
+	 * @param providers - The app's providers.
+	 * @param dialect - What every probe answers.
+	 * @returns The snapshot as JSON.
+	 */
+	async function snapshot(providers: string[], dialect: string): Promise<string> {
+		const rows = [
+			row(),
+			row({ runKind: 'deploy', ownerKind: 'team', ownerId: 'team-1' }),
+			row({ source: 'tools_2', name: 'Graph B', pipeline: { project_id: 'g', components: [{ id: 'g_1', provider: 'graph_neo4j', name: 'Neo4j' }, { id: 'db_2', provider: 'db_postgres' }] } }),
+		];
+		const world = fakeWorld(rows, (call) => (call.tool === 'dialect' ? { dialect } : {}));
+		const store = createEndpointStore({ providers: new Set(providers), roles: SINGLE_TOOLS_ROLE, tools: {}, clock: manualClock() });
+		await store.refresh(world.client);
+		return JSON.stringify(store.getState());
+	}
+
+	it('SQL Explorer', async () => {
+		assert.equal(await snapshot(['db_postgres'], 'sql'), '{"status":"ready","endpoints":[{"key":"k1|dev|user|u1|team-1|g|tools=tools_2|db_2","legacyKey":"g:tools_2:db_2","projectId":"g","pipelineName":"Graph B","runKind":"dev","ownerKind":"user","ownerId":"u1","teamId":"team-1","roles":{"tools":{"source":"tools_2"}},"missingRoles":[],"source":"tools_2","nodeId":"db_2","nodeName":"db_2","provider":"db_postgres","state":"ready","running":true},{"key":"k1|deploy|team|team-1|team-1|proj-1|tools=tools_1|db_1","legacyKey":null,"projectId":"proj-1","pipelineName":"Pipeline A","runKind":"deploy","ownerKind":"team","ownerId":"team-1","teamId":"team-1","roles":{"tools":{"source":"tools_1"}},"missingRoles":[],"source":"tools_1","nodeId":"db_1","nodeName":"Orders DB","provider":"db_postgres","state":"ready","running":true},{"key":"k1|dev|user|u1|team-1|proj-1|tools=tools_1|db_1","legacyKey":"proj-1:tools_1:db_1","projectId":"proj-1","pipelineName":"Pipeline A","runKind":"dev","ownerKind":"user","ownerId":"u1","teamId":"team-1","roles":{"tools":{"source":"tools_1"}},"missingRoles":[],"source":"tools_1","nodeId":"db_1","nodeName":"Orders DB","provider":"db_postgres","state":"ready","running":true}],"probes":{"k1|dev|user|u1|team-1|g|tools=tools_2|db_2":{"ok":true,"info":{"dialect":"sql"},"dialect":"sql"},"k1|deploy|team|team-1|team-1|proj-1|tools=tools_1|db_1":{"ok":true,"info":{"dialect":"sql"},"dialect":"sql"},"k1|dev|user|u1|team-1|proj-1|tools=tools_1|db_1":{"ok":true,"info":{"dialect":"sql"},"dialect":"sql"}},"error":null,"refreshedAt":1000000}');
+	});
+
+	it('Graph Explorer', async () => {
+		assert.equal(await snapshot(['graph_neo4j'], 'graph'), '{"status":"ready","endpoints":[{"key":"k1|dev|user|u1|team-1|g|tools=tools_2|g_1","legacyKey":"g:tools_2:g_1","projectId":"g","pipelineName":"Graph B","runKind":"dev","ownerKind":"user","ownerId":"u1","teamId":"team-1","roles":{"tools":{"source":"tools_2"}},"missingRoles":[],"source":"tools_2","nodeId":"g_1","nodeName":"Neo4j","provider":"graph_neo4j","state":"ready","running":true}],"probes":{"k1|dev|user|u1|team-1|g|tools=tools_2|g_1":{"ok":true,"info":{"dialect":"graph"},"dialect":"graph"}},"error":null,"refreshedAt":1000000}');
 	});
 });
