@@ -43,8 +43,9 @@ import type { Documents, ShellAppProps } from 'shell';
 import { identityFingerprint, identityFromConnectResult } from 'shared/explorer';
 import { makeConsoleActions } from './adapters/consoleActions';
 import { appConnections } from './adapters/connections';
-import { LiveRegion, activeConnection, announcer, connectionCaches, vectorEndpoints } from './adapters/explorer';
+import { activeConnection, announcer, connectionCaches, vectorEndpoints } from './adapters/explorer';
 import { VectorHistoryPrefsBridge, useEndpointStoreLifecycle } from './adapters/react';
+import RealmLiveRegion from './components/RealmLiveRegion';
 import RemoveDialogHost from './components/RemoveDialogHost';
 import { createDocs, destroyDocs, getDocs, openDocumentTab } from './docs';
 import type { IConsoleDocPayload, IDocumentDocPayload } from './docs';
@@ -136,8 +137,8 @@ const VectorAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
 
 	return (
 		<div style={styles.container}>
-			{/* One polite live region for the whole app; every announcement goes through it. */}
-			<LiveRegion />
+			{/* One polite live region for the whole realm (rocket-ui may run dev-tool documents beside the app); every announcement goes through it. */}
+			<RealmLiveRegion />
 			{/* Chat history only records while a bridge is mounted; app-level so it survives closing a console. */}
 			<VectorHistoryPrefsBridge />
 			{/* Removal is confirmed here, outside every pane, so the dialog is visible wherever it was asked for. */}

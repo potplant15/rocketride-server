@@ -13,7 +13,7 @@
 // =============================================================================
 
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import type { ToolOpMap } from 'shell';
 import { ExplorerToolError } from 'shared/explorer';
 import { codedError } from 'shared/explorer/connect/testing';
@@ -31,8 +31,10 @@ import type { IDocVersion, VectorOps } from '../src/devtool/protocol';
 import { documentUri } from '../src/vector/addresses';
 import { CODE_SENTENCES } from '../src/vector/wording';
 import { fixture } from './support/fixtures';
-import { latestStateMap, mountController, publishedStates, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
+import { disposeAll, latestStateMap, mountController, publishedStates, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
 import type { ToolBehaviour } from './support/vectorWorld';
+
+afterEach(disposeAll);
 
 /** A frame's raw caller over a real frame peer of the harness. */
 function frameCaller(h: IDevToolHarness, now?: () => number, spy?: Array<{ op: string; timeoutMs: number | undefined; deadlineAt: number | undefined }>): IFrameCaller<VectorOps> {

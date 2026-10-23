@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import type { IExplorerEndpoint, IProbeResult } from 'shared/explorer';
 import { ExplorerToolError } from 'shared/explorer';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
@@ -23,7 +23,9 @@ import type { IFocusRequest, IMapRequest, IQueryHint, VectorOps } from '../src/d
 import { consoleUri, documentUri } from '../src/vector/addresses';
 import { connectionRow, rowStatusText, sidebarListLine } from '../src/vector/connections';
 import { fixture } from './support/fixtures';
-import { account, latestStateMap, manualTimers, mountController, nonStatePosts, publishedStates, rocketRealm, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
+import { account, disposeAll, latestStateMap, manualTimers, mountController, nonStatePosts, publishedStates, rocketRealm, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
+
+afterEach(disposeAll);
 
 const SRC = path.resolve(__dirname, '..', 'src');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');

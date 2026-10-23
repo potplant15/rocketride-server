@@ -89,6 +89,10 @@ export interface IConsoleViewProps {
 	opened: IExplorerEndpoint;
 	/** False while another document is the active tab. */
 	active: boolean;
+	/** More header actions after Refresh (a dev-tool frame's Details). */
+	headerActions?: React.ReactNode;
+	/** Shown under the header (a dev-tool frame's inline confirmation and connection details). */
+	beforeBody?: React.ReactNode;
 }
 
 /**
@@ -97,7 +101,7 @@ export interface IConsoleViewProps {
  * @param props - {@link IConsoleViewProps}.
  * @returns The view.
  */
-export const ConsoleView: React.FC<IConsoleViewProps> = ({ opened, active }) => {
+export const ConsoleView: React.FC<IConsoleViewProps> = ({ opened, active, headerActions, beforeBody }) => {
 	const env = useVectorEnv();
 	const endpoint = useLiveEndpoint(opened);
 	const { probes } = useEndpointsState();
@@ -242,6 +246,7 @@ export const ConsoleView: React.FC<IConsoleViewProps> = ({ opened, active }) => 
 						<Button variant="ghost" disabled={!card.openable || !entry.opened} onClick={() => entry.controller.refresh()}>
 							{refreshing ? BUSY.refreshing : 'Refresh'}
 						</Button>
+						{headerActions}
 					</>
 				}
 			/>
@@ -250,6 +255,7 @@ export const ConsoleView: React.FC<IConsoleViewProps> = ({ opened, active }) => 
 					<Banner variant={endpoint.state === 'ready' ? 'warning' : 'info'}>{card.blocked}</Banner>
 				</div>
 			)}
+			{beforeBody}
 			<StatsStrip stats={state.stats} dialect={dialect} readOnly={model.readOnly} documents={state.directory.rows} scopeLine={scopeLine} sample={selection.connectionKey === entry.key ? selection.sampleModel : null} loading={state.directory.status === 'loading'} scopeFilter={scope?.filter ?? null} onScope={scopeFromChart} health={health} />
 			{(state.removal.status === 'running' || state.removal.message) && (
 				<div role="status" style={{ ...styles.small, padding: '6px 24px' }}>
@@ -271,7 +277,8 @@ export const ConsoleView: React.FC<IConsoleViewProps> = ({ opened, active }) => 
 								{wiring.chatNotice}
 							</p>
 						)}
-						{model.chat.enabled ? <ChatPanel model={surfaceModel} channels={channels} selection={entry.selection} actions={actions} scope={chatDocuments} onClearScope={clearChatScope} /> : <EmptyState title="Chat" description={model.chat.reason ?? undefined} />}
+						{/* Where chat cannot work at all (a dev-tool mount), the panel still offers Search, which needs no LLM, under the reason. */}
+						{model.chat.enabled || env.degraded !== null ? <ChatPanel model={surfaceModel} channels={channels} selection={entry.selection} actions={actions} scope={chatDocuments} onClearScope={clearChatScope} /> : <EmptyState title="Chat" description={model.chat.reason ?? undefined} />}
 					</div>
 				</div>
 			</div>

@@ -165,7 +165,10 @@ test('the scope: the listing asks for its conditions, its documents resolve from
 test("a document's health: the tab compares with the console's loaded documents and counts deleted chunks only when asked; the directory and the strip use the same flags", () => {
 	const view = code('views/DocumentView.tsx');
 	assert.match(view, /<HealthPanel item=\{info\} medianChunks=\{median\} listing="all"/, "the tab's row is listed with deleted:'all'");
-	assert.match(view, /const median = medianChunks\(consoleState\)/);
+	// The full app's tab compares with its console's rows; a dev-tool document frame passes the console's median in
+	// (its summary hint: tests/devtool.frame.test.ts), so the tab never reads another frame's memory.
+	assert.match(view, /const median = consoleMedian !== undefined \? consoleMedian : medianChunks\(consoleState\);/);
+	assert.match(view, /const consoleEntry = consoleMedian === undefined \? existingEntry\(model\.connectionKey\) : undefined;/);
 	assert.match(view, /onProbe=\{\(\) => void countDeleted\(\)\}/, 'the two one-row chunks calls run only on the click');
 	assert.match(view, /model\.capabilities\.soft_delete === true/, 'offered only where the store soft-deletes');
 	assert.doesNotMatch(view, /Without first chunk/);
@@ -248,7 +251,9 @@ test('identity: the store is attached to the platform, and a change of fingerpri
 	const app = code('VectorApp.tsx');
 	assert.match(app, /useEndpointStoreLifecycle\(vectorEndpoints, client, identity\)/);
 	assert.match(app, /useEffect\(\(\) => \{\s*forgetConnections\(getDocs\(\), connectionCaches, endpointKeyFromUri, LANDING\);\s*\}, \[fingerprint\]\);/);
-	assert.match(app, /<LiveRegion \/>/);
+	// One polite region per REALM: in rocket-ui dev-tool documents may share the app's realm (tests/devtool.mounts.test.ts).
+	assert.match(app, /<RealmLiveRegion \/>/);
+	assert.doesNotMatch(app, /<LiveRegion \/>/);
 	assert.match(app, /<VectorHistoryPrefsBridge \/>/);
 	assert.match(app, /display: active \? 'flex' : 'none'/, 'editors stay mounted and hidden');
 	assert.match(code('adapters/explorer.ts'), /textField: 'question'/, 'chat history keeps questions only');

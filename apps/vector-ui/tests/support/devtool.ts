@@ -42,6 +42,31 @@ export interface IEngineRealm {
 	requests: IBusRequest[];
 }
 
+/** Everything a test mounted, disposed after each test (so a failing test leaves no timer keeping the run alive). */
+const mounted: Array<{ dispose(): void }> = [];
+
+/**
+ * Keep a disposable for {@link disposeAll}.
+ *
+ * @param disposable - A controller, a frame, a caller.
+ * @returns It.
+ */
+export function track<T extends { dispose(): void }>(disposable: T): T {
+	mounted.push(disposable);
+	return disposable;
+}
+
+/** Dispose everything tracked (idempotent disposals), for `afterEach`. */
+export function disposeAll(): void {
+	for (const disposable of mounted.splice(0).reverse()) {
+		try {
+			disposable.dispose();
+		} catch {
+			// A disposal that throws must not keep the others alive.
+		}
+	}
+}
+
 /** The empty page an engine's task list answers when the world lists nothing. */
 export const EMPTY_TASK_PAGE = { rows: [], total: 0, page: 1, pageSize: 100 };
 
@@ -144,7 +169,7 @@ export function mountController(cm: IVectorRealm, over: Partial<IVectorControlle
 	const channel = reuse?.hostChannel ?? shellProtocol.createToolChannel(spy.peer);
 	const docs = recordingDocuments();
 	const errors: Array<{ where: string; error: unknown }> = [];
-	const controller = createVectorController({
+	const controller = track(createVectorController({
 		cm,
 		peer: spy.peer,
 		channel,
@@ -155,7 +180,7 @@ export function mountController(cm: IVectorRealm, over: Partial<IVectorControlle
 		store: makeVectorEndpointStore({ debounceMs: 0 }),
 		onError: (error, where) => errors.push({ where, error }),
 		...over,
-	});
+	}));
 	return { h, spy, hostChannel: channel, controller, docs, errors };
 }
 
