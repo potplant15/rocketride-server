@@ -1070,3 +1070,33 @@ def test_client_rename_avatar_sends_patch_with_display_name(http):
     call = http['calls'][-1]
     assert call['method'] == 'PATCH' and call['url'] == 'https://masky.ai/api/avatars/A%20b'
     assert call['json'] == {'displayName': 'New'} and call['headers']['Authorization'] == f'Bearer {KEY}'
+
+
+def _connection_error(http):
+    return type('ConnectionError', (http['requests'].RequestException,), {})('connection reset by peer')
+
+
+@pytest.mark.parametrize(
+    'call',
+    [
+        lambda c: c.speak('A', {'text': 'hi'}),
+        lambda c: c.generate_video({'prompt': 'p'}),
+        lambda c: c.send_turn('C1', {'userText': 'hi'}),
+        lambda c: c.delete_turn('C1', 'T1'),
+        lambda c: c.rename_avatar('A', 'New'),
+    ],
+    ids=['speak', 'video', 'turn', 'delete', 'rename'],
+)
+def test_dropped_connection_on_a_write_warns_it_may_have_been_accepted(http, call):
+    http['exc'] = _connection_error(http)
+    with pytest.raises(MaskyError) as ei:
+        call(MaskyClient(KEY))
+    message = str(ei.value)
+    assert 'may still have been accepted' in message and 'charged twice' in message
+    assert 'Check the network' not in message and KEY not in message
+    assert len(http['calls']) == 1, 'a write is never resent after a dropped connection'
+
+
+def test_dropped_connection_on_a_read_still_says_check_the_network(http):
+    e = _call(http, exc=_connection_error(http))
+    assert 'Could not reach Masky (ConnectionError). Check the network and the base URL.' == str(e)

@@ -79,8 +79,14 @@ class MaskyClient:
                 'check get_generation or masky.ai before sending it again, so it is not charged twice.'
             ) from None
         except requests.RequestException as e:
+            if method.upper() == 'GET':
+                raise MaskyError(
+                    f'Could not reach Masky ({type(e).__name__}). Check the network and the base URL.'
+                ) from None
+            # The connection can drop after the request was sent, so a write may have landed.
             raise MaskyError(
-                f'Could not reach Masky ({type(e).__name__}). Check the network and the base URL.'
+                f'The connection to Masky failed during {method} {path} ({type(e).__name__}). The request may still have '
+                'been accepted: check get_generation or masky.ai before sending it again, so it is not charged twice.'
             ) from None
 
     def _request(self, method: str, path: str, *, body: Optional[Dict[str, Any]] = None, auth: bool = True) -> Any:  # noqa: ANN401
