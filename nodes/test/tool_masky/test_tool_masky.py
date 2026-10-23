@@ -18,100 +18,18 @@ import sys
 import types
 from email.utils import format_datetime
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
-_NODE_DIR = Path(__file__).resolve().parent.parent.parent / 'src' / 'nodes' / 'tool_masky'
+from ._stubs import NODE_DIR, make_depends, make_requests, scoped_stubs
 
-_STUBS = (
-    'rocketlib',
-    'ai',
-    'ai.common',
-    'ai.common.utils',
-    'ai.common.config',
-    'ai.common.tools',
-    'depends',
-    'requests',
-    'tool_masky',
-)
-
-
-def _check_credential_resolved(logicalType, field, value, connConfig=None):
-    """Stand-in for ai.common.config.check_credential_resolved: rejects unfilled placeholders."""
-    if isinstance(value, str) and ('${' in value or '<REDACTED>' in value):
-        raise ValueError(f'{logicalType}.{field} is an unfilled placeholder')
-
-
-def _make_requests():
-    req = types.ModuleType('requests')
-    req.RequestException = type('RequestException', (Exception,), {})
-    req.Timeout = type('Timeout', (req.RequestException,), {})
-    req.request = lambda *a, **k: None
-    return req
-
-
-def _make_depends():
-    dep = types.ModuleType('depends')
-    dep.calls = []
-    dep.load_depends = lambda path=None, *a, **k: dep.calls.append(path)
-    return dep
-
-
-def _install_stubs() -> None:
-    rl = types.ModuleType('rocketlib')
-    rl.IInstanceBase = type('IInstanceBase', (), {})
-    rl.IGlobalBase = type('IGlobalBase', (), {})
-    rl.OPEN_MODE = type('OPEN_MODE', (), {'CONFIG': 'config', 'SOURCE': 'source'})
-    for name in ('debug', 'error', 'warning'):
-        setattr(rl, name, lambda *a, **k: None)
-    sys.modules['rocketlib'] = rl
-
-    for name in ('ai', 'ai.common', 'ai.common.utils', 'ai.common.config', 'ai.common.tools'):
-        sys.modules[name] = types.ModuleType(name)
-    sys.modules['ai'].__path__ = []
-    sys.modules['ai.common'].__path__ = []
-    sys.modules['ai.common.tools'].ToolsBase = type('ToolsBase', (), {})
-
-    def parse_bool(v):
-        if isinstance(v, str):
-            return v.strip().lower() in {'true', '1', 'yes'}
-        return bool(v)
-
-    sys.modules['ai.common.utils'].parse_bool = parse_bool
-
-    class _Config:
-        @staticmethod
-        def getNodeConfig(*_a, **_k):
-            return {}
-
-    sys.modules['ai.common.config'].Config = _Config
-    sys.modules['ai.common.config'].check_credential_resolved = _check_credential_resolved
-    sys.modules['depends'] = _make_depends()
-    sys.modules['requests'] = _make_requests()
-
-    pkg = types.ModuleType('tool_masky')
-    pkg.__path__ = [str(_NODE_DIR)]
-    sys.modules['tool_masky'] = pkg
-
-
-_saved = {n: sys.modules.get(n) for n in _STUBS}
-_install_stubs()
-try:
+with scoped_stubs():
     from tool_masky import IGlobal as IGlobalMod  # noqa: E402
     from tool_masky import IInstance as IInstanceMod  # noqa: E402,F401
     from tool_masky import masky_core as core  # noqa: E402
     from tool_masky.masky_client import MaskyClient  # noqa: E402
     from tool_masky.masky_core import MaskyError  # noqa: E402
     from tool_masky.masky_driver import MaskyDriver  # noqa: E402
-finally:
-    for _n, _m in _saved.items():
-        if _m is None:
-            sys.modules.pop(_n, None)
-        else:
-            sys.modules[_n] = _m
-    for _n in [k for k in sys.modules if k.startswith('tool_masky.')]:
-        sys.modules.pop(_n, None)
 
 KEY = 'mky_SECRET_KEY_123'  # gitleaks:allow -- fake key; tests assert it never appears in errors
 
@@ -170,8 +88,8 @@ def _driver(client=None, **kw):
 @pytest.fixture
 def stubs(monkeypatch):
     """Install per-test depends/requests stubs (the node imports them lazily)."""
-    dep = _make_depends()
-    req = _make_requests()
+    dep = make_depends()
+    req = make_requests()
     monkeypatch.setitem(sys.modules, 'depends', dep)
     monkeypatch.setitem(sys.modules, 'requests', req)
     # IGlobal.beginGlobal imports rocketlib lazily (for isCancelled).
@@ -883,7 +801,7 @@ def test_end_global_clears_client_key_and_driver(stubs, monkeypatch):
 
 def _load_services():
     lines = []
-    for line in (_NODE_DIR / 'services.json').read_text(encoding='utf-8').split('\n'):
+    for line in (NODE_DIR / 'services.json').read_text(encoding='utf-8').split('\n'):
         if line.strip().startswith('//'):
             continue
         lines.append(line)

@@ -15,132 +15,20 @@ from __future__ import annotations
 import json
 import sys
 import types
-from pathlib import Path
 
 import pytest
 
-_NODE_DIR = Path(__file__).resolve().parent.parent.parent / 'src' / 'nodes' / 'tool_masky'
+from ._stubs import BEGIN, END, FORWARDS, WARNINGS, WRITE, PreventDefault, make_requests, scoped_stubs
 
-_STUBS = (
-    'rocketlib',
-    'ai',
-    'ai.common',
-    'ai.common.utils',
-    'ai.common.config',
-    'ai.common.tools',
-    'ai.common.avi',
-    'ai.common.avi.descriptor',
-    'depends',
-    'requests',
-    'tool_masky',
-)
-
-BEGIN, WRITE, END = 'BEGIN', 'WRITE', 'END'
-WARNINGS: list = []
-FORWARDS: list = []
-
-
-class PreventDefault(Exception):
-    pass
-
-
-def _check_credential_resolved(logicalType, field, value, connConfig=None):
-    """Stand-in for ai.common.config.check_credential_resolved: rejects unfilled placeholders."""
-    if isinstance(value, str) and ('${' in value or '<REDACTED>' in value):
-        raise ValueError(f'{logicalType}.{field} is an unfilled placeholder')
-
-
-def _make_requests():
-    req = types.ModuleType('requests')
-    req.RequestException = type('RequestException', (Exception,), {})
-    req.Timeout = type('Timeout', (req.RequestException,), {})
-    req.request = lambda *a, **k: None
-    req.get = lambda *a, **k: None
-    return req
-
-
-def _forwarder(kind):
-    def forward(instance, descriptor, mime, data, **kwargs):
-        FORWARDS.append((kind, instance, descriptor, mime, data, kwargs))
-        write = getattr(instance, f'write{kind}')
-        write(BEGIN, mime, json.dumps({'size': len(data)}).encode())
-        write(WRITE, mime, data)
-        write(END, mime, b'')
-
-    return forward
-
-
-def _install_stubs() -> None:
-    rl = types.ModuleType('rocketlib')
-
-    class IInstanceBase:
-        def preventDefault(self):
-            raise PreventDefault()
-
-    rl.IInstanceBase = IInstanceBase
-    rl.IGlobalBase = type('IGlobalBase', (), {})
-    rl.OPEN_MODE = type('OPEN_MODE', (), {'CONFIG': 'config', 'SOURCE': 'source'})
-    rl.AVI_ACTION = type('AVI_ACTION', (), {'BEGIN': BEGIN, 'WRITE': WRITE, 'END': END})
-    rl.debug = rl.error = lambda *a, **k: None
-    rl.warning = lambda msg, *a, **k: WARNINGS.append(msg)
-    sys.modules['rocketlib'] = rl
-
-    for name in (
-        'ai',
-        'ai.common',
-        'ai.common.utils',
-        'ai.common.config',
-        'ai.common.tools',
-        'ai.common.avi',
-        'ai.common.avi.descriptor',
-    ):
-        sys.modules[name] = types.ModuleType(name)
-    for name in ('ai', 'ai.common', 'ai.common.avi'):
-        sys.modules[name].__path__ = []
-    sys.modules['ai.common.tools'].ToolsBase = type('ToolsBase', (), {})
-    sys.modules['ai.common.utils'].parse_bool = lambda v: bool(v)
-
-    class _Config:
-        @staticmethod
-        def getNodeConfig(*_a, **_k):
-            return {}
-
-    sys.modules['ai.common.config'].Config = _Config
-    sys.modules['ai.common.config'].check_credential_resolved = _check_credential_resolved
-    desc = sys.modules['ai.common.avi.descriptor']
-    desc.forward_enriched_audio = _forwarder('Audio')
-    desc.forward_enriched_video = _forwarder('Video')
-    desc.forward_enriched_image = _forwarder('Image')
-
-    dep = types.ModuleType('depends')
-    dep.load_depends = lambda *a, **k: None
-    sys.modules['depends'] = dep
-    sys.modules['requests'] = _make_requests()
-
-    pkg = types.ModuleType('tool_masky')
-    pkg.__path__ = [str(_NODE_DIR)]
-    sys.modules['tool_masky'] = pkg
-
-
-_saved = {n: sys.modules.get(n) for n in _STUBS}
-_install_stubs()
-try:
+with scoped_stubs() as _env_stubs:
     from tool_masky import IInstance as IInstanceMod  # noqa: E402
     from tool_masky import masky_core as core  # noqa: E402
     from tool_masky.masky_client import MaskyClient  # noqa: E402
     from tool_masky.masky_core import MaskyError  # noqa: E402
     from tool_masky.masky_driver import MaskyDriver  # noqa: E402
-finally:
-    # The node's lazy descriptor import runs at call time, so keep that stub
-    # (and rocketlib's warning recorder is already bound by name) via fixture.
-    _DESC = sys.modules['ai.common.avi.descriptor']
-    for _n, _m in _saved.items():
-        if _m is None:
-            sys.modules.pop(_n, None)
-        else:
-            sys.modules[_n] = _m
-    for _n in [k for k in sys.modules if k.startswith('tool_masky.')]:
-        sys.modules.pop(_n, None)
+
+# The node's lazy descriptor import runs at call time, so the fixture re-installs this stub per test.
+_DESC = _env_stubs.descriptor
 
 
 # ---------------------------------------------------------------------------
@@ -1045,7 +933,7 @@ class FakeResp:
 
 @pytest.fixture
 def http(monkeypatch):
-    req = _make_requests()
+    req = make_requests()
     state = {'calls': [], 'resp': FakeResp()}
 
     def get(url, **kw):

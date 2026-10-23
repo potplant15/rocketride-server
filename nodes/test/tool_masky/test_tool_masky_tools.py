@@ -18,44 +18,17 @@ import sys
 import threading
 import time
 import types
-from pathlib import Path
 
 import pytest
 
-_NODE_DIR = Path(__file__).resolve().parent.parent.parent / 'src' / 'nodes' / 'tool_masky'
+from ._stubs import scoped_stubs
 
-_STUBS = ('rocketlib', 'ai', 'ai.common', 'ai.common.tools', 'depends', 'requests', 'tool_masky')
-
-
-def _install_stubs() -> None:
-    rl = types.ModuleType('rocketlib')
-    sys.modules['rocketlib'] = rl
-    for name in ('ai', 'ai.common', 'ai.common.tools'):
-        sys.modules[name] = types.ModuleType(name)
-    sys.modules['ai'].__path__ = []
-    sys.modules['ai.common'].__path__ = []
-    sys.modules['ai.common.tools'].ToolsBase = type('ToolsBase', (), {})
-    pkg = types.ModuleType('tool_masky')
-    pkg.__path__ = [str(_NODE_DIR)]
-    sys.modules['tool_masky'] = pkg
-
-
-_saved = {n: sys.modules.get(n) for n in _STUBS}
-_install_stubs()
-try:
+with scoped_stubs():
     from tool_masky import masky_core as core  # noqa: E402
     from tool_masky import masky_driver as driver_mod  # noqa: E402
     from tool_masky.masky_client import MaskyClient  # noqa: E402
     from tool_masky.masky_core import MaskyCancelled, MaskyError  # noqa: E402
     from tool_masky.masky_driver import DELETE_TOOLS, READ_ONLY_REFUSAL, READ_TOOLS, MaskyDriver  # noqa: E402
-finally:
-    for _n, _m in _saved.items():
-        if _m is None:
-            sys.modules.pop(_n, None)
-        else:
-            sys.modules[_n] = _m
-    for _n in [k for k in sys.modules if k.startswith('tool_masky.')]:
-        sys.modules.pop(_n, None)
 
 
 # ---------------------------------------------------------------------------
