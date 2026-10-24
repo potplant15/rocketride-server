@@ -34,9 +34,9 @@
 import type { RocketRideClient } from 'shell';
 import type { AgentDevSession, AgentHost } from 'shared/modules/agent/host';
 import type { FrameOptions } from 'shared/tools/appdev';
-import { scaffoldApp } from '../surfaces/appdev/session/appStore';
-import { findDevSession, type WebDevSession } from '../surfaces/appdev/session/devSession';
-import { packAppSource } from '../surfaces/appdev/session/pack';
+import { scaffoldApp } from '../surfaces/preview/session/appStore';
+import { findDevSession, type WebDevSession } from '../surfaces/preview/session/devSession';
+import { packAppSource } from '../surfaces/preview/session/pack';
 import { getWorkspaceVfs } from '../surfaces/workspace/vfs/workspace';
 import { createRocketGuideSource } from './agentGuides';
 

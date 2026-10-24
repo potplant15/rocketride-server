@@ -163,17 +163,17 @@ export class GuideFileSystem implements IWorkspaceFileSystem {
 		return text;
 	}
 
-	async readMany(paths: string[]): Promise<Map<string, unknown>> {
+	async readMany(paths: string[]): Promise<Record<string, unknown>> {
 		const workspacePaths = paths.filter((path) => guideRelative(path) === null);
-		const fromWorkspace = workspacePaths.length > 0 ? await this.base.readMany(workspacePaths) : new Map<string, unknown>();
-		const out = new Map<string, unknown>();
+		const fromWorkspace = workspacePaths.length > 0 ? await this.base.readMany(workspacePaths) : {};
+		const out: Record<string, unknown> = {};
 		for (const path of paths) {
 			if (guideRelative(path) === null) {
-				if (fromWorkspace.has(path)) out.set(path, fromWorkspace.get(path));
+				if (Object.hasOwn(fromWorkspace, path)) out[path] = fromWorkspace[path];
 				continue;
 			}
 			try {
-				out.set(path, await this.read(path));
+				out[path] = await this.read(path);
 			} catch {
 				// unreadable paths are omitted, as the view contract says
 			}

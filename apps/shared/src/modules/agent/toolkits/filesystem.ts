@@ -441,7 +441,7 @@ export class FilesystemTools extends AgentToolkit {
 			const contents = await this.vfs.readMany(batch);
 			for (const file of batch) {
 				if (matches.length >= cap) break;
-				const raw = contents.get(file);
+				const raw = Object.hasOwn(contents, file) ? contents[file] : undefined;
 				if (raw === undefined) continue;
 				const content = String(raw);
 				if (content.length > SEARCH_MAX_FILE_CHARS) continue;

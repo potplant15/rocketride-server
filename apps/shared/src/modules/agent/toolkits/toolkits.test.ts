@@ -109,11 +109,11 @@ class InMemoryWorkspace implements MemoryWorkspace {
 		return content;
 	}
 
-	async readMany(paths: string[]): Promise<Map<string, unknown>> {
-		const out = new Map<string, unknown>();
+	async readMany(paths: string[]): Promise<Record<string, unknown>> {
+		const out: Record<string, unknown> = {};
 		for (const path of paths) {
 			const content = this.files.get(path);
-			if (content !== undefined) out.set(path, content);
+			if (content !== undefined) out[path] = content;
 		}
 		return out;
 	}
