@@ -94,9 +94,11 @@ multiple backend query pages (Milvus still reads all matches in one query, so
 a very large document, or many documents in one call, can exceed its message
 limit). A successful restore makes its paths visible to `objdir` again. Qdrant
 updates only the nested flag; Weaviate drains bounded batches of chunks still
-in the opposite state, without offsets into a shrinking result set, pauses and
-sends a chunk once more if a read returns it after its update (a replica may
-lag), and fails the operation instead of looping if it comes back again.
+in the opposite state, without offsets into a shrinking result set, recounts
+the chunks still pending after each batch, pauses when a batch shows no
+progress (a replica may lag), and fails the operation instead of looping when
+a third batch in a row shows none. The drain keeps two counters, however many
+chunks it touches, and pays one count query per batch.
 
 ## Verification
 

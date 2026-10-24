@@ -362,9 +362,11 @@ class MockAggregate:
     def __init__(self, collection: 'MockCollection'):
         self.collection = collection
 
-    def over_all(self, total_count: bool = False) -> AggregateResult:
-        """Get aggregate statistics."""
-        return AggregateResult(total_count=len(self.collection._storage))
+    def over_all(self, filters: Optional[Filter] = None, total_count: bool = False) -> AggregateResult:
+        """Get aggregate statistics: the number of objects that match ``filters`` (all of them without one)."""
+        rows = self.collection._storage.values()
+        matching = [data for data in rows if filters is None or filters.matches(data['properties'])]
+        return AggregateResult(total_count=len(matching))
 
 
 class MockCollection:

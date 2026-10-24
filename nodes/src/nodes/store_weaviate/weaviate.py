@@ -36,7 +36,6 @@ from typing import List, Callable, Dict, Any, cast
 import numpy as np
 import re
 import time
-from collections import Counter
 
 import weaviate
 from weaviate.client import WeaviateClient
@@ -54,9 +53,12 @@ from ai.common.store import DocumentStoreBase
 from ai.common.config import Config
 
 
-# How long a trash update waits before re-sending a chunk a read returned after
-# its update, so a lagging replica can catch up.
+# How long a trash update pauses after a page that left the number of pending
+# chunks where it was, so a lagging replica can catch up.
 _REPEAT_PAUSE_SECONDS = 1.0
+
+# How many such pages in a row a trash update tolerates before it fails.
+_MAX_STALLS = 2
 
 
 class Store(DocumentStoreBase):
@@ -561,25 +563,29 @@ class Store(DocumentStoreBase):
                 Filter.by_property('isDeleted').equal(not deleted),
             ]
         )
-        sightings: Counter = Counter()
+        # Progress is the number of chunks still pending, recounted after each
+        # page: O(1) state however many chunks the call touches. A page that
+        # leaves the count where it was is a stall (a lagging replica, or an
+        # update that does not persist); pause and go on for up to _MAX_STALLS
+        # stalls in a row, and fail on the next one instead of looping.
+        remaining = self.collectionObj.aggregate.over_all(filters=pending, total_count=True).total_count or 0
+        stalls = 0
         while True:
             points = self.collectionObj.query.fetch_objects(filters=pending, limit=1000)
             if not points.objects:
                 return
-            # A chunk that comes back after its update was read from a replica
-            # that has not seen the write yet, or the update did not persist.
-            # Give the replica a moment and send it once more; stop rather than
-            # loop if it returns again.
-            sightings.update(point.uuid for point in points.objects)
-            stuck = sum(1 for point in points.objects if sightings[point.uuid] > 2)
-            if stuck:
-                raise Exception(
-                    f'isDeleted={deleted} did not persist on {stuck} chunk(s); the change is partly applied, retry to finish'
-                )
-            if any(sightings[point.uuid] == 2 for point in points.objects):
-                time.sleep(_REPEAT_PAUSE_SECONDS)
             for point in points.objects:
                 self.collectionObj.data.update(uuid=point.uuid, properties={'isDeleted': deleted})
+            left = self.collectionObj.aggregate.over_all(filters=pending, total_count=True).total_count or 0
+            if left < remaining:
+                remaining, stalls = left, 0
+                continue
+            stalls += 1
+            if stalls > _MAX_STALLS:
+                raise Exception(
+                    f'isDeleted={deleted} did not persist on {left} chunk(s); the change is partly applied, retry to finish'
+                )
+            time.sleep(_REPEAT_PAUSE_SECONDS)
 
     def markDeleted(self, objectIds: List[str]) -> None:
         """Hide every chunk of the named documents from ordinary retrieval."""
