@@ -204,3 +204,91 @@ def test_trash_round_trip_preserves_metadata_with_real_qdrant():
         assert [c['content'] for c in tools.get({'object_id': 'a'})['chunks']] == ['first', 'second']
     finally:
         client.close()
+
+
+def _point_id(object_id: str, chunk_id: int = 0) -> str:
+    """A UUID point ID; the driver writes random ones, the tests need them stable."""
+    import uuid
+
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f'{object_id}/{chunk_id}'))
+
+
+def _chunk(object_id: str, chunk_id: int = 0, parent: str | None = None, **flag) -> dict:
+    """A point payload shaped like the driver's; ``flag`` holds ``isDeleted`` when it is set."""
+    return {
+        'content': f'{object_id} {chunk_id}',
+        'meta': {'objectId': object_id, 'chunkId': chunk_id, 'parent': parent or f'/{object_id}', **flag},
+    }
+
+
+def _in_process_store(payloads: dict):
+    """A store over the real client's in-process backend holding ``payloads`` (point ID to payload)."""
+    import pytest
+    from qdrant_client import QdrantClient, models
+
+    if QdrantClient.__module__ != 'qdrant_client.qdrant_client':
+        pytest.skip('requires the real qdrant-client, not the protocol mock')
+    client = QdrantClient(':memory:')
+    client.create_collection(
+        'test-collection', vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE)
+    )
+    client.upsert(
+        'test-collection',
+        points=[models.PointStruct(id=pid, vector=[1.0, 0.0], payload=payload) for pid, payload in payloads.items()],
+    )
+    store = _make_store()
+    store.client = client
+    return store, client
+
+
+def test_paths_list_records_without_a_deleted_flag_and_hide_trashed_ones():
+    """Paths use get's trash test: a chunk-0 point whose flag is missing or null is listed, a trashed one is not."""
+    from ai.common.schema import DocFilter
+
+    store, client = _in_process_store(
+        {
+            _point_id('missing'): _chunk('missing'),
+            _point_id('null'): _chunk('null', isDeleted=None),
+            _point_id('active'): _chunk('active', isDeleted=False),
+            _point_id('trashed'): _chunk('trashed', isDeleted=True),
+            _point_id('schema'): _chunk('schema', parent='/', isDeleted=True),
+        }
+    )
+    try:
+        for object_id in ('missing', 'active'):
+            assert store.get(DocFilter(objectIds=[object_id], offset=0, limit=10, isDeleted=False))
+        assert store.getPaths() == {'/missing': 'missing', '/null': 'null', '/active': 'active'}
+        assert store.getPaths(parent='/missing') == {'/missing': 'missing'}
+
+        store.markDeleted(['missing'])
+        assert store.getPaths() == {'/null': 'null', '/active': 'active'}
+        assert store.getPaths(parent='/missing') == {}
+        store.markActive(['missing'])
+        assert store.getPaths(parent='/missing') == {'/missing': 'missing'}
+    finally:
+        client.close()
+
+
+def test_paths_page_by_offset_on_uuid_point_ids():
+    """Each offset starts a different page: scroll's own offset is a point-ID cursor, not a count."""
+    payloads = {}
+    for index in range(5):
+        object_id = f'doc-{index}'
+        payloads[_point_id(object_id, 0)] = _chunk(object_id, 0, parent=f'/p{index}', isDeleted=False)
+        payloads[_point_id(object_id, 1)] = _chunk(object_id, 1, parent=f'/p{index}', isDeleted=False)
+    payloads[_point_id('gone')] = _chunk('gone', isDeleted=True)
+    store, client = _in_process_store(payloads)
+    try:
+        everything = store.getPaths()
+        assert everything == {f'/p{index}': f'doc-{index}' for index in range(5)}
+
+        singles = [store.getPaths(offset=offset, limit=1) for offset in range(5)]
+        assert all(len(page) == 1 for page in singles)
+        assert {path: oid for page in singles for path, oid in page.items()} == everything
+
+        pages = [store.getPaths(offset=offset, limit=2) for offset in (0, 2, 4)]
+        assert [len(page) for page in pages] == [2, 2, 1]
+        assert {path: oid for page in pages for path, oid in page.items()} == everything
+        assert store.getPaths(offset=5, limit=2) == {}
+    finally:
+        client.close()

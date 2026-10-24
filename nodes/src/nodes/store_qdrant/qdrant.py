@@ -457,12 +457,15 @@ class Store(DocumentStoreBase):
             return {}
 
         # Build the base: chunk 0 only, exclude the internal schema document
+        # and the trash. The trash test is must_not isDeleted == True, as in
+        # _convertFilter, so a missing or null flag counts as active here as it
+        # does for get and search.
         must: List[models.Condition] = [
             FieldCondition(key='meta.chunkId', match=models.MatchValue(value=0)),
-            FieldCondition(key='meta.isDeleted', match=models.MatchValue(value=False)),
         ]
         must_not: List[models.Condition] = [
             FieldCondition(key='meta.objectId', match=models.MatchValue(value=CONTROL_OBJECT_ID)),
+            FieldCondition(key='meta.isDeleted', match=models.MatchValue(value=True)),
         ]
 
         # If parent specified, match on it
@@ -475,18 +478,21 @@ class Store(DocumentStoreBase):
         # Build up the path list
         paths: Dict[str, str] = {}
 
-        # Perform the search
-        records, nextPoint = self.client.scroll(
+        # Scroll's offset is a point-ID cursor, not a count, and this driver
+        # writes random UUID point IDs, so an integer offset would never move
+        # the start. Read offset + limit records from the start instead (scroll
+        # orders by point ID, so the order is stable) and slice locally, as the
+        # Pinecone driver does. A page costs offset + limit records.
+        records, _ = self.client.scroll(
             collection_name=self.collection,
             scroll_filter=filter,
-            offset=offset,
-            limit=limit,
+            limit=offset + limit,
             with_vectors=False,
             with_payload=True,
         )
 
         # Fill it in
-        for record in records:
+        for record in records[offset:]:
             # Get the payload
             payload = record.payload
             if payload is None:
