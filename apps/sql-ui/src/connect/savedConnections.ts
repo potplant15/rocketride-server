@@ -54,7 +54,7 @@
 import { useSyncExternalStore } from 'react';
 // The client type comes from the rocketride module itself (an MF shared
 // singleton beside 'shell') — the full SDK surface, no barrel indirection.
-import type { SqlWireClient } from './busClient';
+import type { RocketRideClient } from 'rocketride';
 
 // =============================================================================
 // TYPES
@@ -150,7 +150,7 @@ function commit(next: SavedSqlConnection[]): void {
  *
  * @param client - The shell's RocketRide client.
  */
-export async function loadSavedConnections(client: SqlWireClient): Promise<void> {
+export async function loadSavedConnections(client: RocketRideClient): Promise<void> {
 	const seq = ++loadSeq;
 	status = 'loading';
 	notify();

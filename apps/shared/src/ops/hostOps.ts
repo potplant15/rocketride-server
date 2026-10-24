@@ -75,14 +75,37 @@ export interface HostOpMap extends ShellOpMap {
 	'host.openExternal': ShellOpSpec<{ url: string }, void>;
 	/** The Stripe publishable key for the host's server, or null + reason. */
 	'host.stripeKey': ShellOpSpec<Record<string, never>, StripeKeyInfo>;
-	/** The host's prefs snapshot — a page realm hydrates its bridged prefs
-	 *  store once from this. */
-	'host.prefs.snapshot': ShellOpSpec<Record<string, never>, Record<string, unknown>>;
-	/** One pref write (fire-and-forget via emitOp, like every prefs write). */
-	'host.prefs.set': ShellOpSpec<{ key: string; value: unknown; scope?: 'workspace' | 'global' }, void>;
+	/** Where Stripe sends the browser back from a portal/checkout session —
+	 *  HOST POLICY (a webview realm's own origin is never a valid return
+	 *  target). The shell serves a default (its own page URL — right for the
+	 *  cloud root); hosts without a web origin (VS Code) register their own.
+	 *  Callers pass the result into the SDK's billing methods. */
+	'host.stripeReturnUrl': ShellOpSpec<Record<string, never>, { url: string }>;
+	/** One pref write — fire-and-forget via emitOp to the WORKSPACE MANAGER,
+	 *  which is the single writer. There is no matching read op: prefs are
+	 *  MIRRORED on the retained `shell:prefs:<partition>` topics, so a realm
+	 *  reads its own synchronous copy and never round-trips.
+	 *
+	 *  NOTE there is no `scope`. Partitions are the only axis — an app has ONE
+	 *  bag, and cross-app state lives in the `shell` partition. */
+	'shell.setPref': ShellOpSpec<{ partition: string; key: string; value: unknown }, void>;
+	/** A realm DECLARES a partition it hosts, so the manager loads it (if it
+	 *  has not already) and publishes its topic. Required because the retained
+	 *  registry cannot tell the manager that someone subscribed, and an
+	 *  unloaded partition has no snapshot to replay. Idempotent; always
+	 *  publishes, even for an empty partition, so `ready` resolves. */
+	'shell.prefs.attach': ShellOpSpec<{ partition: string }, void>;
 	/** Connection-slot state for the Environment page — served by
 	 *  multi-connection hosts (dev/deploy). */
 	'host.envSlots': ShellOpSpec<Record<string, never>, EnvSlotsPayload>;
+	/** Slot-resolved env read for the Environment page: `connection` picks
+	 *  the dev or deploy connection — HOST state (the deploy slot's client
+	 *  never leaves the host process), which is why this is not a plain
+	 *  `client.account.getEnv` on the realm client. Single-connection hosts
+	 *  need no handler: their Environment surface reads the realm client. */
+	'host.env.get': ShellOpSpec<{ scope: 'org' | 'team' | 'user'; scopeId?: string; connection?: 'dev' | 'deploy' }, Record<string, string>>;
+	/** Slot-resolved env write — the counterpart of `host.env.get`. */
+	'host.env.set': ShellOpSpec<{ scope: 'org' | 'team' | 'user'; env: Record<string, string>; scopeId?: string; connection?: 'dev' | 'deploy' }, void>;
 	/** Opens a framework page by registry name, from ANY realm. The host's
 	 *  page directory is the allowlist; an unknown name rejects. `popup`
 	 *  asks for an overlay where the host has one (cloud); hosts without
@@ -97,6 +120,16 @@ export interface HostOpMap extends ShellOpMap {
 	 *  SUMMON: a sidebar event found no live frame (a sidebar post is a user
 	 *  action by the peer contract). */
 	'host.openToolPanel': ShellOpSpec<{ appId: string }, void>;
+	/** Mounts a tool's SIDEBAR (controller) without selecting its tab — the
+	 *  bus peer's reverse SUMMON: frame traffic arrived for a tool whose
+	 *  controller is not mounted, and the frame reaches the engine only
+	 *  through ops that mount serves. Lets a host mount tool sidebars lazily
+	 *  (nothing downloads until a tab is picked or a frame asks) without
+	 *  stranding a restored frame whose tab was never selected.
+	 *
+	 *  MOUNTED and SELECTED are distinct states: this one never changes the
+	 *  strip selection, and the mount is display-hidden until chosen. */
+	'host.mountToolSidebar': ShellOpSpec<{ appId: string }, void>;
 	/** A tool frame's boot state, PULLED by the panel realm (its appId is
 	 *  stamped into the served HTML). The host owns the catalog and the
 	 *  connection, so it answers authoritatively — a late-attaching realm

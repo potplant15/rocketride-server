@@ -42,7 +42,6 @@ import { useShellConnection } from 'shell';
 import { SidebarMenu, BxPlus, BxCheck, BxEditAlt, BxTrash } from 'shell';
 import type { DevToolProps, ViewMenu } from 'shell';
 import { useSavedConnections, useSavedConnectionsStatus, loadSavedConnections, deleteSavedConnection, endpointKeyForConnection, releaseDirectEndpoint } from './connect';
-import { getBusSqlClient } from './connect/busClient';
 import type { SavedSqlConnection } from './connect';
 import { localSidebarBridge, createSidebarToolBridge } from './sqlBridge';
 import type { SqlSidebarBridge } from './sqlBridge';
@@ -283,7 +282,7 @@ const SqlSidebar: React.FC<SqlSidebarProps> = ({ bridge = localSidebarBridge, ho
 											e.stopPropagation();
 											// Best-effort stop of a direct connection's temp
 											// pipeline; the idle TTL reaps it otherwise.
-											if (conn.mode === 'direct' && isConnected) void releaseDirectEndpoint(getBusSqlClient(), endpointKeyForConnection(conn));
+											if (conn.mode === 'direct' && isConnected && client) void releaseDirectEndpoint(client, endpointKeyForConnection(conn));
 											deleteSavedConnection(conn.id);
 											setConfirmDeleteId(null);
 										}}
@@ -357,19 +356,19 @@ const SqlSidebar: React.FC<SqlSidebarProps> = ({ bridge = localSidebarBridge, ho
  * mutation, publishes it as retained channel state) and follows the host's
  * activeDocKey to highlight the fronted connection.
  */
-export const SqlDevToolSidebar: React.FC<DevToolProps> = ({ peer, channel, documents, activeDocKey }) => {
+export const SqlDevToolSidebar: React.FC<DevToolProps> = ({ channel, documents, activeDocKey }) => {
 	const { client, isConnected } = useShellConnection();
 	// Controller bridge: commits incoming saves, publishes the list as
 	// retained channel state, and carries the sidebar's actions.
-	const bridge = useMemo(() => createSidebarToolBridge({ peer, ...(channel ? { channel } : {}), ...(documents ? { documents } : {}) }), [peer, channel, documents]);
+	const bridge = useMemo(() => createSidebarToolBridge({ channel, ...(documents ? { documents } : {}) }), [channel, documents]);
 
 	// This is the OWNER realm: load the list from the server store with the
 	// persistence writer installed. Every mutation — inline delete here,
 	// editor saves arriving over the channel — commits in this realm, and
 	// each commit republishes the state topic to every document.
 	useEffect(() => {
-		if (isConnected) void loadSavedConnections(getBusSqlClient());
-	}, [isConnected]);
+		if (isConnected && client) void loadSavedConnections(client);
+	}, [isConnected, client]);
 
 	return <SqlSidebar bridge={bridge} {...(activeDocKey !== undefined ? { hostActiveDoc: activeDocKey } : {})} />;
 };

@@ -38,10 +38,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { ShellAppProps, DevToolProps } from 'shell';
 import { commonStyles } from 'shell';
-import { createToolChannel, createToolController, useConnectionReady, useShellConnection, useWorkspace, DocTabs, DocSplitLayout, AppLayout, EmptyState, BxFolderOpen } from 'shell';
+import { useShellConnection, useWorkspace, DocTabs, DocSplitLayout, AppLayout, EmptyState, BxFolderOpen } from 'shell';
 import type { Documents } from 'shell';
-import type { ExplorerOps } from './ops';
-import { createLocalExplorerFs, createRemoteExplorerFs } from './fs';
+import { createExplorerFs } from './fs';
 import type { IExplorerFs } from './fs';
 import { createDocs, destroyDocs, getDocs } from './docs';
 import { createStoreVfs, isFileLoadError, isLiveBlobUrl, forgetBlobUrl } from './store';
@@ -137,18 +136,17 @@ const styles = {
 
 const ExplorerApp: React.FC<ShellAppProps> = () => {
 	const { client, isConnected } = useShellConnection();
-	const { loaded, appState, updateAppState } = useWorkspace();
+	const { loaded, appState, updateAppState, flushWorkspaceNow } = useWorkspace();
 	const [ready, setReady] = useState(false);
 
-	// The FULL APP's store surface: the realm legitimately owns a client, so
-	// the viewers get the LOCAL fs (dev-tool frames get the remote one).
-	const fs = useMemo(() => createLocalExplorerFs(isConnected), [isConnected]);
+	// The viewers' store surface over this realm's client.
+	const fs = useMemo(() => createExplorerFs(isConnected ? client : null), [client, isConnected]);
 
 	useEffect(() => {
 		if (!client || !loaded) return;
 
-		const vfs = createStoreVfs(createLocalExplorerFs(true));
-		createDocs(vfs, { appState, updateAppState });
+		const vfs = createStoreVfs(createExplorerFs(client));
+		createDocs(vfs, { appState, updateAppState, flushNow: flushWorkspaceNow });
 		setReady(true);
 
 		return () => { destroyDocs(); setReady(false); };
@@ -176,33 +174,32 @@ const ExplorerApp: React.FC<ShellAppProps> = () => {
  * Dev-tool surface — the editor groups without the shell AppLayout chrome,
  * for host workbenches that mount the tool directly (the VS Code dev-tool
  * panel). The file tree lives in the HOST's sidebar (devToolSidebar below);
- * its opens/renames/moves arrive over the peer channel and are applied to
+ * its opens/renames/moves arrive over the tool channel and are applied to
  * this document's Documents singleton. No workspace binding: tab layout is
  * session-local here.
  */
-export const ExplorerDevTool: React.FC<DevToolProps> = ({ peer, channel }) => {
-	// THIS FRAME HOLDS NO ROCKETRIDE CLIENT: every store interaction is a
-	// controller op, and readiness is the host-published `host:connection`
-	// system topic replicated over the tool channel.
-	const toolChannel = useMemo(() => channel ?? createToolChannel(peer), [channel, peer]);
-	const engineReady = useConnectionReady(toolChannel);
-	const call = useMemo(() => createToolController<ExplorerOps>(peer), [peer]);
-	const fs = useMemo(() => createRemoteExplorerFs(call, engineReady), [call, engineReady]);
+export const ExplorerDevTool: React.FC<DevToolProps> = ({ channel }) => {
+	// This frame holds its OWN realm client — a real RocketRideClient whose
+	// requests ride the shell bus to the host's socket. Engine readiness is
+	// the realm's own mirrored connection state.
+	const { client, isConnected } = useShellConnection();
+	const engineReady = isConnected && client !== null;
+	const fs = useMemo(() => createExplorerFs(engineReady ? client : null), [client, engineReady]);
 	const [ready, setReady] = useState(false);
 
 	useEffect(() => {
-		if (!engineReady) return;
-		createDocs(createStoreVfs(createRemoteExplorerFs(call, true)));
+		if (!engineReady || !client) return;
+		createDocs(createStoreVfs(createExplorerFs(client)));
 		setReady(true);
 		return () => { destroyDocs(); setReady(false); };
-	}, [engineReady, call]);
+	}, [engineReady, client]);
 
 	// Frame side of the tree's peer protocol — apply incoming document
 	// actions, publish the active path for the tree highlight.
 	useEffect(() => {
 		if (!ready) return;
-		return attachExplorerPeerHost(peer);
-	}, [ready, peer]);
+		return attachExplorerPeerHost(channel);
+	}, [ready, channel]);
 
 	if (!ready) return <div style={styles.welcome}>Initialising...</div>;
 	return <ExplorerAppReady docs={getDocs()!} fs={fs} />;
@@ -219,16 +216,7 @@ const ExplorerAppReady: React.FC<{ docs: Documents; fs: IExplorerFs }> = ({ docs
 	// --- Ctrl+S handler -------------------------------------------------------
 
 	useEffect(() => {
-		const handler = () => {
-			const s = docs.getState();
-			const group = s.groups[s.activeGroupId];
-			if (!group) return;
-			const editorId = group.editorIds[group.activeEditorIndex];
-			if (!editorId) return;
-			const editor = s.editors[editorId];
-			if (!editor) return;
-			docs.saveDocument(editor.documentUri);
-		};
+		const handler = () => { void docs.saveActiveDocument(); };
 		window.addEventListener('tab:save', handler);
 		return () => window.removeEventListener('tab:save', handler);
 	}, []);
@@ -252,7 +240,7 @@ const ExplorerAppReady: React.FC<{ docs: Documents; fs: IExplorerFs }> = ({ docs
 								isActive={state.activeGroupId === groupId}
 								canClose={canCloseGroups}
 								onSplit={(gid, dir) => docs.splitGroupWithDocument(gid, dir)}
-								onCloseGroup={(gid) => docs.closeGroup(gid)}
+								onCloseGroup={(gid) => { void docs.requestCloseGroup(gid); }}
 							/>
 
 							<div style={styles.content}>

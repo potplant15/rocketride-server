@@ -816,8 +816,11 @@ const grid = useRef<IDataGridHandle>(null);
 	title="Pipelines"
 	columns={columns}
 	remoteSort
+	// fetchPage is YOUR loader — there is no client.listPipelines(). Build
+	// the page from a real SDK call (see ROCKETRIDE_typescript_API.md) or
+	// your own endpoint, and return { rows, total }.
 	fetchPage={({ page, size, sort, filters, search }) =>
-		client.listPipelines({ page, size, sort, filters, search })}
+		loadPipelinePage({ page, size, sort, filters, search })}
 	onRowClick={(row) => openDetail(row)}
 />
 // After a mutation: re-request the current page.

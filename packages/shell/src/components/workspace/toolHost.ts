@@ -42,11 +42,11 @@
 // =============================================================================
 
 import { createContext, useContext } from 'react';
-import type { DevToolProps } from './types';
+import type { IToolPeer } from './toolChannel';
 import type { PrefsStore } from './prefsStore';
-import type { ToolWorkspaceFs } from './toolWorkspaceFs';
+import type { WorkspaceFs } from '../../workspace/workspaceFs';
 
-export type { ToolWorkspaceFs } from './toolWorkspaceFs';
+export type { WorkspaceFs } from '../../workspace/workspaceFs';
 
 // =============================================================================
 // THE SERVICES CONTRACT
@@ -59,7 +59,7 @@ export interface ToolHostServices {
 	/** Opens a workspace FILE in the host's editor surface. */
 	openFile?: (path: string) => void;
 	/** Workspace/store file access for tool discovery. */
-	workspaceFs?: ToolWorkspaceFs;
+	workspaceFs?: WorkspaceFs;
 	/** This tool's preference partition — PRE-SCOPED by the host (see
 	 *  scopedPrefs): the handle physically cannot address another app's
 	 *  keys, and system prefs are not reachable through it. */
@@ -96,10 +96,11 @@ export function useToolHost<T extends ToolHostServices = ToolHostServices>(): T 
  * A dead-simple in-realm peer for tool mounts that have no isolated
  * counterpart document: posts loop back to this realm's own subscribers,
  * asynchronously (matching the real transports' macrotask semantics).
+ * HOST-side — the result feeds createToolChannel, never a tool directly.
  *
  * @returns The loopback peer.
  */
-export function createLoopbackPeer(): DevToolProps['peer'] {
+export function createLoopbackPeer(): IToolPeer {
 	const subs = new Set<(m: unknown) => void>();
 	return {
 		post: (message: unknown) => {

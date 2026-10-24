@@ -10,10 +10,10 @@
  * DEVELOP | DEPLOY | STORE views, their panes, forms, and state — lives in
  * shared's `modules/appdev`. This webview is a BUS REALM: its identity is
  * stamped into the served HTML (`data-rr-app`), boot state rides
- * `host.appbuilder.load`, the SDK half of its IAppBuilderHost rides the
+ * `host.preview.load`, the SDK half of its IAppBuilderHost rides the
  * brokered `client.app.*` ops (the shared adapter), host verbs ride
- * `host.appbuilder.*`, and the dev-session feeds arrive on the app's
- * `appbuilder:app:<id>:*` topics. The only remaining window.postMessage is
+ * `host.preview.*`, and the dev-session feeds arrive on the app's
+ * `preview:app:<id>:*` topics. The only remaining window.postMessage is
  * the rrdev:* mini-protocol INTO the preview iframe (cross-origin shell).
  *
  * Capability flags select the VSCode variant: no Code pane (files are
@@ -24,12 +24,19 @@ import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ConnectionManager } from 'shell';
+import { ConnectionManager, createMirroredPrefsStore, scopedPrefs } from 'shell';
+import { appPartition } from 'shell/src/workspace/workspaceStore';
 import { AppBuilderScreen } from 'shared/tools/appdev/views';
+import { AppsToolFrame } from 'shared/tools/appdev/AppsToolFrame';
+import { ToolHostProvider } from 'shared/tools/core';
+import type { BuiltinToolServices } from 'shared/tools/core';
+import { announceFramePresence, createFrameBusPeer, createToolChannel } from 'shell';
 import { createBusAppBuilderHost } from 'shared/tools/appdev';
 import type { AppErrorRow, AppEventRow, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/tools/appdev';
-import type { AppBuilderStage } from 'shared/tools/appdev';
-import type { AppBuilderLoadPayload } from 'shared/ops/appBuilderOps';
+import type { AppBuilderLoadPayload } from 'shared/ops/previewOps';
+// The UNBOUND builder's body: the New App wizard (the builder's empty state).
+import { NewAppWizard } from 'shared/tools/appdev/views/new-app/NewAppWizard';
+import { createBusNewAppWizardHost } from 'shared/tools/appdev/views/new-app/newAppWizardBusHost';
 
 // =============================================================================
 // IDENTITY + WIRING
@@ -429,14 +436,13 @@ const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary |
 /** A feed listener registry: subscribe returns an unsubscribe. */
 type Registry<T> = Set<(row: T) => void>;
 
-const AppWebview: React.FC = () => {
+const VscodeAppBuilder: React.FC<{ appId: string }> = ({ appId: stampedAppId }) => {
 	// ── Init payload from the extension host ────────────────────────────
 	const [app, setApp] = useState<AppSummary | null>(null);
 	const [previewUrl, setPreviewUrl] = useState('');
 	// hasReviewLadder defaults true (the gated flow) until init declares the
 	// server; an OSS server flips it off and @public publishes directly.
 	const [capabilities, setCapabilities] = useState({ hasNativeFiles: true, canDebug: false, hasReviewLadder: true });
-	const [initialStage, setInitialStage] = useState<AppBuilderStage>('dashboard');
 	const [reloadSeq, setReloadSeq] = useState(0);
 	const [devEntry, setDevEntry] = useState('');
 	// The workspace manifest riding the dev registration (dev = local truth)
@@ -492,7 +498,12 @@ const AppWebview: React.FC = () => {
 	// App Builder UI preferences (per-workspace, per-app): seeded from
 	// appdev:init, written back over appdev:pref. A ref, not state — reads
 	// are synchronous via host.getPref and never drive a re-render here.
-	const prefsRef = useRef<Record<string, unknown>>({});
+	// App Builder UI prefs live in the app's OWN partition, under an `appdev`
+	// namespace so they cannot collide with the app's runtime prefs. Reads are
+	// synchronous off the mirror, which is what getPref's contract requires.
+	const prefs = useMemo(() => createMirroredPrefsStore(cm, appPartition(stampedAppId)), []);
+	const appdevPrefs = useMemo(() => scopedPrefs(prefs.store, 'appdev'), [prefs]);
+	useEffect(() => prefs.dispose, [prefs]);
 
 	// ── Feed registries — stable across renders ─────────────────────────
 	const eventListeners = useRef<Registry<AppEventRow>>(new Set());
@@ -562,7 +573,7 @@ const AppWebview: React.FC = () => {
 	// ── The bus: boot state + topics + realm-local event derivations ─────
 	const cm = ConnectionManager.getInstance();
 	useEffect(() => {
-		const appId = STAMPED_APP_ID;
+		const appId = stampedAppId;
 
 		// Boot state — pulled, with one retry when the first attempt raced
 		// the realm attachment.
@@ -570,18 +581,16 @@ const AppWebview: React.FC = () => {
 			// Prefs must land BEFORE the App Builder screen mounts (app gates
 			// the render below), so host.getPref is synchronous by the time
 			// the views initialize their state from it.
-			prefsRef.current = payload.prefs ?? {};
 			setApp(payload.app);
 			setPreviewUrl(payload.previewUrl);
 			setCapabilities(payload.capabilities);
-			if (payload.stage) setInitialStage(payload.stage);
 		};
-		void cm.request('host.appbuilder.load', { app: appId } as never).then(
+		void cm.request('host.preview.load', { app: appId } as never).then(
 			(payload) => applyLoad(payload as AppBuilderLoadPayload),
 			() => {
 				const offRetry = cm.on('shell:connected', () => {
 					offRetry();
-					void cm.request('host.appbuilder.load', { app: appId } as never).then((payload) => applyLoad(payload as AppBuilderLoadPayload), () => {});
+					void cm.request('host.preview.load', { app: appId } as never).then((payload) => applyLoad(payload as AppBuilderLoadPayload), () => {});
 				});
 			}
 		);
@@ -594,7 +603,13 @@ const AppWebview: React.FC = () => {
 		const armMonitor = (): void => {
 			if (monitorArmed.current) return;
 			monitorArmed.current = true;
-			cm.request('client.addMonitor', { key: { token: '*' }, types: ['deploy'] } as never).catch(() => {
+			const client = cm.getClient();
+			if (!client) {
+				// Not seeded yet — re-arm on the next connect.
+				monitorArmed.current = false;
+				return;
+			}
+			client.addMonitor({ token: '*' }, ['deploy']).catch(() => {
 				// Not connected yet — re-arm on the next connect.
 				monitorArmed.current = false;
 			});
@@ -606,7 +621,7 @@ const AppWebview: React.FC = () => {
 		const offs = [
 			// Watch/build status (RETAINED — replay covers a reloaded webview;
 			// an undefined delivery is the close-time retraction).
-			cm.subscribe(`appbuilder:app:${appId}:watch`, (snap) => {
+			cm.subscribe(`preview:app:${appId}:watch`, (snap) => {
 				const status = snap as WatchStatus | undefined;
 				if (!status) return;
 				setWatchStatus(status);
@@ -617,7 +632,7 @@ const AppWebview: React.FC = () => {
 			// restarted on a new port): the injected container and its HMR
 			// socket are DEAD — remount the iframe so a fresh boot injects
 			// the live entry.
-			cm.subscribe(`appbuilder:app:${appId}:dev`, (snap) => {
+			cm.subscribe(`preview:app:${appId}:dev`, (snap) => {
 				const dev = snap as { entry?: string; manifest?: Record<string, unknown> } | undefined;
 				if (!dev?.entry) return;
 				const base = dev.entry.split('?')[0];
@@ -630,21 +645,21 @@ const AppWebview: React.FC = () => {
 			}),
 			// Console/error rows — SIGNALS; this realm keeps the bounded
 			// backlog (see the buffers above).
-			cm.subscribe(`appbuilder:app:${appId}:console`, (payload) => {
+			cm.subscribe(`preview:app:${appId}:console`, (payload) => {
 				const row = payload as ConsoleRow | undefined;
 				if (row) emitConsole(row);
 			}),
-			cm.subscribe(`appbuilder:app:${appId}:errors`, (payload) => {
+			cm.subscribe(`preview:app:${appId}:errors`, (payload) => {
 				const row = payload as AppErrorRow | undefined;
 				if (row) emitError(row);
 			}),
 			// The host's session handoff — a one-shot credential, RETAINED
 			// until applied; this page retracts after taking it.
-			cm.subscribe(`appbuilder:app:${appId}:session`, (snap) => {
+			cm.subscribe(`preview:app:${appId}:session`, (snap) => {
 				const session = snap as { token?: string } | undefined;
 				if (!session?.token) return;
 				setAuthToken(session.token);
-				cm.publish(`appbuilder:app:${appId}:session`, undefined);
+				cm.publish(`preview:app:${appId}:session`, undefined);
 				// A credential arriving for an EXPLICIT sign-in click gets
 				// delivered to the preview regardless of the Inherit Auth
 				// checkbox — the user just asked for it.
@@ -745,7 +760,7 @@ const AppWebview: React.FC = () => {
 				// itself arrives on the app's retained :session topic.
 				(e.source as Window | null)?.postMessage({ type: 'rrdev:loginPending' }, e.origin);
 				pendingExplicitLoginRef.current = true;
-				void cm.request('host.appbuilder.login', { app: STAMPED_APP_ID } as never, { timeoutMs: LOGIN_TIMEOUT_MS }).catch(() => {
+				void cm.request('host.preview.login', { app: stampedAppId } as never, { timeoutMs: LOGIN_TIMEOUT_MS }).catch(() => {
 					/* sign-in abandoned — the preview keeps its prompt */
 				});
 			} else if (data?.type === 'shell:devConsole' && data.text !== undefined) {
@@ -810,7 +825,7 @@ const AppWebview: React.FC = () => {
 		// accountSeq participates only as an identity salt: bumping it re-mints
 		// the host object so [host]-keyed effects re-fetch org-scoped data.
 		void accountSeq;
-		const appId = STAMPED_APP_ID;
+		const appId = stampedAppId;
 		return {
 			// The SDK half — the brokered client.app.* ops, shared with the
 			// cloud host (shared/tools/appdev/busHost.ts).
@@ -839,40 +854,37 @@ const AppWebview: React.FC = () => {
 			// here: remounting now would load against a dead dev server — the
 			// restart's rebuild repoints the retained :dev topic, and the
 			// origin-change comparison remounts then.
-			reloadPreview: () => cm.emitOp('host.appbuilder.restart', { app: appId } as never),
+			reloadPreview: () => cm.emitOp('host.preview.restart', { app: appId } as never),
 			// Inherit Auth toggle — PreviewFrame reacts to the prop change (pushes
 			// the session down, or tells the shell to drop it).
 			setInheritAuth: (inherit: boolean) => setInheritAuthState(inherit),
 			// Per-workspace UI preferences: reads from the load-delivered bag,
 			// writes echo to the extension host (workspaceState).
-			getPref: (key: string) => prefsRef.current[key],
-			setPref: (key: string, value: unknown) => {
-				prefsRef.current[key] = value;
-				cm.emitOp('host.appbuilder.pref', { app: appId, key, value } as never);
-			},
+			getPref: (key: string) => appdevPrefs.get(key),
+			setPref: (key: string, value: unknown) => appdevPrefs.set(key, value),
 			// Host actions. No `debug`: the external-browser debug flow was
 			// removed (2026-10-16); the capability stays declared and false.
-			revealFiles: capabilities.hasNativeFiles ? () => cm.emitOp('host.appbuilder.reveal', { app: appId } as never) : undefined,
+			revealFiles: capabilities.hasNativeFiles ? () => cm.emitOp('host.preview.reveal', { app: appId } as never) : undefined,
 
 			// ── The host-specific SDK member: DEPLOY packs the NATIVE folder ─
 			deploy: async (message) => {
-				await req('host.appbuilder.deploy', { app: appId, message });
+				await req('host.preview.deploy', { app: appId, message });
 			},
 
 			// Store: the listing lives in the app's package.json appManifest —
 			// load/save round-trip through the extension host (files are truth;
 			// every deploy packs the manifest as the listing record).
-			loadListing: async () => await req<ListingDraft | null>('host.appbuilder.loadListing', { app: appId }),
+			loadListing: async () => await req<ListingDraft | null>('host.preview.loadListing', { app: appId }),
 			saveListing: async (draft) => {
-				await req('host.appbuilder.saveListing', { app: appId, draft });
+				await req('host.preview.saveListing', { app: appId, draft });
 			},
-			runPreflight: async () => await req<PreflightCheck[]>('host.appbuilder.preflight', { app: appId }),
+			runPreflight: async () => await req<PreflightCheck[]>('host.preview.preflight', { app: appId }),
 			// Package assets: native pick (app-folder-relative result) + text
 			// read for the icon/README previews.
-			pickAppFile: async (kind) => await req<string | null>('host.appbuilder.pickAppFile', { app: appId, kind }),
-			pickIncludePath: async () => await req<string | null>('host.appbuilder.pickIncludePath', { app: appId }),
-			readAppTextFile: async (relPath) => await req<string>('host.appbuilder.readTextFile', { app: appId, relPath }),
-			readAppImageDataUri: async (relPath) => await req<string | null>('host.appbuilder.readImage', { app: appId, relPath }),
+			pickAppFile: async (kind) => await req<string | null>('host.preview.pickAppFile', { app: appId, kind }),
+			pickIncludePath: async () => await req<string | null>('host.preview.pickIncludePath', { app: appId }),
+			readAppTextFile: async (relPath) => await req<string>('host.preview.readTextFile', { app: appId, relPath }),
+			readAppImageDataUri: async (relPath) => await req<string | null>('host.preview.readImage', { app: appId, relPath }),
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- cm is a singleton
 	}, [capabilities, previewUrl, proxyPreviewUrl, req, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus, subscribeDeployChanged]);
@@ -884,9 +896,57 @@ const AppWebview: React.FC = () => {
 
 	return (
 		<div style={styles.root}>
-			<AppBuilderScreen host={host} app={app} previewPane={proxyPreviewUrl && previewLive ? <PreviewFrame url={proxyPreviewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} devManifest={devManifest} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} subscribeConsole={subscribeConsole} />} initialStage={initialStage} onStageChange={(stage: AppBuilderStage) => cm.emitOp('host.appbuilder.stage', { app: STAMPED_APP_ID, stage } as never)} />
+			<AppBuilderScreen host={host} app={app} previewPane={proxyPreviewUrl && previewLive ? <PreviewFrame url={proxyPreviewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} devManifest={devManifest} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} subscribeConsole={subscribeConsole} />} />
 		</div>
 	);
 };
 
-export default AppWebview;
+// =============================================================================
+// UNBOUND — no app stamped: the untitled builder (the New App wizard)
+// =============================================================================
+
+/**
+ * The wizard host for an UNTITLED builder (no app bound): the shared
+ * NewAppWizard over the ONE bus host (host.appdev.* ops — served here by
+ * the extension host's workspace scaffolder). A successful scaffold opens
+ * the real builder and retires this panel from the ext host; Cancel retires
+ * it via `host.appdev.closeWizard`.
+ */
+const WIZARD_HOST = createBusNewAppWizardHost();
+
+// =============================================================================
+// THE REGISTERED FRAME — this panel mounts the apps TOOL's devToolFrame
+// =============================================================================
+//
+// The routing (docKey → bound builder | 'newapp' → wizard) belongs to the
+// shared AppsToolFrame — the same frame the cloud mounts — and this host
+// contributes only its builder internals through the appdevFrames seam
+// (exactly the cloud's shape: rocket-ui surfaces/preview appdevFrames).
+// Document/file ownership is unchanged: every file verb still rides the
+// host.preview.* ops into the extension host.
+
+/** This host's builder body behind the seam: bound → the full builder over
+ *  host.preview.*; unbound → the New App wizard. */
+const VscodeBuilderDoc: React.FC<{ appId: string | null }> = ({ appId }) =>
+	appId ? <VscodeAppBuilder appId={appId} /> : <NewAppWizard host={WIZARD_HOST} />;
+
+/** The seam value — module-stable identity (mirrors the cloud's). */
+const SERVICES: BuiltinToolServices = {
+	openPage: (key: string) => ConnectionManager.getInstance().emitOp('host.openPage', { page: key }),
+	appdevFrames: { builder: VscodeBuilderDoc },
+};
+
+/** The apps tool's channel for this frame document (its bus lanes), plus the
+ *  mount's presence announcement. */
+const APPS_CHANNEL = createToolChannel(createFrameBusPeer('apps', ConnectionManager.getInstance()));
+
+const AppDocRoot: React.FC = () => {
+	React.useEffect(() => announceFramePresence('apps', ConnectionManager.getInstance()), []);
+	return (
+		<ToolHostProvider value={SERVICES}>
+			<AppsToolFrame channel={APPS_CHANNEL} docKey={STAMPED_APP_ID || 'newapp'} />
+		</ToolHostProvider>
+	);
+};
+
+export default AppDocRoot;

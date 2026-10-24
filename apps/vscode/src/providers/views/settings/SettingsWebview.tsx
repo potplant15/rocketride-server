@@ -757,25 +757,33 @@ export const Settings: React.FC = () => {
 		[]
 	);
 
-	// ── Checkout callbacks (passed to CloudPanel) — brokered billing ops ────
+	// ── Checkout callbacks (passed to CloudPanel) — the realm client ─────────
+	const needClient = useCallback(() => {
+		const client = cm.getClient();
+		if (!client || !cm.isConnected()) throw new Error('Not connected to server');
+		return client;
+	}, [cm]);
+
 	const handleFetchPlans = useCallback((): Promise<CheckoutPlan[]> => {
-		return req<CheckoutPlan[]>('client.billing.getProductPrices', { appId: PIPE_BUILDER_APP_ID });
-	}, [req]);
+		return needClient().billing.getProductPrices(PIPE_BUILDER_APP_ID) as Promise<CheckoutPlan[]>;
+	}, [needClient]);
 
 	const handleCreateCheckout = useCallback(
 		(priceId: string): Promise<{ clientSecret: string; subscriptionId: string }> => {
 			const orgId = cm.getAccountInfo()?.organization?.id;
 			if (!orgId) return Promise.reject(new Error('No organisation found'));
-			return req<{ clientSecret: string; subscriptionId: string }>('client.billing.createCheckoutSession', { orgId, appId: PIPE_BUILDER_APP_ID, priceId });
+			return needClient().billing.createCheckoutSession(orgId, PIPE_BUILDER_APP_ID, priceId) as Promise<{ clientSecret: string; subscriptionId: string }>;
 		},
-		[cm, req]
+		[cm, needClient]
 	);
 
 	const handleConfirmPending = useCallback(
 		async (subscriptionId: string, priceId: string): Promise<void> => {
-			await req('client.billing.confirmPending', { appId: PIPE_BUILDER_APP_ID, subscriptionId, priceId });
+			// No SDK method exists for confirm_pending; wrap the public call()
+			// exactly as BillingApi wraps its other verbs.
+			await needClient().call('rrext_account_billing', { subcommand: 'confirm_pending', appId: PIPE_BUILDER_APP_ID, subscriptionId, priceId });
 		},
-		[req]
+		[needClient]
 	);
 
 	const handleCheckoutSuccess = useCallback(() => {

@@ -31,7 +31,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getLogger } from './shared/util/output';
 import { icons } from './shared/util/icons';
-import { createCatalogueReporter } from './shared/util/catalogueDiagnostic';
+import { createCatalogueReporter } from 'shared/utils/catalogueDiagnostic';
 
 import { ConnectionManager, disconnectCloudConnections } from './connection/connection';
 import { DeployManager } from './connection/deploy-manager';
@@ -50,7 +50,6 @@ import { DevToolStore } from './providers/DevToolStore';
 import { BusHost } from './providers/toolhost/busHost';
 import { registerVscodeOps } from './ops';
 import { registerVscodeDevToolOps } from './ops/devtoolOps';
-import { writePref } from './providers/PrefsBag';
 import { DevToolPanelProvider } from './providers/DevToolPanelProvider';
 // BillingProvider removed — billing is now a tab in AccountProvider
 // AuthProvider removed — auth failures now open the Settings page directly
@@ -195,26 +194,10 @@ async function runMigrations(context: vscode.ExtensionContext): Promise<void> {
 	// New: %PROGRAMDATA%/RocketRide/engine/engine.exe + engine/version.json
 	migrateServiceConfig();
 
-	// Migration 6: Sidebar state into the generic prefs bag ('rr.prefs')
-	// under the ShellPrefsMap system keys — one spelling per concept across
-	// hosts. Workspace-scoped (each workspace migrates on its first open).
-	if (!context.workspaceState.get('sidebarPrefsMigrationDone')) {
-		const moves: Array<[string, string]> = [
-			['rr.devTools', 'devToolPins'],
-			['rr.sidebarTabOrder', 'sidebarTabOrder'],
-			['rr.disabledBuiltins', 'disabledBuiltins'],
-			['rr.sidebarMode', 'sidebarMode'],
-		];
-		for (const [oldKey, newKey] of moves) {
-			const value = context.workspaceState.get(oldKey);
-			if (value !== undefined) {
-				await writePref(context, newKey, value, 'workspace');
-				await context.workspaceState.update(oldKey, undefined);
-				logger.output(`${icons.info} Migrated ${oldKey} -> prefs.${newKey}`);
-			}
-		}
-		await context.workspaceState.update('sidebarPrefsMigrationDone', true);
-	}
+	// NOTE: the old "migration 6" (Memento keys -> the local prefs bag) is
+	// gone with the bag itself. Prefs now live in the server-side workspace,
+	// and existing local values are deliberately NOT carried across — users
+	// reset to defaults once.
 }
 
 /**
@@ -297,8 +280,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				progress.report({ increment: 50, message: 'Creating tree providers...' });
 
 				// Pinned dev-tools store — created before the sidebar (which
-				// renders the tool tabs) and shared with the picker below —
-				const devTools = new DevToolStore(context);
+				// renders the tool tabs) and shared with the picker below — is
+				// constructed after the bus root, which owns the prefs store it
+				// reads its pins from.
 				const engineConnection = ConnectionManager.getInstance();
 
 				// SHELL BUS ROOT: this process owns the engine connection, so
@@ -312,7 +296,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// settings/cloud/engine family — registers in dependency order
 				// in src/ops. The returned controller is the settings pages'
 				// panel-lifecycle seam (open args, polling, close semantics).
-				const settingsOps = registerVscodeOps(busHost, context);
+				const devTools = new DevToolStore(busHost.prefs);
+				// closeWizard closes the untitled App Builder panel — appScreen
+				// is constructed below; the op can only fire once it exists.
+				const settingsOps = registerVscodeOps(busHost, context, { closeWizard: () => appScreen?.closeUntitled() });
 				busHost.startMirrors();
 				context.subscriptions.push({ dispose: () => busHost.dispose() });
 
@@ -443,14 +430,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						}
 					},
 				});
-				// New App wizard — a framework page (shared NewAppForm over the
-				// host.appdev.* ops); the open command keeps its historic id.
-				const newApp = new FrameworkProvider(context, busHost, {
-					page: 'newapp',
-					command: 'rocketride.app.create',
-					viewType: 'rocketride.page.newApp',
-					title: 'New App',
-				});
 				// Dev tools: the tool panels (MF host webviews) + the modules
 				// flow's details page (README + Install/Remove — Remove also
 				// closes the tool's open panel). Each registers its own command.
@@ -472,6 +451,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					title: 'Dev Tool',
 					instanceKey: (args) => (typeof args[0] === 'string' ? args[0] : ''),
 					instanceTitle: (args) => {
+						// Best effort, synchronous (account row, else the raw
+						// id) — the page itself renders from the catalog.
 						const apps = (connectionManager?.getClient()?.getAccountInfo()?.apps ?? []) as Array<{ id: string; name?: string }>;
 						const name = apps.find((a) => a?.id === args[0])?.name ?? String(args[0]);
 						return `Dev Tool: ${name}`;
@@ -490,7 +471,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					refreshTools: async () => sidebar?.refreshDevTools(),
 					broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
 				});
-				context.subscriptions.push(welcomePage, settingsPage, account, environment, newApp, devTools, devToolPanels, devToolReadme);
+				context.subscriptions.push(welcomePage, settingsPage, account, environment, devTools, devToolPanels, devToolReadme);
 
 				// Register unified project editor (canvas + status + trace)
 				pipeline = new PipelineProvider(context, busHost);
@@ -679,6 +660,11 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('rocketride.app.open', (appId: string) => {
 			// Fire-and-forget: a rejection has no other surface here — say it.
 			appScreen?.show(appId).catch((err) => vscode.window.showErrorMessage(`Failed to open app: ${err instanceof Error ? err.message : String(err)}`));
+		}),
+		// New App — the UNTITLED App Builder (the wizard is the unbound
+		// builder's empty state). The command keeps its historic id.
+		vscode.commands.registerCommand('rocketride.app.create', () => {
+			appScreen?.showUntitled();
 		}),
 		vscode.commands.registerCommand('rocketride.refresh', () => {
 			vscode.window.showInformationMessage('RocketRide views refreshed');

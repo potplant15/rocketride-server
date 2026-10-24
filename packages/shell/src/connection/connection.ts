@@ -41,6 +41,7 @@
 // =============================================================================
 
 import { RocketRideClient, ConnectResult, AuthenticationException, LoginAttemptCancelledError } from 'rocketride';
+import type { DAPMessage } from 'rocketride';
 import type { ShellConnectionEventMap, IConnectionManager } from '../types/shell';
 import type { IAuthProvider } from '../types/connection';
 // ConnectionState is the one runtime value; the rest are type-only so
@@ -49,9 +50,11 @@ import { ConnectionState } from '../types/connection';
 import type { ConnectionMode, ConnectionStatus } from '../types/connection';
 import { BaseManager } from './base-manager';
 import { RemoteManager } from './remote-manager';
+import { RocketRideClientProxy } from './RocketRideClientProxy';
 import { AUTH_REJECTED_MESSAGE, ConnectionFailure } from './errors';
 import { shouldReloadForTokenStorageUpdate } from './tokenStorageUpdate';
 import { createOpBus } from '../ops/busOps';
+import { CLIENT_EVENT_OP } from '../ops/clientOps';
 import type { IOpBus, IBusRequestOptions, BusOpHandler } from '../ops/busOps';
 import { createRetainedRegistry, localRetainedPort } from '../ops/retained';
 import type { IRetainedPort, RetainedSubscriber } from '../ops/retained';
@@ -316,7 +319,12 @@ export class ConnectionManager implements IConnectionManager {
 	private readonly retainedRegistry = createRetainedRegistry();
 	private retainedPort: IRetainedPort = localRetainedPort(this.retainedRegistry);
 	/** Local subscriptions, re-pointed wholesale when the port swaps. */
-	private readonly topicSubs = new Map<string, { cbs: Set<RetainedSubscriber>; off: () => void }>();
+	// `last` caches the newest snapshot this realm has SEEN for the topic, so
+	// a subscriber joining an already-watched topic replays off it. Without
+	// that cache the port's replay — which fires once, when the port
+	// subscription is created — reaches only the FIRST local subscriber, and
+	// every later one waits for an edge that may never come.
+	private readonly topicSubs = new Map<string, { cbs: Set<RetainedSubscriber>; off: () => void; last?: { snapshot: unknown } }>();
 
 	/**
 	 * User-intent control events that must not be silently dropped if emitted
@@ -1213,9 +1221,20 @@ export class ConnectionManager implements IConnectionManager {
 	// PUBLIC ACCESSORS (matches VSCode API)
 	// =========================================================================
 
-	/** Returns the RocketRideClient instance, or null if not initialized. */
+	/**
+	 * Returns the RocketRideClient instance, or null if not initialized.
+	 *
+	 * In a BUS-MIRRORED realm this is the realm's own
+	 * {@link RocketRideClientProxy} — a real client whose `call()` rides the
+	 * bus to the root's socket. It appears once the first mirror delivery has
+	 * seeded it, and not before: a client answering `isAuthenticated()` from
+	 * an unseeded handshake would report a confident FALSE over a live
+	 * session, which is worse than the null a caller already handles.
+	 */
 	public getClient(): RocketRideClient | null {
-		return this.client;
+		// `?? null` closes the gap: callers branch on `=== null`, and a
+		// `undefined` leaking through would be a truthiness-only bug.
+		return this.client ?? this.mirrorClient ?? null;
 	}
 
 	/** Returns true if the WebSocket is authenticated and connected. */
@@ -1229,6 +1248,10 @@ export class ConnectionManager implements IConnectionManager {
 
 	/** Root-mirrored liveness for socketless realms (null = unmirrored). */
 	private mirrorConnected: boolean | null = null;
+
+	/** This realm's brokered client — built on the first mirror delivery,
+	 *  null in a realm that owns a socket (or has not heard from the root). */
+	private mirrorClient: RocketRideClientProxy | null = null;
 
 	/** Returns true if a connection attempt is in progress. */
 	public isConnecting(): boolean {
@@ -1663,12 +1686,24 @@ export class ConnectionManager implements IConnectionManager {
 	public subscribe(topic: string, cb: RetainedSubscriber): () => void {
 		let entry = this.topicSubs.get(topic);
 		if (!entry) {
-			const cbs = new Set<RetainedSubscriber>();
-			entry = { cbs, off: () => {} };
+			entry = { cbs: new Set<RetainedSubscriber>(), off: () => {} };
 			this.topicSubs.set(topic, entry);
-			entry.off = this.retainedPort.subscribe(topic, (snapshot) => this.fanTopic(cbs, snapshot));
+			entry.off = this.watchTopic(topic, entry);
 		}
 		entry.cbs.add(cb);
+		// LATE JOINER on a topic already watched here: the port replayed to
+		// whoever opened the subscription, not to this callback. Replay off
+		// the cache — async, matching the port's own discipline, and only if
+		// the subscription is still live. A joiner that arrives before that
+		// first replay has no cache yet and needs none: it is already in
+		// `cbs`, so the port's replay fans to it too.
+		if (entry.last) {
+			const { snapshot } = entry.last;
+			const joined = entry;
+			queueMicrotask(() => {
+				if (joined.cbs.has(cb)) this.fanTopic(new Set([cb]), snapshot);
+			});
+		}
 		return () => {
 			const current = this.topicSubs.get(topic);
 			if (!current) return;
@@ -1704,8 +1739,17 @@ export class ConnectionManager implements IConnectionManager {
 		this.retainedPort = port;
 		for (const [topic, entry] of this.topicSubs) {
 			entry.off();
-			entry.off = port.subscribe(topic, (snapshot) => this.fanTopic(entry.cbs, snapshot));
+			entry.off = this.watchTopic(topic, entry);
 		}
+	}
+
+	/** Opens the port subscription for one topic entry, caching each snapshot
+	 *  it delivers so late joiners can replay (see topicSubs). */
+	private watchTopic(topic: string, entry: { cbs: Set<RetainedSubscriber>; off: () => void; last?: { snapshot: unknown } }): () => void {
+		return this.retainedPort.subscribe(topic, (snapshot) => {
+			entry.last = { snapshot };
+			this.fanTopic(entry.cbs, snapshot);
+		});
 	}
 
 	/** Delivers one snapshot to a topic's local subscribers (throw-isolated). */
@@ -1740,6 +1784,7 @@ export class ConnectionManager implements IConnectionManager {
 			// Normalize the root's status onto this realm's enum so every state
 			// reader agrees with the liveness flag.
 			this.connectionStatus = { ...mirror.status, state: mirror.connected ? ConnectionState.CONNECTED : ConnectionState.DISCONNECTED };
+			this.seedMirrorClient();
 			this.emit('shell:statusChange', this.connectionStatus);
 			if (mirror.connected && !wasConnected) this.emit('shell:connected', undefined as never);
 			else if (!mirror.connected && wasConnected) this.emit('shell:disconnected', { reason: 'root disconnected', hasError: false } as never);
@@ -1747,6 +1792,7 @@ export class ConnectionManager implements IConnectionManager {
 		this.subscribe('shell:account', (snapshot) => {
 			if (!snapshot) return;
 			this.accountInfo = snapshot as ConnectResult;
+			this.seedMirrorClient();
 			this.emit('shell:accountUpdate', this.accountInfo);
 		});
 		this.subscribe('shell:services', (snapshot) => {
@@ -1756,6 +1802,46 @@ export class ConnectionManager implements IConnectionManager {
 			this.cachedServiceIcons = (services.icons ?? null) as Record<string, string> | null;
 			this.cachedServicesError = services.servicesError ?? null;
 			this.emit('shell:servicesUpdated', { services: this.cachedServices ?? {}, ...(this.cachedServiceIcons ? { icons: this.cachedServiceIcons } : {}), ...(this.cachedServicesError ? { servicesError: this.cachedServicesError } : {}) } as never);
+		});
+	}
+
+	/**
+	 * Builds (once) and re-seeds this realm's brokered client from the mirror
+	 * topics above.
+	 *
+	 * WHY NO TOPIC OF ITS OWN: everything the handshake accessors need is
+	 * already mirrored and already RETAINED — `shell:status` carries liveness
+	 * and the server URL, `shell:account` carries the ConnectResult. Adding a
+	 * `client:identity` topic would mean a second publisher to keep in step
+	 * with these, and a second chance to get the edge-versus-level discipline
+	 * wrong. Retained delivery is what makes it safe: a realm that mounts
+	 * late replays the current snapshot instead of waiting for the next edge.
+	 *
+	 * Called on EVERY delivery, not just the first: the root reconnecting, or
+	 * switching account, has to move this instance with it.
+	 *
+	 * Does nothing in a realm that owns a socket — nothing publishes these
+	 * topics there, so the subscriptions never fire in the first place.
+	 */
+	private seedMirrorClient(): void {
+		if (this.client) return;
+		if (!this.mirrorClient) {
+			this.mirrorClient = new RocketRideClientProxy({
+				request: (op, params, timeoutMs) => this.request(op, params, timeoutMs !== undefined ? { timeoutMs } : undefined),
+			});
+			// Engine events the ROOT received, pushed down to this realm (the
+			// root broadcasts; see CLIENT_EVENT_OP). Registered with the
+			// client, not before it: an event arriving with nowhere to go
+			// would be dropped, and this is the only thing that wants it.
+			this.ops().handle(CLIENT_EVENT_OP, (params) => {
+				const { message } = (params ?? {}) as { message?: DAPMessage };
+				if (message) void this.mirrorClient?.receiveEvent(message);
+			});
+		}
+		this.mirrorClient.applyIdentity({
+			connected: this.mirrorConnected === true,
+			accountInfo: this.accountInfo,
+			...(this.serverUri ? { uri: this.serverUri } : {}),
 		});
 	}
 

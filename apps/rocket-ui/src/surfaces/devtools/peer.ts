@@ -20,10 +20,10 @@
 // =============================================================================
 
 import { ConnectionManager, createToolChannel, createSidebarBusPeer, createFrameBusPeer } from 'shell';
-import type { DevToolProps, ToolChannel } from 'shell';
+import type { IToolPeer, ToolChannel } from 'shell';
 
-/** The peer shape handed to both mounts. */
-type Peer = DevToolProps['peer'];
+/** The transport pipe under each mount's channel (host-internal). */
+type Peer = IToolPeer;
 
 /** Cached per-tool objects — stable identities across remounts. */
 interface Slots {

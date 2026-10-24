@@ -24,7 +24,6 @@ import type { ConnectionManager } from '../connection/connection';
 import { DeployManager } from '../connection/deploy-manager';
 import { ConfigManager } from '../config';
 import { getStripePublishableKey } from '../providers/shared/stripe-key';
-import { readPrefsSnapshot, writePref } from '../providers/PrefsBag';
 import { FrameworkProvider } from '../providers/toolhost/frameworkProvider';
 
 /** What the registrations need from the host. */
@@ -52,10 +51,9 @@ export function registerVscodeHostOps(bus: IOpBus, deps: IVscodeHostOpsDeps): vo
 			const res = await getStripePublishableKey(client);
 			return { key: res.key || null, ...(res.key ? {} : { reason: res.probed ? 'no-billing' : 'probe-failed' }) };
 		},
-		'host.prefs.snapshot': async () => readPrefsSnapshot(context),
-		'host.prefs.set': async (p) => {
-			await writePref(context, p.key, p.value, p.scope === 'global' ? 'global' : 'workspace');
-		},
+		// Stripe portal/checkout return target: the webview's own origin is
+		// never valid, so the HOST decides — the public site.
+		'host.stripeReturnUrl': async () => ({ url: 'https://rocketride.ai' }),
 		'host.envSlots': async () => envSlotsPayload(connectionManager),
 		// `popup` is meaningless here — VS Code has no window-modal surface,
 		// so an overlay request degrades to the page (by design).

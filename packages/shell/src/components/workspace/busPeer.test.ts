@@ -12,10 +12,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRetainedRegistry, localRetainedPort } from '../../ops/retained';
-import { createSidebarBusPeer, createFrameBusPeer } from './busPeer';
+import { announceFramePresence, createSidebarBusPeer, createFrameBusPeer } from './busPeer';
 import type { IBusPeerBus } from './busPeer';
 
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+/**
+ * Drains pending bus delivery. The registry delivers every signal on a
+ * setTimeout(0), and handlers may chain further signals — a fixed delay races
+ * those chains when the event loop is starved (parallel builder tasks). Each
+ * zero-delay hop here yields one FULL loop turn, so ten hops flush any
+ * delivery chain regardless of load.
+ */
+const settle = async (): Promise<void> => {
+	for (let i = 0; i < 10; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+};
 
 /** One realm's bus verbs over a shared local registry + an op recorder. */
 function makeBus(registry = createRetainedRegistry()) {
@@ -63,8 +74,52 @@ test('a sidebar EVENT with no frame buffers and summons; the frame hello flushes
 	const frame = createFrameBusPeer('t1', bus);
 	const seen: unknown[] = [];
 	frame.subscribe((m) => seen.push(m));
+	announceFramePresence('t1', bus); // the mount's HELLO is the flush trigger
 	await settle();
 	assert.deepEqual(seen.at(-1), { kind: 'open-table', name: 'users' });
+});
+
+test('a frame CALL with no mounted sidebar holds and summons the controller', async () => {
+	const { bus, emitted } = makeBus();
+	// The peer exists (the host arms it for every pinned tool) but no
+	// sidebar mount has subscribed — the lazy-mount case.
+	const sidebar = createSidebarBusPeer('t1', bus);
+	const frame = createFrameBusPeer('t1', bus);
+	frame.subscribe(() => {});
+	frame.post({ __rrtool: 'call', id: 'c1', op: 'monitor.listTasks', params: {} });
+	frame.post({ __rrtool: 'call', id: 'c2', op: 'monitor.listConnections', params: {} });
+	await settle();
+
+	// A burst is ONE mount request, not one per call.
+	assert.deepEqual(
+		emitted.filter((e) => e.op === 'host.mountToolSidebar'),
+		[{ op: 'host.mountToolSidebar', params: { appId: 't1' } }],
+	);
+
+	// The summoned mount receives everything held, in arrival order.
+	const seen: unknown[] = [];
+	sidebar.subscribe((m) => seen.push(m));
+	await settle();
+	assert.deepEqual(
+		(seen as Array<{ id?: string }>).filter((m) => m?.id).map((m) => m.id),
+		['c1', 'c2'],
+	);
+});
+
+test('a mounted sidebar never summons; a later unmount summons again', async () => {
+	const { bus, emitted } = makeBus();
+	const sidebar = createSidebarBusPeer('t1', bus);
+	const off = sidebar.subscribe(() => {});
+	const frame = createFrameBusPeer('t1', bus);
+	frame.subscribe(() => {});
+	frame.post({ __rrtool: 'call', id: 'c1', op: 'x', params: {} });
+	await settle();
+	assert.deepEqual(emitted.filter((e) => e.op === 'host.mountToolSidebar'), [], 'mounted: no summon');
+
+	off();
+	frame.post({ __rrtool: 'call', id: 'c2', op: 'x', params: {} });
+	await settle();
+	assert.equal(emitted.filter((e) => e.op === 'host.mountToolSidebar').length, 1, 'unmounted: summoned again');
 });
 
 test('events signal directly once a frame is ready; replies are live-only', async () => {
@@ -73,11 +128,22 @@ test('events signal directly once a frame is ready; replies are live-only', asyn
 	const frame = createFrameBusPeer('t1', bus);
 	const seen: unknown[] = [];
 	frame.subscribe((m) => seen.push(m));
+	const bye = announceFramePresence('t1', bus);
 	await settle();
 
 	sidebar.post({ kind: 'refresh' });
 	await settle();
 	assert.deepEqual(seen.at(-1), { kind: 'refresh' });
+
+	// BYE re-arms buffering: the next event waits for the next mount.
+	bye();
+	await settle(); // signals deliver async — let the BYE land first
+	sidebar.post({ kind: 'after-bye' });
+	await settle();
+	assert.deepEqual(seen.at(-1), { kind: 'refresh' }, 'event after BYE is buffered, not delivered');
+	announceFramePresence('t1', bus);
+	await settle();
+	assert.deepEqual(seen.at(-1), { kind: 'after-bye' }, 'the next HELLO flushes it');
 });
 
 test('frame non-call payloads retain the LAST one; a remounting sidebar replays it', async () => {
@@ -147,6 +213,7 @@ test('host presence topic gates summoning (panel exists → no summon)', async (
 	const frame = createFrameBusPeer('t1', bus);
 	const seen: unknown[] = [];
 	frame.subscribe((m) => seen.push(m));
+	announceFramePresence('t1', bus); // the hello is still the flush trigger
 	await settle();
 	assert.deepEqual(seen.at(-1), { kind: 'event-while-panel-boots' });
 });

@@ -25,7 +25,7 @@
 // BUS PEER — the tool peer carried on the shell bus's retained/signal lanes
 // =============================================================================
 //
-// The `DevToolProps['peer']` transport between a tool's two mounts (sidebar ↔
+// The IToolPeer transport between a tool's two mounts (sidebar ↔
 // frame), re-carried on the bus so NO host ships a relay: the old policy
 // (toolRelay.ts) ran once per tool inside a host-specific bridge (VS Code's
 // DevToolBridge across webviews; the cloud's in-process twin). Here the same
@@ -46,11 +46,14 @@
 //     oldest-evicted) in the sidebar peer and the frame is SUMMONED via the
 //     `host.openToolPanel` op. The buffer flushes on the frame's HELLO.
 //
-// Frame liveness: every frame mount announces itself with a HELLO signal
-// (and a BYE from its unsubscribe, where unmount cleanup runs — in-process
-// hosts); hosts whose panels can die without cleanup (VS Code webviews)
-// additionally publish the authoritative panel count on the tool's presence
-// topic. The sidebar peer trusts presence when published, hellos otherwise.
+// Frame liveness: the HOST announces each frame MOUNT with
+// {@link announceFramePresence} (HELLO on mount, BYE from its cleanup).
+// Deliberately NOT tied to the peer's subscribe: a host caches one channel
+// (one standing subscription) per tool for identity stability, so the
+// subscription count no longer tracks mounts. Hosts whose panels can die
+// without cleanup (VS Code webviews) additionally publish the authoritative
+// panel count on the tool's presence topic. The sidebar peer trusts
+// presence when published, hellos otherwise.
 //
 // ORDER CONTRACT a frame mount relies on: `host:connection` state first,
 // then retained channel state, then buffered events — guaranteed here by
@@ -58,9 +61,8 @@
 // order; the transport is FIFO).
 // =============================================================================
 
-import type { DevToolProps } from './types';
-import { asToolStateMessage } from './toolChannel';
-import { asToolCallMessage, asToolReplyMessage } from './toolOps';
+import type { IToolPeer } from './toolChannel';
+import { asToolCallMessage, asToolReplyMessage, asToolStateMessage } from './toolChannel';
 import { HOST_CONNECTION_TOPIC, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './toolRelay';
 
 /**
@@ -101,7 +103,7 @@ const topics = (appId: string) => ({
 	panels: `tool:${appId}:panels`,
 });
 
-type Peer = DevToolProps['peer'];
+type Peer = IToolPeer;
 
 // =============================================================================
 // SIDEBAR SIDE — singleton per tool
@@ -158,11 +160,24 @@ export function createSidebarBusPeer(appId: string, cm: IBusPeerBus): Peer {
 	// ── Sidebar mount delivery (hold until the mount subscribes) ────────────
 	let sidebarCb: ((message: unknown) => void) | null = null;
 	const holdToSidebar: unknown[] = [];
+	// One mount request per HOLD PERIOD, not one per message: a frame that
+	// fires a burst of calls at an unmounted controller (the monitor's two
+	// grids paging at once) must ask for the mount once. Reset when a
+	// controller subscribes, so a later unmount can summon again.
+	let sidebarSummoned = false;
 	const deliverToSidebar = (message: unknown): void => {
-		if (sidebarCb) sidebarCb(message);
-		else {
-			holdToSidebar.push(message);
-			if (holdToSidebar.length > TOOL_RELAY_BUFFER_LIMIT) holdToSidebar.shift();
+		if (sidebarCb) {
+			sidebarCb(message);
+			return;
+		}
+		// HOLD: the peer exists (the host arms one per pinned tool) but no
+		// controller has mounted — the lazy-mount case. Keep the message and
+		// ask the host for the mount; it replays on subscribe.
+		holdToSidebar.push(message);
+		if (holdToSidebar.length > TOOL_RELAY_BUFFER_LIMIT) holdToSidebar.shift();
+		if (!sidebarSummoned) {
+			sidebarSummoned = true;
+			cm.emitOp('host.mountToolSidebar', { appId });
 		}
 	};
 
@@ -217,6 +232,8 @@ export function createSidebarBusPeer(appId: string, cm: IBusPeerBus): Peer {
 		},
 		subscribe(cb) {
 			sidebarCb = cb;
+			// The controller is here; a later hold summons again.
+			sidebarSummoned = false;
 			// The retained last frame payload replays via the root on this
 			// subscription (remount render without a handshake).
 			const offLast = cm.subscribe(t.lastToSidebar, (snapshot) => {
@@ -236,9 +253,9 @@ export function createSidebarBusPeer(appId: string, cm: IBusPeerBus): Peer {
 // =============================================================================
 
 /**
- * A frame mount's peer for one tool. Create one per mount; its subscribe's
- * cleanup says BYE (hosts whose panels die without cleanup publish the
- * presence topic instead).
+ * A frame realm's peer for one tool. A host may cache one per tool (the
+ * channel built over it holds one standing subscription); MOUNT liveness is
+ * announced separately via {@link announceFramePresence}.
  *
  * @param appId - The tool's app id.
  * @param cm - The realm's bus verbs (its ConnectionManager).
@@ -279,14 +296,35 @@ export function createFrameBusPeer(appId: string, cm: IBusPeerBus): Peer {
 				lastSeen = map;
 			});
 			const offFrame = cm.subscribe(t.toFrame, (message) => cb(message));
-			// Announce AFTER the subscriptions so a flushed buffer lands here.
-			cm.signal(t.toSidebar, { __rrpeer: 'hello' } satisfies IPeerHandshake);
 			return () => {
-				cm.signal(t.toSidebar, { __rrpeer: 'bye' } satisfies IPeerHandshake);
 				offConnection();
 				offState();
 				offFrame();
 			};
 		},
+	};
+}
+
+/**
+ * Announces one FRAME MOUNT of a tool to its sidebar peer — HELLO now, BYE
+ * from the returned cleanup. HOST-side, one call per mount lifetime (a React
+ * effect): the hello is what flips the sidebar peer to direct delivery and
+ * flushes its buffered events, and the bye is what re-arms buffering and the
+ * panel summon. Call it AFTER the mount's channel exists, so the flushed
+ * buffer has a live subscriber to land on.
+ *
+ * Hosts whose panels can die without cleanup (VS Code webviews) also publish
+ * the authoritative panel count on the presence topic; the hello is still
+ * required there — it is the flush trigger.
+ *
+ * @param appId - The tool's app id.
+ * @param cm - The realm's bus verbs (its ConnectionManager).
+ * @returns Cleanup — says BYE.
+ */
+export function announceFramePresence(appId: string, cm: IBusPeerBus): () => void {
+	const t = topics(appId);
+	cm.signal(t.toSidebar, { __rrpeer: 'hello' } satisfies IPeerHandshake);
+	return () => {
+		cm.signal(t.toSidebar, { __rrpeer: 'bye' } satisfies IPeerHandshake);
 	};
 }

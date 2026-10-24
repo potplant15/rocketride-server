@@ -227,11 +227,15 @@ Two rules before anything else:
   until the normal lifecycle (`verifyApp` → `addApp` → `publishApp`)
   runs.
 
-The New App wizard collects an app-name slug, a display name, a template
-(**Blank** or **Dashboard**), and three frame options that each toggle a
-chrome region of the generated app: **sidebar** (two-column layout with a
-navigation sidebar), **status footer** (`AppLayout showStatus`), and
-**doc tabs** (a document tab strip: Documents + DocSplitLayout + DocTabs).
+The New App wizard is the App Builder's empty state: "New app" opens an
+**Untitled** builder document whose body is the wizard (the same pattern as
+the pipeline editor's empty-canvas wizard), and creating the app binds that
+document to the new app's builder. It collects an app-name slug, a display
+name, a template (**Blank** or **Dashboard**), and three frame options that
+each toggle a chrome region of the generated app: **sidebar** (two-column
+layout with a navigation sidebar), **status footer** (`AppLayout
+showStatus`), and **doc tabs** (a document tab strip: Documents +
+DocSplitLayout + DocTabs).
 
 The wizard assembles the app id from your organization's developer id plus
 the slug, validates it, and writes the app folder under `./apps` in your
@@ -601,6 +605,7 @@ import { useShellConnection, useWorkspace, usePrefs, AppLayout, Button } from 's
 | `useClient()` | `RocketRideClient \| null`, re-rendering on connect/disconnect. |
 | `useConnectionStatus()` | `ConnectionStatus` — the full state machine (state, retry attempt, progress message). |
 | `useShellApiConfig()` | `ShellApiConfig` — runtime config the host booted with. |
+| `useShellApiKey()` | `{ apiKey, loading, error }` — the connection's API key, fetched asynchronously. The only way to reach it: `client.getApiKey()` throws outside the root realm. Engine work needs no key — the client already carries the session. |
 | `getClient()` | Non-React access to the client singleton. |
 | `useAuthUser()` | `ConnectResult \| null` — current identity (the `AuthUser` type). |
 | `useLogout()` | Sign-out trigger. |
@@ -608,8 +613,19 @@ import { useShellConnection, useWorkspace, usePrefs, AppLayout, Button } from 's
 
 ```typescript
 const { client, isConnected } = useShellConnection();
-if (!client || !isConnected) return <div>Connecting...</div>;
+
+// `client` is a REAL client in every realm, including a VS Code webview —
+// its calls ride the shell bus to the host's socket. It is null only before
+// the realm has heard from the host.
+if (!client) return <Spinner />;        // UNKNOWN — not "disconnected"
+if (!isConnected) return <Offline />;   // known to be down
 ```
+
+**Never render absence as a negative.** `client === null` means *not known
+yet*, so `if (!client || !isConnected) return <div>Connecting…</div>` is a
+bug, not a shortcut: in a realm that is perfectly healthy it renders
+"Connecting…" forever while the status bar says connected. Distinguish the
+two states, and give the unknown one a neutral or loading treatment.
 
 The client instance is always the shell's — never construct a
 `RocketRideClient` in an app.

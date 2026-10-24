@@ -40,7 +40,7 @@ import type { CSSProperties } from 'react';
 import { commonStyles } from 'shell';
 import type { ProfileThreadInfo, ProfileThreadsResponse, ProfileTreeNode, ProfileTreeResponse, VizStyle } from './visualizations/types';
 import type { ProfilerAction, ProfilerControlsState, ProfilerFrameChannel } from '../profilerBridge';
-import type { ProfilerEngine } from '../ops';
+import type { ProfilerEngine } from '../engine';
 import ReportText from './visualizations/ReportText';
 import FlameGraph from './visualizations/FlameGraph';
 import SunburstChart from './visualizations/SunburstChart';
