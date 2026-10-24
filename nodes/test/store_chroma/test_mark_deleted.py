@@ -27,10 +27,11 @@ from .test_convert_filter_explicit_none import _load_store_class
 
 
 class _FakeCollection:
-    """A chromadb Collection reduced to what markDeleted/markActive call.
+    """A chromadb Collection reduced to what markDeleted/markActive and count_documents call.
 
     ``get`` answers like the client: one dict of parallel lists. ``update``
     takes ids with their new metadatas; there is no update by filter.
+    ``count`` returns the number of records, as the server does.
     """
 
     def __init__(self, rows):
@@ -42,6 +43,8 @@ class _FakeCollection:
         self.get_calls.append(where)
 
         def matches(meta, clause):
+            if clause is None:
+                return True
             if '$and' in clause:
                 return all(matches(meta, child) for child in clause['$and'])
             assert len(clause) == 1  # Chroma requires one field per clause.
@@ -72,6 +75,9 @@ class _FakeCollection:
         for row_id, meta in zip(ids, metadatas):
             self.rows[row_id] = dict(meta)
 
+    def count(self, read_level=None):
+        return len(self.rows)
+
 
 def _rows(object_id, count, deleted=False):
     return {
@@ -96,19 +102,21 @@ def _deleted_flags(collection):
 
 
 def test_the_fake_matches_the_installed_client():
-    """Pins the two calls the driver makes to the real client's API."""
+    """Pins the three calls the driver makes to the real client's API."""
     chromadb = pytest.importorskip('chromadb')
     from chromadb.api.models.Collection import Collection
     from chromadb.api.types import GetResult
 
     get_params = inspect.signature(Collection.get).parameters
     update_params = inspect.signature(Collection.update).parameters
+    count_params = inspect.signature(Collection.count).parameters
     assert {'where', 'include'} <= set(get_params)
     assert {'ids', 'metadatas'} <= set(update_params)
     assert not {'where', 'new_metadata'} & set(update_params), chromadb.__version__
     assert {'ids', 'metadatas'} <= set(GetResult.__annotations__)
     assert set(inspect.signature(_FakeCollection.get).parameters) == set(get_params)
     assert set(inspect.signature(_FakeCollection.update).parameters) == set(update_params)
+    assert set(inspect.signature(_FakeCollection.count).parameters) == set(count_params)
 
 
 def test_mark_deleted_flips_every_chunk_of_the_named_documents_in_one_update(store):
@@ -180,6 +188,22 @@ def test_the_trash_tools_work_on_this_driver(store):
     assert _deleted_flags(store.collectionObj)['b-0'] is True
     assert tool.restore({'object_ids': ['b']}) == {'success': True, 'object_ids': ['b'], 'matched_chunks': 1}
     assert _deleted_flags(store.collectionObj)['b-0'] is False
+
+
+def test_stats_count_asks_the_server_instead_of_reading_every_id(store):
+    """The stats count is every record, trashed ones included, from Collection.count rather than one ID per row."""
+    from ai.common.store.document_store import VectorStoreToolMixin
+
+    collection = store.collectionObj
+    store.markDeleted(['b'])
+    collection.get_calls.clear()
+    store.modelName, store.vectorSize = 'test-model', 2
+    tool = VectorStoreToolMixin()
+    tool.IGlobal = types.SimpleNamespace(serverName='chroma', store=store, expose_tools=True)
+
+    assert store.count_documents() == 3
+    assert tool.stats({})['count'] == 3
+    assert collection.get_calls == []
 
 
 def test_paths_list_records_without_a_deleted_flag_and_hide_trashed_ones(store):

@@ -474,9 +474,9 @@ class Store(DocumentStoreBase):
         # no documents in the collection
         if not self.doesCollectionExist():
             return 0
-        # Get all ids in collection
-        result = self.collectionObj.get(include=[])
-        return len(result['ids'])
+        # The server counts the records; reading every ID to count them would
+        # move the whole collection's IDs on each call.
+        return self.collectionObj.count()
 
     def searchKeyword(self, query: QuestionText, docFilter: DocFilter) -> List[Doc]:
         """
