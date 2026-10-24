@@ -669,12 +669,13 @@ class Store(DocumentStoreBase):
         with self._cursor() as cur:
             cur.execute(SQL_QUERIES['delete_by_object_ids'].format(collection=self.collection), (objectIds,))
 
-    def markDeleted(self, objectIds: List[str]) -> int:
+    def markDeleted(self, objectIds: List[str]) -> int | None:
         """
         Mark the set of documents with the given objectId as deleted.
 
         @param objectIds: A list of object IDs to mark as deleted.
-        @returns: The number of chunk rows matched (0 when none of the IDs exists or the collection does not).
+        @returns: The number of chunk rows matched (0 when none of the IDs exists or the collection does not),
+            or None when psycopg2 does not know the statement's row count.
         """
         if not self._doesCollectionExist():
             return 0
@@ -682,15 +683,17 @@ class Store(DocumentStoreBase):
         with self._cursor() as cur:
             cur.execute(SQL_QUERIES['mark_deleted'].format(collection=self.collection), (objectIds,))
             matched = cur.rowcount
-        # psycopg2 reports -1 when a statement's row count is not known.
-        return matched if matched >= 0 else 0
+        # psycopg2 reports -1 when a statement's row count is not known; say so
+        # rather than claim no rows matched.
+        return matched if matched >= 0 else None
 
-    def markActive(self, objectIds: List[str]) -> int:
+    def markActive(self, objectIds: List[str]) -> int | None:
         """
         Mark the set of documents with the given objectId as active.
 
         @param objectIds: A list of object IDs to mark as active.
-        @returns: The number of chunk rows matched (0 when none of the IDs exists or the collection does not).
+        @returns: The number of chunk rows matched (0 when none of the IDs exists or the collection does not),
+            or None when psycopg2 does not know the statement's row count.
         """
         if not self._doesCollectionExist():
             return 0
@@ -698,8 +701,9 @@ class Store(DocumentStoreBase):
         with self._cursor() as cur:
             cur.execute(SQL_QUERIES['mark_active'].format(collection=self.collection), (objectIds,))
             matched = cur.rowcount
-        # psycopg2 reports -1 when a statement's row count is not known.
-        return matched if matched >= 0 else 0
+        # psycopg2 reports -1 when a statement's row count is not known; say so
+        # rather than claim no rows matched.
+        return matched if matched >= 0 else None
 
     def render(self, objectId: str, callback: Callable[[str], None]) -> None:
         """
