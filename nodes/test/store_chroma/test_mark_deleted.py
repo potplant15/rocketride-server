@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Aparavi Software AG
 # =============================================================================
 
-"""store_chroma soft delete and restore (#2587, phase 2).
+"""store_chroma soft delete and restore (#2587).
 
 markDeleted and markActive iterated the dict a Chroma ``get`` returns as if it
 were a list of records and called an ``update(where=..., new_metadata=...)``

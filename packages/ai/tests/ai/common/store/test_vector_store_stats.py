@@ -1,4 +1,4 @@
-"""stats on VectorStoreToolMixin: document_count and the control-row refresh (#2587, phase 2).
+"""stats on VectorStoreToolMixin: document_count and the control-row refresh (#2587).
 
 count is the row (chunk) count as the store counts it, which on the Postgres
 drivers includes the control row and soft-deleted chunks. document_count is the

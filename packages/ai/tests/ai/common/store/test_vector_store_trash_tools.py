@@ -1,4 +1,4 @@
-"""soft_delete and restore on VectorStoreToolMixin (#2587, phase 2).
+"""soft_delete and restore on VectorStoreToolMixin (#2587).
 
 Both ride on the driver contract every store already implements (markDeleted and
 markActive), sit behind the same two switches as upsert and delete, clean their

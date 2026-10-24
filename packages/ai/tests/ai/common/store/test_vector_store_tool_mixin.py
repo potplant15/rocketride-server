@@ -215,7 +215,7 @@ def test_get_pages_the_whole_document_regardless_of_the_driver():
 
 
 def test_get_on_an_unknown_document_is_a_failure_not_an_empty_page():
-    """An object ID the store never returns a chunk for is reported, whatever the offset (phase 2)."""
+    """An object ID the store never returns a chunk for is reported, whatever the offset (#2587)."""
     store = _store()
     store.get.return_value = []
     tools = _Tools(store, allow_write=False, expose_tools=True)

@@ -1,4 +1,4 @@
-"""delete on VectorStoreToolMixin: ID clean-up shared with the trash tools (#2587, phase 2).
+"""delete on VectorStoreToolMixin: ID clean-up shared with the trash tools (#2587).
 
 delete now cleans its object IDs the way soft_delete and restore do: stripped,
 de-duplicated in order, the store's control row refused, and the distinct IDs

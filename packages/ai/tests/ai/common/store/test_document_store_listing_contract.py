@@ -1,4 +1,4 @@
-"""The optional document listing on DocumentStoreBase, and the mutation counts (#2587, phase 2).
+"""The optional document listing on DocumentStoreBase, and the mutation counts (#2587).
 
 A driver opts into list_documents by implementing listDocuments and
 countDocuments and setting supports_document_listing; the base itself does

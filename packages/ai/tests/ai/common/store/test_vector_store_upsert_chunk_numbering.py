@@ -1,4 +1,4 @@
-"""upsert on VectorStoreToolMixin: chunk numbering within one call (#2587, phase 2).
+"""upsert on VectorStoreToolMixin: chunk numbering within one call (#2587).
 
 Before this change every document without an explicit chunkId was stored as
 chunk 0, so several chunks sent for one object ID all became chunk 0 and get

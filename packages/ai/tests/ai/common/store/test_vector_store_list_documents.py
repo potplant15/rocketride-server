@@ -1,4 +1,4 @@
-"""list_documents on VectorStoreToolMixin: an optional capability of the driver (#2587, phase 2).
+"""list_documents on VectorStoreToolMixin: an optional capability of the driver (#2587).
 
 objdir keys its result by parent path, so documents that share a path collapse
 into one entry. list_documents returns one row per document with its chunk

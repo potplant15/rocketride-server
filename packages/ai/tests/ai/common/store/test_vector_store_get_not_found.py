@@ -1,4 +1,4 @@
-"""get on VectorStoreToolMixin: an unknown document is a failure, not an empty page (#2587, phase 2).
+"""get on VectorStoreToolMixin: an unknown document is a failure, not an empty page (#2587).
 
 Before this change get answered an object ID the store has never seen with
 success and no chunks, the same reply as a page past the end of a real

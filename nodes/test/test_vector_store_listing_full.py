@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Aparavi Software AG
 # =============================================================================
 
-"""Real PostgreSQL tests for the phase 2 vector-store tools on both Postgres drivers (#2587).
+"""Real PostgreSQL tests for the vector-store trash and listing tools on both Postgres drivers (#2587).
 
 Covers what the unit tests cannot: the listing and counting SQL, the matched
 row counts of markDeleted and markActive, objdir pages that count paths, and
