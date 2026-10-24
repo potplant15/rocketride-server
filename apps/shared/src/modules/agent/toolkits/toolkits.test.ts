@@ -22,7 +22,7 @@
 
 // =============================================================================
 // TOOLKIT TESTS — read before edit, no overwriting unsaved editor changes, read-only guides,
-// the user says yes first, secrets stay out, deploy_app keeps its version, check_app
+// the user says yes first, the RocketRide client tool, deploy_app keeps its version, check_app
 // =============================================================================
 
 import assert from 'node:assert/strict';
@@ -37,9 +37,9 @@ import type { AgentDevSession, AgentHost } from '../host';
 import type { AgentTool } from '../tools';
 import { AppCheckToolkit, type AppCheckOptions, type CheckReport, type MarkerInfo } from './appCheck';
 import { AppToolkit } from './appTools';
-import { declined, type ConfirmFn } from './common';
+import { declined, NOT_CONNECTED_MESSAGE, type ConfirmFn } from './common';
 import { FilesystemTools } from './filesystem';
-import { PipelineDeployToolkit } from './pipelineDeploy';
+import { RocketRideClientToolkit } from './rocketrideClient';
 
 // =============================================================================
 // MEMORY WORKSPACE — an in-memory IWorkspaceFileSystem for these tests
@@ -276,8 +276,6 @@ function row(registryVersion: number, buildStatus = 'ok', state = 'private'): Ro
 
 /** What the fake client answers. */
 interface Answers {
-	/** What `deploy.get` (deploy_status) returns. */
-	status?: unknown;
 	/** What `listDeployments` returns on each call; the last repeats. */
 	listings?: Row[][];
 	/** What `deploy.add` returns. */
@@ -285,14 +283,13 @@ interface Answers {
 }
 
 /**
- * A fake client with the deploy and app methods the tools call, cast to the real type.
+ * A fake client with the methods the app tools call, cast to the real type.
  *
  * @param answers - What it answers.
  * @returns The client and the name of each method called, in order.
  */
 function fakeClient(answers: Answers = {}): { client: RocketRideClient; calls: string[] } {
 	const calls: string[] = [];
-	const deployment = { teamId: 't1', projectId: 'p1', version: 3, state: 'enabled', schedules: {} };
 	const listings = answers.listings ?? [[]];
 	let listed = 0;
 	const method = (name: string, value: () => unknown) => async () => {
@@ -302,12 +299,6 @@ function fakeClient(answers: Answers = {}): { client: RocketRideClient; calls: s
 	const client = {
 		deploy: {
 			add: method('add', () => answers.added ?? { artifact: { version: 3 } }),
-			deploy: method('deploy', () => deployment),
-			get: method('get', () => answers.status ?? deployment),
-			enable: method('enable', () => deployment),
-			disable: method('disable', () => deployment),
-			remove: method('remove', () => deployment),
-			setSchedule: method('setSchedule', () => deployment),
 		},
 		listDeployments: method('listDeployments', () => listings[Math.min(listed++, listings.length - 1)]),
 		buildLog: method('buildLog', () => ({ log: '' })),
@@ -347,11 +338,6 @@ function toolOf(toolkit: { tools(): AgentTool[] }, name: string): AgentTool {
 	return found;
 }
 
-/** The deploy tools over a fake client. */
-function deployTools(client: RocketRideClient, confirm: ConfirmFn): PipelineDeployToolkit {
-	return new PipelineDeployToolkit(() => client, createMemoryWorkspace({}), confirm);
-}
-
 /** The app tools over a fake client and a workspace with one app, `a-ui`, whose manifest id is `acme.a`. */
 function appTools(client: RocketRideClient, confirm: ConfirmFn): AppToolkit {
 	const host: AgentHost = {
@@ -363,9 +349,6 @@ function appTools(client: RocketRideClient, confirm: ConfirmFn): AppToolkit {
 	};
 	return new AppToolkit(() => client, host, confirm, { pollMs: 0, buildWaitMs: 50 });
 }
-
-/** A small flat pipeline that is ready to deploy: it has a name and a project id. */
-const PIPE = { name: 'Daily digest', components: [{ id: 'webhook_1', provider: 'webhook', config: { mode: 'Source' } }], source: 'webhook_1', project_id: 'p1' };
 
 // =============================================================================
 // READ BEFORE EDIT
@@ -440,28 +423,6 @@ test('the file tools read guides but cannot change them', async () => {
 // THE USER SAYS YES FIRST
 // =============================================================================
 
-test('deploy and schedule actions ask first: a no does nothing, a yes runs once', async () => {
-	// Each case: the tool, its arguments, the client method it runs, and the title of its question.
-	const cases: Array<[tool: string, args: Record<string, unknown>, method: string, title: string]> = [
-		['deploy_to_team', { project_id: 'p1', version: 3, team_id: 't1' }, 'deploy', 'Deploy p1'],
-		['deploy_add', { pipeline: PIPE, deploy_to: 't1' }, 'add', 'Deploy p1'],
-		['deploy_set_schedule', { project_id: 'p1', source_id: 'webhook_1', schedule: '0 9 * * 1-5', team_id: 't1' }, 'setSchedule', 'Schedule p1'],
-		['deploy_enable', { project_id: 'p1', team_id: 't1' }, 'enable', 'Enable p1'],
-		['deploy_disable', { project_id: 'p1', team_id: 't1' }, 'disable', 'Disable p1'],
-		['deploy_remove', { project_id: 'p1', team_id: 't1' }, 'remove', 'Remove p1'],
-	];
-	for (const [tool, args, method, title] of cases) {
-		for (const yes of [false, true]) {
-			const { client, calls } = fakeClient();
-			const { confirm, asked } = fakeConfirm(yes);
-			const result = await toolOf(deployTools(client, confirm), tool).execute(args);
-			assert.deepEqual(asked, [title], `${tool}: the user is asked once`);
-			assert.deepEqual(calls, yes ? [method] : [], `${tool}: ${yes ? 'a yes runs it' : 'a no runs nothing'}`);
-			if (!yes) assert.equal(result, declined(title), tool);
-		}
-	}
-});
-
 test('publish_app asks first; a no publishes nothing', async () => {
 	const { client, calls } = fakeClient({ listings: [[row(4, 'ok', 'ready')]] });
 	const { confirm, asked } = fakeConfirm(false);
@@ -472,17 +433,122 @@ test('publish_app asks first; a no publishes nothing', async () => {
 });
 
 // =============================================================================
-// SECRETS
+// THE ROCKETRIDE CLIENT TOOL
 // =============================================================================
 
-test('results hide secrets but keep placeholders and task_token', async () => {
-	const status = { teamId: 't1', projectId: 'p1', task_token: 'tk-fake-0001', schedules: { webhook_1: { apikey: 'sk-fake-not-a-real-key', token: 'tok-fake', api_key: '${ROCKETRIDE_OPENAI_KEY}' } } };
-	const { client } = fakeClient({ status });
-	const text = await toolOf(deployTools(client, fakeConfirm(false).confirm), 'deploy_status').execute({ project_id: 'p1', team_id: 't1' });
-	assert.doesNotMatch(text, /sk-fake-not-a-real-key|tok-fake/);
-	assert.match(text, /\[redacted\]/);
-	assert.match(text, /\$\{ROCKETRIDE_OPENAI_KEY\}/, 'a placeholder names a key without holding it');
-	assert.match(text, /tk-fake-0001/, 'the run tools hand out task_token on purpose');
+/**
+ * A fake client that answers each method from a table and records every call.
+ * A method throws unless it is called on the object that holds it, the way a
+ * real client method fails when it loses `this`.
+ *
+ * @param answers - What each method returns, by the name the tool takes (`use`, `deploy.get`).
+ * @returns The client, and each call as its method name and params, in order.
+ */
+function scriptedClient(answers: Record<string, unknown>): { client: RocketRideClient; calls: Array<[method: string, params: unknown[]]> } {
+	const calls: Array<[method: string, params: unknown[]]> = [];
+	const root: Record<string, unknown> = {};
+	for (const [method, answer] of Object.entries(answers)) {
+		const [first, second] = method.split('.');
+		const holder = (second === undefined ? root : (root[first] ??= {})) as Record<string, unknown>;
+		holder[second ?? first] = async function (this: unknown, ...params: unknown[]) {
+			if (this !== holder) throw new Error(`${method} was called without its object`);
+			calls.push([method, params]);
+			return answer;
+		};
+	}
+	return { client: root as unknown as RocketRideClient, calls };
+}
+
+/** The rocketride_client tool over a client (null for none) and a workspace view. */
+function clientTool(client: RocketRideClient | null, vfs: IWorkspaceFileSystem = createMemoryWorkspace({})): AgentTool {
+	return toolOf(new RocketRideClientToolkit(() => client, vfs), 'rocketride_client');
+}
+
+test('rocketride_client calls a method by its guide name, with its params in order', async () => {
+	const status = { teamId: 't1', projectId: 'p1', state: 'enabled' };
+	const { client, calls } = scriptedClient({ 'deploy.get': status, getTaskStatus: { state: 'running' } });
+	const tool = clientTool(client);
+	assert.deepEqual(JSON.parse(await tool.execute({ method: 'deploy.get', params: ['p1', 't1'] })), status);
+	await tool.execute({ method: 'client.getTaskStatus', params: ['tk-1'] });
+	assert.deepEqual(calls, [
+		['deploy.get', ['p1', 't1']],
+		['getTaskStatus', ['tk-1']],
+	]);
+});
+
+test('rocketride_client refuses every blocked method without reaching the client', async () => {
+	const blocked = ['getApiKey', 'getAccountInfo', 'account.getProfile', 'connect', 'login', 'account.getEnv', 'account.createKey', 'billing.createCheckoutSession', 'billing.purchaseTopup', 'billing.createPortalSession', 'call', 'request', 'fsReadString', 'fsWriteString'];
+	const { client, calls } = scriptedClient(Object.fromEntries(blocked.map((method) => [method, 'rr_fake_session'])));
+	for (const method of blocked) {
+		await assert.rejects(clientTool(client).execute({ method }), new RegExp(`Error: ${method.replace('.', '\\.')} is blocked: `), method);
+	}
+	assert.deepEqual(calls, []);
+});
+
+test('rocketride_client reads a filepath from the workspace, unsaved edits included', async () => {
+	const edited = { name: 'Digest', components: [{ id: 'webhook_1', provider: 'webhook', config: { mode: 'Source' } }], project_id: 'p1' };
+	const ws = createMemoryWorkspace({ 'pipelines/digest.pipe': JSON.stringify({ pipeline: edited, version: 1 }), 'pipelines/nameless.pipe': JSON.stringify({ pipeline: { components: [], project_id: 'p2' } }) }, { dirty: ['pipelines/digest.pipe'] });
+	// read() returns the editor's buffer; the saved copy on disk is older.
+	ws.peekBase = async () => JSON.stringify({ pipeline: { name: 'Old', components: [], project_id: 'p1' } });
+	const vfs = new GuideFileSystem(ws, { paths: () => [], read: async () => '' });
+	const { client, calls } = scriptedClient({ use: { token: 'tk-1' }, validate: { errors: [], warnings: [] }, 'deploy.add': { artifact: { version: 1 } } });
+	const tool = clientTool(client, vfs);
+
+	for (const method of ['use', 'validate', 'deploy.add']) await tool.execute({ method, params: [{ filepath: './pipelines/digest.pipe', source: 'webhook_1' }] });
+	const sent = { source: 'webhook_1', pipeline: { ...edited, version: 1 } };
+	assert.deepEqual(calls, [
+		['use', [sent]],
+		['validate', [sent]],
+		['deploy.add', [sent]],
+	]);
+
+	await assert.rejects(tool.execute({ method: 'deploy.add', params: [{ filepath: 'pipelines/nameless.pipe' }] }), /needs a name/);
+	assert.equal(calls.length, 3, 'a nameless pipeline never reaches deploy.add');
+});
+
+test('rocketride_client results hide secrets but keep the run token, and the catalog only loses its icons', async () => {
+	const services = { llm_openai: { classType: ['llm'], description: 'Calls OpenAI.', apikey: { type: 'string', title: 'API key' } } };
+	const { client } = scriptedClient({
+		use: { token: 'tk-run-0001', pipeline: { components: [{ id: 'llm_1', config: { apikey: 'sk-fake-not-a-real-key', api_key: '${ROCKETRIDE_OPENAI_KEY}' } }] } },
+		'deploy.run': { token: 'tk-run-0002', version: 3 },
+		getTasks: [{ token: 'tk-other-0003', name: 'Digest' }],
+		getServices: { services, icons: { i1: '<svg/>' }, version: 2 },
+	});
+	const tool = clientTool(client);
+
+	const used = await tool.execute({ method: 'use', params: [{ pipeline: {} }] });
+	assert.match(used, /tk-run-0001/, 'use hands out its run token');
+	assert.doesNotMatch(used, /sk-fake-not-a-real-key/);
+	assert.match(used, /\[redacted\]/);
+	assert.match(used, /\$\{ROCKETRIDE_OPENAI_KEY\}/, 'a placeholder names a key without holding it');
+	assert.match(await tool.execute({ method: 'deploy.run', params: ['p1', 'webhook_1', 't1'] }), /tk-run-0002/);
+	assert.doesNotMatch(await tool.execute({ method: 'getTasks' }), /tk-other-0003/, 'a token anywhere else stays hidden');
+	assert.deepEqual(JSON.parse(await tool.execute({ method: 'getServices' })), { services, version: 2 });
+});
+
+test('rocketride_client explains a call it cannot make', async () => {
+	/** A class instance, like pipe()'s DataPipe: printing its fields would print the client and its key. */
+	class LiveObject {
+		client = { _apikey: 'rr_fake_session' };
+	}
+	const { client, calls } = scriptedClient({ pipe: {}, getTasks: [], getTaskPipeline: new LiveObject() });
+	const tool = clientTool(client);
+	const rows: Array<[args: Record<string, unknown>, message: RegExp]> = [
+		[{ method: 'nope' }, /'nope' is not a RocketRide client method\. .*ROCKETRIDE_typescript_API\.md/],
+		[{ method: 'toString' }, /is not a RocketRide client method/],
+		[{ method: 'account.client.getApiKey' }, /is not a RocketRide client method/],
+		[{ method: '_detach' }, /is private/],
+		[{ method: 'pipe', params: ['tk-1'] }, /pipe can't work over JSON: .*send\(token, text\)/],
+		[{ method: 'getTasks', params: { token: 'tk-1' } }, /params must be an array/],
+		[{ method: 'getTaskPipeline', params: ['tk-1'] }, /getTaskPipeline returned a live object/],
+	];
+	for (const [args, message] of rows) await assert.rejects(tool.execute(args), message, String(args.method));
+	assert.deepEqual(
+		calls.map(([method]) => method),
+		['getTaskPipeline'],
+		'only the live-object call reached the client'
+	);
+	await assert.rejects(clientTool(null).execute({ method: 'getServices' }), { message: NOT_CONNECTED_MESSAGE });
 });
 
 // =============================================================================

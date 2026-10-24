@@ -340,9 +340,9 @@ const CALL_KEYS = new Set(['tool', 'name', 'function', 'args', 'arguments', 'inp
 
 /**
  * The flat shape: an entry's keys that are not call keys are its arguments,
- * values untouched. Three call keys are real argument names for some tools
- * (`name` of describe_component and show_view; `input` of send_data), so
- * they are arguments where they cannot be anything else:
+ * values untouched. Three call keys can also be real argument names (`name`
+ * of show_view, or an `input` a tool takes as text), so they are arguments
+ * where they cannot be anything else:
  * `name` whenever `tool` is given, since it then names nothing, and `input`
  * and `parameters` when `plainText` says they hold plain text.
  */
@@ -377,7 +377,7 @@ function flatArgs(entry: Record<string, unknown>, plainText: boolean): Record<st
  * One exception keeps `input` usable as an argument: when the one taken is the
  * entry's own `input` or `parameters`, it is text that is not a JSON object,
  * and other keys sit beside it, the text is an argument of that name and the
- * entry is read as flat. `{"tool": "send_data", "task_token": ..., "input": "hello"}`
+ * entry is read as flat. `{"tool": "<name>", "token": ..., "input": "hello"}`
  * is that, not arguments that failed to parse. With nothing beside it, such
  * text is still reported.
  */

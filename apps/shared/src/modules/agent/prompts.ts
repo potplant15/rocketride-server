@@ -224,10 +224,10 @@ export const CORE_PROMPT: CorePrompt = {
  * (the CLI and Python API docs, and the README, whose task router this
  * replaces).
  *
- * Every path is a path the agent can read: `.rocketride/docs/<file>` is
- * `docs/agents/context/<file>` and `.rocketride/skills/<path>` is
- * `docs/agents/skills/<path>`. Each line stays within 200 characters and the
- * whole router within 3,000, so the prompt's start stays small and cacheable.
+ * Every path is a `.rocketride/docs/` file the agent can read:
+ * `.rocketride/docs/<file>` is `docs/agents/context/<file>`. Each line stays
+ * within 200 characters and the whole router within 3,000, so the prompt's
+ * start stays small and cacheable.
  */
 
 // =============================================================================
@@ -237,16 +237,10 @@ export const CORE_PROMPT: CorePrompt = {
 /** One router line: the job, and the guides to read for it, in reading order. */
 const ROUTER_ENTRIES: Array<{ when: string; paths: string[] }> = [
 	{ when: 'any RocketRide work, first', paths: ['.rocketride/docs/ROCKETRIDE_CONCEPTS.md'] },
-	{
-		when: 'building a pipeline (skill is the method)',
-		paths: ['.rocketride/skills/rocketride-building-pipelines/SKILL.md', '.rocketride/docs/ROCKETRIDE_PIPELINES.md', '.rocketride/docs/ROCKETRIDE_COMPONENT_REFERENCE.md'],
-	},
-	{ when: 'choosing and wiring nodes', paths: ['.rocketride/skills/rocketride-designing-pipelines/SKILL.md'] },
-	{ when: 'configuring nodes and validating', paths: ['.rocketride/skills/rocketride-configuring-pipelines/SKILL.md'] },
-	{ when: 'running a pipeline', paths: ['.rocketride/skills/rocketride-running-pipelines/SKILL.md'] },
-	{ when: 'debugging a failed run', paths: ['.rocketride/skills/rocketride-debugging-pipelines/SKILL.md', '.rocketride/docs/ROCKETRIDE_OBSERVABILITY.md'] },
+	{ when: 'building or changing a pipeline', paths: ['.rocketride/docs/ROCKETRIDE_PIPELINES.md', '.rocketride/docs/ROCKETRIDE_COMPONENT_REFERENCE.md'] },
+	{ when: 'calling RocketRide with rocketride_client (validate, run, logs, deploys, account), or app code that calls the client', paths: ['.rocketride/docs/ROCKETRIDE_typescript_API.md'] },
+	{ when: 'debugging a failed run', paths: ['.rocketride/docs/ROCKETRIDE_OBSERVABILITY.md'] },
 	{ when: 'building or changing an app', paths: ['.rocketride/docs/ROCKETRIDE_APPS.md', '.rocketride/docs/ROCKETRIDE_UI_COMPONENTS.md'] },
-	{ when: 'app code that calls the client', paths: ['.rocketride/docs/ROCKETRIDE_typescript_API.md'] },
 	{ when: 'webhooks, MCP, n8n and other integrations', paths: ['.rocketride/docs/ROCKETRIDE_INTEGRATIONS.md'] },
 ];
 
@@ -257,8 +251,8 @@ const ROUTER_ENTRIES: Array<{ when: string; paths: string[] }> = [
 /** The instruction that opens the router: read first, then act. */
 const OPENING = 'Before acting, you must read the guide that matches the task.';
 
-/** Closing note: the guides were written for local agents, so say what replaces their commands (wrapped to keep each line short). */
-const CLOSING = ['These guides were written for local agents. Where one says to run a `rocketride` command, read `.rocketride/schema/` or `services-catalog.json`,', 'or run a Python script, use the matching tool instead (list_components, describe_component, validate_pipeline, run_pipeline, …).'].join('\n');
+/** Closing note: the guides were written for local agents, so say what replaces their commands and scripts (wrapped to keep each line short). */
+const CLOSING = ['These guides were written for local agents. Where one says to run a `rocketride` command, read `.rocketride/schema/` or `services-catalog.json`,', 'or run a Python script, call the matching TypeScript client method with rocketride_client instead.'].join('\n');
 
 /** The router text: the opening, one line per entry, then the closing note. */
 const ROUTER = [OPENING, '', ...ROUTER_ENTRIES.map((e) => `- ${e.when}: ${e.paths.join(' + ')}`), '', CLOSING].join('\n');

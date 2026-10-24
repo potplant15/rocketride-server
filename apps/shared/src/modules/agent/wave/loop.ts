@@ -158,7 +158,7 @@ const FALLBACK_PREVIEW_CHARS = 2000;
 const THINKING_ERROR_CHARS = 200;
 
 /** The arguments that name what a call works on, in the order a thinking line looks for them. */
-const PRIMARY_ARGS = ['path', 'oldPath', 'target', 'app', 'name', 'task_token', 'project_id'];
+const PRIMARY_ARGS = ['path', 'oldPath', 'target', 'app', 'name', 'task_token', 'project_id', 'method'];
 
 /** The note that sends an unusable reply back, for that one call. */
 function retryNote(problems: string[]): string {

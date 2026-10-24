@@ -62,9 +62,9 @@ export function requireClient(get: ClientGetter): RocketRideClient {
 // =============================================================================
 
 /**
- * Tools that publish, schedule, enable, disable or remove ask the user first
- * (spec section 6). They never call the shell's dialog themselves: the host
- * passes in a `ConfirmFn`, so tests can answer yes or no without a browser.
+ * The app tools ask the user before they publish or submit an app (spec
+ * section 6). They never call the shell's dialog themselves: the host passes in
+ * a `ConfirmFn`, so tests can answer yes or no without a browser.
  */
 
 /** Asks the user to confirm. Resolves true when they do, false when they decline. */
@@ -100,7 +100,7 @@ export function declined(title: string): string {
  * Every RocketRide tool returns a string, and the model reads all of it. These
  * helpers keep that string short enough to be useful and free of secrets:
  * `clip` cuts long text and says how to see the rest, `redactSecrets` strips
- * secret values from anything a pipeline tool shows the model, and `toolText`
+ * secret values from anything a RocketRide tool shows the model, and `toolText`
  * does both for a client result.
  */
 
@@ -109,7 +109,7 @@ export function declined(title: string): string {
 // =============================================================================
 
 /** The most characters a tool returns before its text is cut. */
-const RESULT_MAX_CHARS = 32_000;
+export const RESULT_MAX_CHARS = 32_000;
 
 /** What a secret value is replaced with. */
 const REDACTED = '[redacted]';
@@ -124,9 +124,6 @@ const REDACTED = '[redacted]';
  * secure field that goes by it (graph_falkordb.url) is a known gap.
  */
 const SECRET_KEY = /api[_-]?key|secret|passw(?:or)?d|passphrase|token|credential|private[_-]?key|(?:access|account|ssh)[_-]?key|bearer|auth(?:orization)?[_-]?value|header[_-]?value|webhook[_-]?url|connection[_-]?string/i;
-
-/** The one secret-named field kept as is: the run tools return `task_token` on purpose, so the model can follow a run. */
-const KEPT_KEY = 'task_token';
 
 /** A secret reference: `${ROCKETRIDE_*}` names a key without holding it. */
 const PLACEHOLDER = /^\$\{ROCKETRIDE_\w+\}$/;
@@ -158,7 +155,7 @@ export function clip(text: string, hint: string, max: number = RESULT_MAX_CHARS)
  * @param value - Any value.
  * @returns True for arrays and plain objects.
  */
-function isWalkable(value: unknown): value is Record<string, unknown> | unknown[] {
+export function isWalkable(value: unknown): value is Record<string, unknown> | unknown[] {
 	if (Array.isArray(value)) return true;
 	if (typeof value !== 'object' || value === null) return false;
 	const proto = Object.getPrototypeOf(value);
@@ -179,7 +176,7 @@ function redactValue(value: unknown, secret: boolean): unknown {
 
 	const out: Record<string, unknown> = {};
 	for (const [key, child] of Object.entries(value)) {
-		const named = key.toLowerCase() !== KEPT_KEY && SECRET_KEY.test(key);
+		const named = SECRET_KEY.test(key);
 		out[key] = redactValue(child, secret || named);
 	}
 	return out;
@@ -194,13 +191,12 @@ function redactValue(value: unknown, secret: boolean): unknown {
  * sits above it. That includes a field named `token`: node configs use it for
  * real secrets. A bare `url` is not hidden, so graph_falkordb.url (a secure
  * field) is a known gap. `${ROCKETRIDE_*}` placeholders stay, since they name a
- * secret without holding it. `task_token` stays, since the run tools return it
- * on purpose. Numbers, booleans and null are never changed.
+ * secret without holding it. Numbers, booleans and null are never changed.
  *
  * @param value - The value a tool is about to show the model.
  * @returns A deep copy; the input is not changed.
  */
-function redactSecrets<T>(value: T): T {
+export function redactSecrets<T>(value: T): T {
 	return redactValue(value, false) as T;
 }
 
@@ -289,7 +285,8 @@ export function sleep(ms: number): Promise<void> {
 // =============================================================================
 
 /**
- * The pipeline tools take a pipeline two ways: `path` (a `.pipe` file in the
+ * `pipelineArg` serves the validate every `.pipe` save runs and the client
+ * tool's `filepath`. It takes a pipeline two ways: `path` (a `.pipe` file in the
  * workspace) or `pipeline` (the object itself). Either may be wrapped as
  * `{ "pipeline": { ... } }`, the way a saved `.pipe` file often is. The client's
  * `use()` and `validate()` want the flat config (`components`, `source` and
@@ -313,9 +310,6 @@ const NEED_ONE = 'Pass path (a .pipe file in the workspace) or pipeline (the pip
 /** How to write a path that a path refusal asks for. */
 const FROM_ROOT = 'Pass the path from the workspace root, for example pipelines/chat.pipe.';
 
-/** The component mode that marks a pipeline's start. The engine reads it in exact case. */
-const SOURCE_MODE = 'Source';
-
 // =============================================================================
 // HELPERS
 // =============================================================================
@@ -328,54 +322,6 @@ const SOURCE_MODE = 'Source';
  */
 export function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * The first usable text among some candidates.
- *
- * @param values - Candidates in order of preference.
- * @returns The first non-empty string; undefined when there is none.
- */
-export function firstText(...values: unknown[]): string | undefined {
-	return values.find((value): value is string => typeof value === 'string' && value !== '');
-}
-
-/**
- * The components of the flat pipeline config.
- *
- * @param pipeline - The flat pipeline config.
- * @returns The component objects; empty when there are none.
- */
-export function componentsOf(pipeline: JsonObject): JsonObject[] {
-	return Array.isArray(pipeline.components) ? pipeline.components.filter(isJsonObject) : [];
-}
-
-/**
- * The ids of the components marked as a start, which is how the engine finds the
- * source of a pipeline with no top-level `source` field.
- *
- * @param pipeline - The flat pipeline config.
- * @returns The id of every component whose `config.mode` is exactly `Source`.
- */
-export function markedSourceIds(pipeline: JsonObject): string[] {
-	return componentsOf(pipeline)
-		.filter((component) => isJsonObject(component.config) && component.config.mode === SOURCE_MODE)
-		.map((component) => firstText(component.id))
-		.filter((id): id is string => id !== undefined);
-}
-
-/**
- * The id of the pipeline's source component, found the way the engine does: the
- * top-level `source` when it names one, otherwise the one component marked as a start.
- *
- * @param pipeline - The flat pipeline config.
- * @returns The source id; undefined when no component is marked as a start, or more than one is and none is named.
- */
-export function sourceIdOf(pipeline: JsonObject): string | undefined {
-	const named = firstText(pipeline.source);
-	if (named) return named;
-	const marked = markedSourceIds(pipeline);
-	return marked.length === 1 ? marked[0] : undefined;
 }
 
 /**

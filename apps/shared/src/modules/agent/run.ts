@@ -50,9 +50,8 @@ import { AppToolkit, DEPLOY_APP_TIMEOUT_MS } from './toolkits/appTools';
 import { NOT_CONNECTED_MESSAGE, shellConfirm, type ClientGetter, type ConfirmFn } from './toolkits/common';
 import { FilesystemTools, normalizePath } from './toolkits/filesystem';
 import { findApp, InventoryToolkit, readApps } from './toolkits/inventory';
-import { PipelineDeployToolkit } from './toolkits/pipelineDeploy';
-import { PipelineDesignToolkit, validateNote, validateSaved, type SaveValidation } from './toolkits/pipelineDesign';
-import { PipelineRunToolkit } from './toolkits/pipelineRun';
+import { RocketRideClientToolkit } from './toolkits/rocketrideClient';
+import { validateNote, validateSaved, type SaveValidation } from './toolkits/saveValidation';
 import { composeToolkits } from './tools';
 import { runLoop, TOOL_TIMEOUT_MS, type FinishRule, type LoopResult, type RanCall } from './wave/loop';
 import { buildPrefix } from './wave/plan';
@@ -649,9 +648,7 @@ export async function runAgent(request: string, callback: (type: string, content
 		// one file toolkit per run, so reads never carry over; its saves run the hook above
 		new FilesystemTools(vfs, undefined, afterSave),
 		new InventoryToolkit(vfs, (id) => host.devSession(id) !== null),
-		new PipelineDesignToolkit(client, vfs),
-		new PipelineRunToolkit(client, vfs),
-		new PipelineDeployToolkit(client, vfs, confirm),
+		new RocketRideClientToolkit(client, vfs),
 		new AppToolkit(client, host, confirm),
 		// check_app hands each report to the record
 		new AppCheckToolkit(host, markers, (folder, report) => checks.appChecked(folder, report)),

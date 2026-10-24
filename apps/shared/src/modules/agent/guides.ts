@@ -43,9 +43,9 @@ import type { GuideSource } from './host';
 
 /**
  * The guides are RocketRide's agent docs. The agent reads them under
- * '.rocketride/' with its normal read tool, so the skills and the docs index,
- * which already name '.rocketride/docs/ROCKETRIDE_*.md', work unedited. This
- * section holds the pure path rules; GuideFileSystem, below, serves the paths.
+ * '.rocketride/' with its normal read tool, so the docs index, which already
+ * names '.rocketride/docs/ROCKETRIDE_*.md', works unedited. This section holds
+ * the pure path rules; GuideFileSystem, below, serves the paths.
  */
 
 // =============================================================================
@@ -90,11 +90,10 @@ function guideRelative(path: string): string | null {
 // =============================================================================
 
 /**
- * Maps a docs/agents bundle key to the guide path it is served at.
- * './context/X.md' becomes 'docs/X.md' (the installer stubs under
- * './context/stubs/' are not guides), and './skills/<path>.md' keeps its path.
- * Everything else, such as the folder README, the task battery and scripts,
- * is not a guide.
+ * Maps a docs/agents bundle key to the guide path it is served at. Only
+ * './context/X.md' files are guides, and each becomes 'docs/X.md' (the
+ * installer stubs under './context/stubs/' are not guides). Everything else,
+ * such as the folder README, the task battery and scripts, is not a guide.
  *
  * @param contextKey - A key from the docs/agents bundle, e.g. './context/ROCKETRIDE_APPS.md'.
  * @returns The path relative to '.rocketride/' (e.g. 'docs/ROCKETRIDE_APPS.md'), or null when the file is not a guide.
@@ -103,7 +102,6 @@ export function guidePathFor(contextKey: string): string | null {
 	const key = contextKey.replace(/^\.\//, '');
 	if (!key.endsWith('.md') || key.startsWith('context/stubs/')) return null;
 	if (key.startsWith('context/')) return `docs/${key.slice('context/'.length)}`;
-	if (key.startsWith('skills/')) return key;
 	return null;
 }
 

@@ -901,7 +901,7 @@ Use it:
 Don't use it:
 - to read state: use read_file or list_directory to see what a file holds;
 - after each small edit: saving an app file already returns its type errors;
-- on a pipeline: saving a .pipe file already validates it, and you test a pipeline by running it with run_pipeline and reading its log.
+- on a pipeline: saving a .pipe file already validates it, and you test a pipeline by running it with rocketride_client and reading its log.
 
 Steps that could not run (for example, "preview closed: build not checked") are named in the result; say so plainly in your answer.
 
