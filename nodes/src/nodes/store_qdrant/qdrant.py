@@ -59,6 +59,12 @@ from ai.common.schema import Doc, DocFilter, DocMetadata, QuestionText
 from ai.common.store import CONTROL_OBJECT_ID, DocumentStoreBase
 from ai.common.config import Config
 
+
+# The most points one objdir scroll request asks for. A collection can cap the
+# size of a single request (max_query_limit), so a page is read in requests of
+# this size, following next_page_offset, however large offset + limit is.
+_OBJDIR_SCROLL_PAGE = 1000
+
 """
 NOTE: https://qdrant.tech/documentation/concepts/indexing/
 
@@ -480,19 +486,29 @@ class Store(DocumentStoreBase):
 
         # Scroll's offset is a point-ID cursor, not a count, and this driver
         # writes random UUID point IDs, so an integer offset would never move
-        # the start. Read offset + limit records from the start instead (scroll
-        # orders by point ID, so the order is stable) and slice locally, as the
-        # Pinecone driver does. A page costs offset + limit records.
-        records, _ = self.client.scroll(
-            collection_name=self.collection,
-            scroll_filter=filter,
-            limit=offset + limit,
-            with_vectors=False,
-            with_payload=True,
-        )
+        # the start. Read the first offset + limit records instead (scroll
+        # orders by point ID, so the order is stable), in requests of at most
+        # _OBJDIR_SCROLL_PAGE points that follow next_page_offset, and keep the
+        # requested page, as the Pinecone driver does. A page costs offset +
+        # limit records, and no single request exceeds the server's cap.
+        wanted = offset + limit
+        records: List[Any] = []
+        cursor = None
+        while len(records) < wanted:
+            batch, cursor = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=filter,
+                limit=min(_OBJDIR_SCROLL_PAGE, wanted - len(records)),
+                offset=cursor,
+                with_vectors=False,
+                with_payload=True,
+            )
+            records.extend(batch)
+            if cursor is None or not batch:
+                break
 
         # Fill it in
-        for record in records[offset:]:
+        for record in records[offset:wanted]:
             # Get the payload
             payload = record.payload
             if payload is None:

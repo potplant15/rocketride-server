@@ -269,6 +269,42 @@ def test_paths_list_records_without_a_deleted_flag_and_hide_trashed_ones():
         client.close()
 
 
+def test_paths_read_offset_pages_in_bounded_scroll_requests(monkeypatch):
+    """A page past the first scroll request is read in requests no larger than the page size, never in one."""
+    payloads = {}
+    for index in range(5):
+        object_id = f'doc-{index}'
+        payloads[_point_id(object_id, 0)] = _chunk(object_id, 0, parent=f'/p{index}', isDeleted=False)
+    store, client = _in_process_store(payloads)
+    try:
+        # The driver module is loaded from its file under a private name, so reach
+        # its globals through the method rather than through sys.modules.
+        monkeypatch.setitem(type(store).getPaths.__globals__, '_OBJDIR_SCROLL_PAGE', 2)
+        limits = []
+        real_scroll = client.scroll
+
+        def scroll(*args, **kwargs):
+            limits.append(kwargs['limit'])
+            return real_scroll(*args, **kwargs)
+
+        monkeypatch.setattr(client, 'scroll', scroll)
+
+        everything = store.getPaths()
+        assert everything == {f'/p{index}': f'doc-{index}' for index in range(5)}
+        assert limits == [2, 2, 1]  # 5 points in requests of at most 2, the last one sized to what is left
+
+        limits.clear()
+        page = store.getPaths(offset=3, limit=2)
+        assert len(page) == 2 and set(page.items()) <= set(everything.items())
+        assert max(limits) <= 2 and len(limits) == 3  # offset + limit = 5 points, still read two at a time
+
+        limits.clear()
+        assert store.getPaths(offset=5, limit=2) == {}
+        assert max(limits) <= 2
+    finally:
+        client.close()
+
+
 def test_paths_page_by_offset_on_uuid_point_ids():
     """Each offset starts a different page: scroll's own offset is a point-ID cursor, not a count."""
     payloads = {}

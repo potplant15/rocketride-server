@@ -81,7 +81,7 @@ Requires an embedding provider bound to the node (the embedding sub-block in the
 
 ### `objdir`
 
-List the distinct parent paths of active documents in the collection as a map of parent path to one object ID each. Takes optional `parent` (a text match on the stored parent, not an exact path), `offset` and `limit` (default and cap 1000). `offset` and `limit` count documents, not paths: documents that share a parent path appear as one entry, so a page can hold fewer than `limit` entries while more follow. Qdrant's scroll offset is a point-ID cursor, so each page reads `offset + limit` points from the start of the collection and skips the first `offset`.
+List the distinct parent paths of active documents in the collection as a map of parent path to one object ID each. Takes optional `parent` (a text match on the stored parent, not an exact path), `offset` and `limit` (default and cap 1000). `offset` and `limit` count documents, not paths: documents that share a parent path appear as one entry, so a page can hold fewer than `limit` entries while more follow. Qdrant's scroll offset is a point-ID cursor, so each page reads `offset + limit` points from the start of the collection, in requests of at most 1,000 points, and skips the first `offset`.
 
 ### `get`
 
