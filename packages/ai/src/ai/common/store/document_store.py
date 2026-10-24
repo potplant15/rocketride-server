@@ -713,16 +713,14 @@ class VectorStoreToolMixin:
     ``"tool"`` in its ``classType`` list and ``"invoke"`` in its
     ``capabilities`` list.
 
-    Tool names follow the established ``<serverName>.<toolName>`` convention
-    documented in ``ai.common.tools`` and used by the MCP client: every tool
-    method on this mixin is exposed as ``<serverName>.search``,
-    ``<serverName>.upsert`` and ``<serverName>.delete`` where ``serverName``
-    comes from ``self.IGlobal.serverName`` (user-configurable via
-    ``services.json``). This prevents tool-name collisions when a pipeline
-    contains more than one vectordb node. An agent node in the same pipeline
-    addresses them by the store node's pipeline id instead
-    (``<node id>.search``, see ``ai.common.agent``); there ``serverName``
-    only labels the tools' messages.
+    An agent node in the same pipeline addresses the tools by the store
+    node's pipeline id (``<node id>.search``, ``<node id>.upsert`` and so on;
+    see ``ai.common.agent``), so two vectordb nodes in one pipeline never
+    collide, and an app calls them by the bare function name and the node id.
+    ``serverName`` (``self.IGlobal.serverName``, configurable in
+    ``services.json``) only labels the tools' messages, such as a refused
+    write naming ``<serverName>.delete``; changing it does not change the
+    addresses.
 
     Two optional ``IGlobal`` switches gate the surface (``StoreGlobalBase``
     resolves both from the node config). ``expose_tools`` decides whether the
@@ -770,13 +768,13 @@ class VectorStoreToolMixin:
         return store
 
     def _vectordb_server_name(self) -> str:
-        """Return the namespace prefix for this node's tools.
+        """Return the label this node's tool messages carry (not the tools' address).
 
         Reads ``self.IGlobal.serverName`` (set from the node config). Falls
         back to the provider name (``self.IGlobal.glb.logicalType``) and
         finally to ``'vectordb'`` if neither is available. The returned value
         is stripped of leading/trailing whitespace and ``'.'`` characters to
-        guarantee a clean ``<server>.<tool>`` format.
+        guarantee a clean ``<server>.<tool>`` in those messages.
         """
         glb = getattr(self, 'IGlobal', None)
         name = getattr(glb, 'serverName', None)
@@ -1494,7 +1492,10 @@ class VectorStoreToolMixin:
             'properties': {
                 'parent': {
                     'type': 'string',
-                    'description': 'Optional parent path filter. Only return paths under this parent.',
+                    'description': (
+                        'Optional parent path; lists documents stored under exactly this parent '
+                        '(Atlas matches it as a case-insensitive pattern, Qdrant as a text match).'
+                    ),
                 },
                 'offset': {
                     'type': 'integer',
@@ -1636,8 +1637,14 @@ class VectorStoreToolMixin:
             # whose get ignores limit (Pinecone) pays a second full read here,
             # on the miss path only.
             in_trash = store.get(DocFilter(objectIds=[object_id], offset=0, limit=1, isDeleted=True))
-            if in_trash:
+            if in_trash and self._vectordb_allow_write():
                 error = f"get: document '{object_id}' is soft-deleted; restore it to read it"
+            elif in_trash:
+                # restore is a write tool: do not point to a tool this node does not offer.
+                error = (
+                    f"get: document '{object_id}' is soft-deleted; this node does not offer restore "
+                    'while writes through tools are off'
+                )
             else:
                 error = f"get: no document with object_id '{object_id}'"
             return {'success': False, 'error': error, 'object_id': object_id}

@@ -47,6 +47,10 @@ name and vector size, read on every collection check). `upsert`, `delete`,
 `getPaths` lists active documents only, filtering out soft-deleted chunks
 before applying the page. It keys its result by parent path, so documents
 that share a path collapse into one entry and no chunk count is available.
+On most drivers `offset` and `limit` count chunk-0 records, so a page can
+hold fewer than `limit` paths while more follow; the two Postgres stores and
+Astra group by path first and count paths. `parent` is an exact match except
+on Atlas (a case-insensitive pattern) and Qdrant (a text match).
 A driver that can do better opts in:
 
 ```python

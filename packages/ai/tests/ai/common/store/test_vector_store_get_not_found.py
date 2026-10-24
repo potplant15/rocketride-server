@@ -40,6 +40,21 @@ def test_a_soft_deleted_document_is_told_apart_from_an_unknown_one():
     assert result['error'] == "get: document 'obj-1' is soft-deleted; restore it to read it"
 
 
+def test_the_trash_message_points_to_restore_only_where_it_is_offered():
+    """The restore tool is a write tool, hidden while writes are off; the message then says so instead."""
+    store = make_store()
+    store.get.side_effect = [[], [_chunk()]]
+
+    result = Tools(store, allow_write=False).get({'object_id': 'obj-1'})
+
+    assert result == {
+        'success': False,
+        'error': "get: document 'obj-1' is soft-deleted; this node does not offer restore while writes through tools are off",
+        'object_id': 'obj-1',
+    }
+    assert 'restore' not in Tools(store, allow_write=False)._collect_tool_methods()
+
+
 def test_a_page_past_the_end_of_an_existing_document_is_still_a_page():
     store = make_store()
     store.get.return_value = [_chunk(0), _chunk(1)]
