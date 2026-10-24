@@ -32,16 +32,16 @@ import EnvironmentPage from '../environment/EnvironmentWebview';
 import WelcomePage from '../welcome/WelcomeWebview';
 import SettingsPage from '../settings/SettingsWebview';
 import DevToolReadmePage from '../devtool-readme/DevToolReadmeWebview';
-import NewAppPage from '../new-app/NewAppWebview';
 
 // Every framework page this host can serve — THE allowlist of what mounts.
+// (No `newapp` page: the New App wizard is the UNBOUND App Builder's body —
+// page-app with no app stamp — not a framework page.)
 const PAGES: Record<string, React.ComponentType> = {
 	account: AccountPage,
 	environment: EnvironmentPage,
 	welcome: WelcomePage,
 	settings: SettingsPage,
 	'devtool-readme': DevToolReadmePage,
-	newapp: NewAppPage,
 };
 
 /** Rendered when the host names a page this bundle does not know. */

@@ -27,9 +27,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ConnectionManager, createMirroredPrefsStore, scopedPrefs } from 'shell';
 import { appPartition } from 'shell/src/workspace/workspaceStore';
 import { AppBuilderScreen } from 'shared/tools/appdev/views';
+import { AppsToolFrame } from 'shared/tools/appdev/AppsToolFrame';
+import { ToolHostProvider } from 'shared/tools/core';
+import type { BuiltinToolServices } from 'shared/tools/core';
+import { announceFramePresence, createFrameBusPeer, createToolChannel } from 'shell';
 import { createBusAppBuilderHost } from 'shared/tools/appdev';
 import type { AppErrorRow, AppEventRow, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/tools/appdev';
 import type { AppBuilderLoadPayload } from 'shared/ops/previewOps';
+// The UNBOUND builder's body: the New App wizard (the builder's empty state).
+import { NewAppWizard } from 'shared/tools/appdev/views/new-app/NewAppWizard';
+import { createBusNewAppWizardHost } from 'shared/tools/appdev/views/new-app/newAppWizardBusHost';
 
 // =============================================================================
 // IDENTITY + WIRING
@@ -429,7 +436,7 @@ const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary |
 /** A feed listener registry: subscribe returns an unsubscribe. */
 type Registry<T> = Set<(row: T) => void>;
 
-const AppWebview: React.FC = () => {
+const VscodeAppBuilder: React.FC<{ appId: string }> = ({ appId: stampedAppId }) => {
 	// ── Init payload from the extension host ────────────────────────────
 	const [app, setApp] = useState<AppSummary | null>(null);
 	const [previewUrl, setPreviewUrl] = useState('');
@@ -494,7 +501,7 @@ const AppWebview: React.FC = () => {
 	// App Builder UI prefs live in the app's OWN partition, under an `appdev`
 	// namespace so they cannot collide with the app's runtime prefs. Reads are
 	// synchronous off the mirror, which is what getPref's contract requires.
-	const prefs = useMemo(() => createMirroredPrefsStore(cm, appPartition(STAMPED_APP_ID)), []);
+	const prefs = useMemo(() => createMirroredPrefsStore(cm, appPartition(stampedAppId)), []);
 	const appdevPrefs = useMemo(() => scopedPrefs(prefs.store, 'appdev'), [prefs]);
 	useEffect(() => prefs.dispose, [prefs]);
 
@@ -566,7 +573,7 @@ const AppWebview: React.FC = () => {
 	// ── The bus: boot state + topics + realm-local event derivations ─────
 	const cm = ConnectionManager.getInstance();
 	useEffect(() => {
-		const appId = STAMPED_APP_ID;
+		const appId = stampedAppId;
 
 		// Boot state — pulled, with one retry when the first attempt raced
 		// the realm attachment.
@@ -753,7 +760,7 @@ const AppWebview: React.FC = () => {
 				// itself arrives on the app's retained :session topic.
 				(e.source as Window | null)?.postMessage({ type: 'rrdev:loginPending' }, e.origin);
 				pendingExplicitLoginRef.current = true;
-				void cm.request('host.preview.login', { app: STAMPED_APP_ID } as never, { timeoutMs: LOGIN_TIMEOUT_MS }).catch(() => {
+				void cm.request('host.preview.login', { app: stampedAppId } as never, { timeoutMs: LOGIN_TIMEOUT_MS }).catch(() => {
 					/* sign-in abandoned — the preview keeps its prompt */
 				});
 			} else if (data?.type === 'shell:devConsole' && data.text !== undefined) {
@@ -818,7 +825,7 @@ const AppWebview: React.FC = () => {
 		// accountSeq participates only as an identity salt: bumping it re-mints
 		// the host object so [host]-keyed effects re-fetch org-scoped data.
 		void accountSeq;
-		const appId = STAMPED_APP_ID;
+		const appId = stampedAppId;
 		return {
 			// The SDK half — the brokered client.app.* ops, shared with the
 			// cloud host (shared/tools/appdev/busHost.ts).
@@ -894,4 +901,52 @@ const AppWebview: React.FC = () => {
 	);
 };
 
-export default AppWebview;
+// =============================================================================
+// UNBOUND — no app stamped: the untitled builder (the New App wizard)
+// =============================================================================
+
+/**
+ * The wizard host for an UNTITLED builder (no app bound): the shared
+ * NewAppWizard over the ONE bus host (host.appdev.* ops — served here by
+ * the extension host's workspace scaffolder). A successful scaffold opens
+ * the real builder and retires this panel from the ext host; Cancel retires
+ * it via `host.appdev.closeWizard`.
+ */
+const WIZARD_HOST = createBusNewAppWizardHost();
+
+// =============================================================================
+// THE REGISTERED FRAME — this panel mounts the apps TOOL's devToolFrame
+// =============================================================================
+//
+// The routing (docKey → bound builder | 'newapp' → wizard) belongs to the
+// shared AppsToolFrame — the same frame the cloud mounts — and this host
+// contributes only its builder internals through the appdevFrames seam
+// (exactly the cloud's shape: rocket-ui surfaces/preview appdevFrames).
+// Document/file ownership is unchanged: every file verb still rides the
+// host.preview.* ops into the extension host.
+
+/** This host's builder body behind the seam: bound → the full builder over
+ *  host.preview.*; unbound → the New App wizard. */
+const VscodeBuilderDoc: React.FC<{ appId: string | null }> = ({ appId }) =>
+	appId ? <VscodeAppBuilder appId={appId} /> : <NewAppWizard host={WIZARD_HOST} />;
+
+/** The seam value — module-stable identity (mirrors the cloud's). */
+const SERVICES: BuiltinToolServices = {
+	openPage: (key: string) => ConnectionManager.getInstance().emitOp('host.openPage', { page: key }),
+	appdevFrames: { builder: VscodeBuilderDoc },
+};
+
+/** The apps tool's channel for this frame document (its bus lanes), plus the
+ *  mount's presence announcement. */
+const APPS_CHANNEL = createToolChannel(createFrameBusPeer('apps', ConnectionManager.getInstance()));
+
+const AppDocRoot: React.FC = () => {
+	React.useEffect(() => announceFramePresence('apps', ConnectionManager.getInstance()), []);
+	return (
+		<ToolHostProvider value={SERVICES}>
+			<AppsToolFrame channel={APPS_CHANNEL} docKey={STAMPED_APP_ID || 'newapp'} />
+		</ToolHostProvider>
+	);
+};
+
+export default AppDocRoot;

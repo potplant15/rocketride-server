@@ -59,6 +59,8 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	/** Latest watch status per app — the reconnect vendor-retry scan reads it
 	 *  (the webview's replay rides the retained topic, not this map). */
 	private lastWatch = new Map<string, AppWatchStatus>();
+	/** The one UNTITLED (unbound) builder panel, when open. */
+	private untitledPanel: vscode.WebviewPanel | undefined;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -99,6 +101,40 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		await ensureProjectId(app.folder);
 		const trigger = await ensureAppTrigger(app.folder, appId);
 		await vscode.commands.executeCommand('vscode.openWith', trigger, 'rocketride.appBuilder');
+	}
+
+	/**
+	 * Open (or reveal) the UNTITLED App Builder — the unbound builder whose
+	 * body is the New App wizard (the builder's empty state, pipeline-editor
+	 * pattern). No app document exists yet, so this is a plain webview panel
+	 * titled "Untitled"; a successful scaffold opens the real custom editor
+	 * and retires this panel (closeUntitled, via the host.appdev ops), and
+	 * Cancel retires it the same way. One at a time: a second New App
+	 * reveals the open wizard rather than spawning another.
+	 */
+	public showUntitled(): void {
+		if (this.untitledPanel) {
+			this.untitledPanel.reveal();
+			return;
+		}
+		const panel = vscode.window.createWebviewPanel('rocketride.appBuilder.untitled', 'Untitled', vscode.ViewColumn.Active, {
+			enableScripts: true,
+			localResourceRoots: [this.context.extensionUri],
+		});
+		// No `app` stamp — the page-app bundle renders its unbound body (the
+		// wizard) when `data-rr-app` is absent.
+		panel.webview.html = renderWebviewHtml(this.context, panel.webview, { htmlFile: 'page-app.html' });
+		const detachRealm = this.busHost.attachWebview(panel.webview, 'page:preview/untitled');
+		this.untitledPanel = panel;
+		panel.onDidDispose(() => {
+			detachRealm();
+			if (this.untitledPanel === panel) this.untitledPanel = undefined;
+		});
+	}
+
+	/** Closes the untitled builder panel, if one is open (no-op otherwise). */
+	public closeUntitled(): void {
+		this.untitledPanel?.dispose();
 	}
 
 	// =========================================================================

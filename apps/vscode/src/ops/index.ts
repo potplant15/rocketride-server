@@ -37,7 +37,7 @@ import type { ISettingsOpsController } from './settingsOps';
  * @returns The settings controller the extension wires to the Welcome and
  *          Settings FrameworkProvider lifecycle hooks.
  */
-export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionContext): ISettingsOpsController {
+export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionContext, deps: { closeWizard: () => void }): ISettingsOpsController {
 	busHost.registerMonitorBroker();
 	registerVscodeClientOverrides(busHost.rootBus, busHost.connectionManager);
 	registerClientOps(busHost.rootBus, busHost.connectionManager);
@@ -50,6 +50,7 @@ export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionCon
 		context,
 		connectionManager: busHost.connectionManager,
 		broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
+		closeWizard: deps.closeWizard,
 	});
 	registerVscodePreviewOps(busHost.rootBus, {
 		context,

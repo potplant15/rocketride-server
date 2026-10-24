@@ -63,11 +63,13 @@ import { CodiconExtensions } from 'shared/components/icons/Codicon';
 import { AgentSession } from 'shared/modules/agent/agent';
 import { registerRocketHostOps } from './ops/hostOps';
 import { registerRocketFsOps } from './ops/fsOps';
+import { registerRocketAppDevOps } from './ops/appdevOps';
 
 // This app IS the cloud host: its `host.*` implementations register once at
 // module scope on the root realm's bus (idempotent across remounts).
 registerRocketHostOps();
 registerRocketFsOps();
+registerRocketAppDevOps();
 
 // =============================================================================
 // STYLES

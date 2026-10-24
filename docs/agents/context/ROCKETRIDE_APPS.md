@@ -227,11 +227,15 @@ Two rules before anything else:
   until the normal lifecycle (`verifyApp` → `addApp` → `publishApp`)
   runs.
 
-The New App wizard collects an app-name slug, a display name, a template
-(**Blank** or **Dashboard**), and three frame options that each toggle a
-chrome region of the generated app: **sidebar** (two-column layout with a
-navigation sidebar), **status footer** (`AppLayout showStatus`), and
-**doc tabs** (a document tab strip: Documents + DocSplitLayout + DocTabs).
+The New App wizard is the App Builder's empty state: "New app" opens an
+**Untitled** builder document whose body is the wizard (the same pattern as
+the pipeline editor's empty-canvas wizard), and creating the app binds that
+document to the new app's builder. It collects an app-name slug, a display
+name, a template (**Blank** or **Dashboard**), and three frame options that
+each toggle a chrome region of the generated app: **sidebar** (two-column
+layout with a navigation sidebar), **status footer** (`AppLayout
+showStatus`), and **doc tabs** (a document tab strip: Documents +
+DocSplitLayout + DocTabs).
 
 The wizard assembles the app id from your organization's developer id plus
 the slug, validates it, and writes the app folder under `./apps` in your

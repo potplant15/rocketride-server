@@ -24,22 +24,32 @@
 // APPDEV FRAMES — this host's bodies for the apps tool's documents
 // =============================================================================
 //
-// The apps TOOL owns the document identities (tool:apps/newapp,
-// tool:apps/<appId>); this module supplies the host-adapted internals
-// behind them (the ToolContext `appdevFrames` seam): the in-page App
-// Builder adapter and the scaffold-backed New App wizard.
+// The apps TOOL owns the document identities (tool:apps/<appId>, plus
+// tool:apps/newapp for the UNBOUND builder); this module supplies the
+// host-adapted internals behind them (the ToolContext `appdevFrames` seam):
+// the in-page App Builder adapter, whose unbound state is the scaffold-backed
+// New App wizard (the builder's empty canvas).
 // =============================================================================
 
 import React from 'react';
 import type { BuiltinToolServices } from 'shared/tools/core';
 import AppBuilderProvider from '../AppBuilderProvider';
-import NewAppProvider from '../../pages/NewAppProvider';
+import { NewAppWizard } from 'shared/tools/appdev/views/new-app/NewAppWizard';
+import { createBusNewAppWizardHost } from 'shared/tools/appdev/views/new-app/newAppWizardBusHost';
+import { APPDEV_DIR } from './appStore';
 
-/** The App Builder screen for one app (the tool passes the docKey). */
-const Builder: React.FC<{ appId: string }> = ({ appId }) => <AppBuilderProvider uri={`app:${appId}`} />;
+// The ONE bus wizard host (host.appdev.* — served by this host's root realm,
+// ops/appdevOps.ts); only the phrasing is this host's.
+const WIZARD_HOST = createBusNewAppWizardHost({
+	locationPrefix: `${APPDEV_DIR}/`,
+	noWorkspaceNote: 'Connect to a server first — the app is scaffolded into your store.',
+});
+
+/** The App Builder body: one app's screen, or the wizard when unbound. */
+const Builder: React.FC<{ appId: string | null }> = ({ appId }) =>
+	appId ? <AppBuilderProvider uri={`app:${appId}`} /> : <NewAppWizard host={WIZARD_HOST} />;
 
 /** This host's appdevFrames seam value (module-stable identity). */
 export const appdevFrames: NonNullable<BuiltinToolServices['appdevFrames']> = {
 	builder: Builder,
-	newApp: NewAppProvider,
 };

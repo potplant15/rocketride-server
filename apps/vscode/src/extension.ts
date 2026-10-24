@@ -297,7 +297,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// in src/ops. The returned controller is the settings pages'
 				// panel-lifecycle seam (open args, polling, close semantics).
 				const devTools = new DevToolStore(busHost.prefs);
-				const settingsOps = registerVscodeOps(busHost, context);
+				// closeWizard closes the untitled App Builder panel — appScreen
+				// is constructed below; the op can only fire once it exists.
+				const settingsOps = registerVscodeOps(busHost, context, { closeWizard: () => appScreen?.closeUntitled() });
 				busHost.startMirrors();
 				context.subscriptions.push({ dispose: () => busHost.dispose() });
 
@@ -428,14 +430,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						}
 					},
 				});
-				// New App wizard — a framework page (shared NewAppForm over the
-				// host.appdev.* ops); the open command keeps its historic id.
-				const newApp = new FrameworkProvider(context, busHost, {
-					page: 'newapp',
-					command: 'rocketride.app.create',
-					viewType: 'rocketride.page.newApp',
-					title: 'New App',
-				});
 				// Dev tools: the tool panels (MF host webviews) + the modules
 				// flow's details page (README + Install/Remove — Remove also
 				// closes the tool's open panel). Each registers its own command.
@@ -477,7 +471,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					refreshTools: async () => sidebar?.refreshDevTools(),
 					broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
 				});
-				context.subscriptions.push(welcomePage, settingsPage, account, environment, newApp, devTools, devToolPanels, devToolReadme);
+				context.subscriptions.push(welcomePage, settingsPage, account, environment, devTools, devToolPanels, devToolReadme);
 
 				// Register unified project editor (canvas + status + trace)
 				pipeline = new PipelineProvider(context, busHost);
@@ -666,6 +660,11 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('rocketride.app.open', (appId: string) => {
 			// Fire-and-forget: a rejection has no other surface here — say it.
 			appScreen?.show(appId).catch((err) => vscode.window.showErrorMessage(`Failed to open app: ${err instanceof Error ? err.message : String(err)}`));
+		}),
+		// New App — the UNTITLED App Builder (the wizard is the unbound
+		// builder's empty state). The command keeps its historic id.
+		vscode.commands.registerCommand('rocketride.app.create', () => {
+			appScreen?.showUntitled();
 		}),
 		vscode.commands.registerCommand('rocketride.refresh', () => {
 			vscode.window.showInformationMessage('RocketRide views refreshed');

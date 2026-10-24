@@ -15,7 +15,18 @@ import { createRetainedRegistry, localRetainedPort } from '../../ops/retained';
 import { announceFramePresence, createSidebarBusPeer, createFrameBusPeer } from './busPeer';
 import type { IBusPeerBus } from './busPeer';
 
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+/**
+ * Drains pending bus delivery. The registry delivers every signal on a
+ * setTimeout(0), and handlers may chain further signals — a fixed delay races
+ * those chains when the event loop is starved (parallel builder tasks). Each
+ * zero-delay hop here yields one FULL loop turn, so ten hops flush any
+ * delivery chain regardless of load.
+ */
+const settle = async (): Promise<void> => {
+	for (let i = 0; i < 10; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+};
 
 /** One realm's bus verbs over a shared local registry + an op recorder. */
 function makeBus(registry = createRetainedRegistry()) {
