@@ -112,6 +112,7 @@ const NO_DEVELOPER_MESSAGE = "Deploy refused: this organization hasn't claimed a
 /** The group's instructions, joined into the system prompt when the group is mounted. */
 const INSTRUCTIONS = `## Apps
 
+- The app's preview rebuilds from your saves, and the user may be watching it.
 - Make a new app with create_app, not by writing its files, because the scaffold sets up the manifest and the build.
 - Deploy with deploy_app after check_app passes, because the server builds the app again and a broken build serves nothing.
 - Publish only when the user asks you to, because it puts the app in front of other people. publish_app asks the user first; if they say no, don't retry, ask what they want instead.

@@ -886,7 +886,8 @@ export const APP_CHECK_TOOL = 'check_app';
 /** System-prompt fragment for the tool. */
 const INSTRUCTIONS = `## Checking apps
 
-- Run \`check_app\` on each app you changed, after your last change to it and before you say you're done, because only a check_app run after the last change counts as evidence.
+- Run \`check_app\` on each app you changed, on its own, in a later step than your last change to it, and before you say you're done, because only a check_app run after the last change counts as evidence.
+- Run it once after your last change to an app, not after each edit, because saving already reports type errors. If you changed no app, skip it.
 - If check_app fails, fix what it reports and run it again, because an answer with a failing app is sent back.
 - Leave the "Checked:" line to the system, because it is built from the check results and anything you write there is dropped.`;
 
