@@ -291,12 +291,14 @@ def test_paths_read_offset_pages_in_bounded_scroll_requests(monkeypatch):
 
         everything = store.getPaths()
         assert everything == {f'/p{index}': f'doc-{index}' for index in range(5)}
-        assert limits == [2, 2, 1]  # 5 points in requests of at most 2, the last one sized to what is left
+        # Five points, default limit 1000: three requests of two; the third gets the
+        # last point and no next_page_offset, which ends the read.
+        assert limits == [2, 2, 2]
 
         limits.clear()
         page = store.getPaths(offset=3, limit=2)
         assert len(page) == 2 and set(page.items()) <= set(everything.items())
-        assert max(limits) <= 2 and len(limits) == 3  # offset + limit = 5 points, still read two at a time
+        assert limits == [2, 2, 1]  # offset + limit = 5 points: two, two, and the one still wanted
 
         limits.clear()
         assert store.getPaths(offset=5, limit=2) == {}
