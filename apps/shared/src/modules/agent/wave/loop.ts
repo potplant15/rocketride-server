@@ -28,7 +28,8 @@
  * One run of the agent. Each wave asks the model for a plan, runs the plan's
  * tool calls, and feeds their summaries into the next wave's question. The
  * run ends when the model's answer is accepted, on a reply that stays unusable,
- * or when the model cannot be reached; there is no wave limit.
+ * when the model cannot be reached, or when the user stops it; there is no
+ * wave limit. Messages the user sends during the run reach the next question.
  *
  * An answer is accepted only when the host's finish rule (`FinishRule`) finds
  * nothing left unchecked, so the model cannot skip checking. The loop knows
@@ -47,7 +48,7 @@
 
 import type { AgentTool } from '../tools';
 import { MEMORY_PEEK_TOOL, peek, resolveAnswerRefs, resolveArgRefs, resultKey, RunMemory } from './memory';
-import { buildWaveQuestion, parseReply, type PromptPrefix } from './plan';
+import { buildWaveQuestion, heardText, parseReply, type PromptPrefix } from './plan';
 import type { HistoryTurn, ModelCall, PlanReply, QuestionSpec, ResultEntry, StopReason, ToolCall } from './plan';
 import { previewArgs, summarize, withCommas } from './summary';
 
@@ -116,11 +117,15 @@ export interface LoopOptions {
 	emit: (type: 'thinking', text: string) => void;
 	/** The time limit for a tool's calls, in milliseconds; anything but a positive number means TOOL_TIMEOUT_MS. */
 	timeoutMs?: (tool: string) => number;
+	/** Aborted when the user stops the run; the loop then starts nothing new and ends. */
+	signal: AbortSignal;
+	/** Takes the messages the user sent since the last take, oldest first. */
+	takeQueued: () => string[];
 }
 
 /** How a run ended. */
 export interface LoopResult {
-	/** The answer for the user, with its memory references filled in. */
+	/** The answer for the user, with its memory references filled in ('' for a stopped run). */
 	answer: string;
 	/** Why the run stopped. */
 	stopReason: StopReason;
@@ -144,6 +149,18 @@ const PEEK_TOOL = MEMORY_PEEK_TOOL.name;
 function readTheCheck(checkTool: string): string {
 	return `Not finished: read the result of ${checkTool} before done=true.`;
 }
+
+/** What a call still running when the run was stopped leaves behind. */
+const STOPPED_WHILE_RUNNING = 'Still running when the run was stopped; it may still finish.';
+
+/** What a call the stop kept from starting leaves behind. */
+const STOPPED_BEFORE_START = 'Not run: the run was stopped first.';
+
+/** The heading of a stopped run's last row, over the calls still running. */
+const STILL_RUNNING = 'Still running when you stopped (these may still finish and change the work):';
+
+/** Why a done is sent back while a message the user sent during the run is unread. */
+const READ_THE_USER = 'Not finished: the user wrote to you while you worked. Read "Messages from the user during this run" before done=true.';
 
 /** The role of the best-effort question: a plain answer, not a plan. */
 const FALLBACK_ROLE = 'You are a helpful assistant.';
@@ -256,11 +273,16 @@ function primaryArg(args: Record<string, unknown>): string {
 	return '';
 }
 
+/** A call's tool and what it worked on. */
+function callName(call: ToolCall): string {
+	const target = primaryArg(call.args);
+	return `${call.tool}${target ? ` ${target}` : ''}`;
+}
+
 /** One thinking line for a call: what it worked on, and whether it worked. */
 function thinkingLine(call: ToolCall, entry: Entry): string {
-	const target = primaryArg(call.args);
 	const outcome = entry.error === undefined ? 'ok' : `error: ${entry.error.slice(0, THINKING_ERROR_CHARS)}`;
-	return `- ${call.tool}${target ? ` ${target}` : ''} — ${outcome}`;
+	return `- ${callName(call)} — ${outcome}`;
 }
 
 // =============================================================================
@@ -383,9 +405,13 @@ function overlaps(a: string[], b: string[]): boolean {
 
 /**
  * Runs one call and settles with its outcome; never rejects. A limit that is
- * not a positive finite number means no limit.
+ * not a positive finite number means no limit. A stop cuts a running call
+ * loose like a timeout does, and a call asked to start after a stop never
+ * runs.
  */
-function runOne(call: ToolCall, exec: (call: ToolCall) => Promise<string>, limitMs: number, late: Map<Promise<unknown>, LateCall>): Promise<CallOutcome> {
+function runOne(call: ToolCall, exec: (call: ToolCall) => Promise<string>, limitMs: number, late: Map<Promise<unknown>, LateCall>, signal: AbortSignal): Promise<CallOutcome> {
+	// a call that waited on an overlapping write starts after a stop through here
+	if (signal.aborted) return Promise.resolve({ ok: false, error: STOPPED_BEFORE_START, ms: 0, timedOut: false });
 	const began = performance.now();
 	const elapsed = (): number => Math.round(performance.now() - began);
 
@@ -414,18 +440,32 @@ function runOne(call: ToolCall, exec: (call: ToolCall) => Promise<string>, limit
 			Number.isFinite(limitMs) && limitMs > 0
 				? setTimeout(() => {
 						over = true;
+						signal.removeEventListener('abort', cut);
 						late.set(tracked, lateCall);
 						resolve({ ok: false, error: `TimeoutError: no result after ${limitMs / 1000} s`, ms: elapsed(), timedOut: true });
 					}, limitMs)
 				: undefined;
 
+		const cut = (): void => {
+			if (over) return;
+			over = true;
+			clearTimeout(timer);
+			late.set(tracked, lateCall);
+			resolve({ ok: false, error: STOPPED_WHILE_RUNNING, ms: elapsed(), timedOut: false });
+		};
+		// checked after exec started on purpose: the call's own synchronous work may have stopped the run
+		if (signal.aborted) cut();
+		else signal.addEventListener('abort', cut, { once: true });
+
 		running.then(
 			(result) => {
+				signal.removeEventListener('abort', cut);
 				if (over) return;
 				clearTimeout(timer);
 				resolve({ ok: true, result, ms: elapsed() });
 			},
 			(error: unknown) => {
+				signal.removeEventListener('abort', cut);
 				if (over) return;
 				clearTimeout(timer);
 				resolve({ ok: false, error: error instanceof Error ? error.message : String(error), ms: elapsed(), timedOut: false });
@@ -451,14 +491,15 @@ function runOne(call: ToolCall, exec: (call: ToolCall) => Promise<string>, limit
  * @param exec - Runs one call and resolves with its result text; a throw becomes an `ok: false` outcome.
  * @param opts.timeoutMs - The time limit in milliseconds for a tool; zero or infinity means none.
  * @param opts.late - Collects the promises of timed-out calls that are still running, each with its call.
+ * @param opts.signal - The run's stop signal: running calls are cut loose and waiting ones never start.
  */
-async function runWave(calls: ToolCall[], exec: (call: ToolCall) => Promise<string>, opts: { timeoutMs: (tool: string) => number; late: Map<Promise<unknown>, LateCall> }): Promise<CallOutcome[]> {
+async function runWave(calls: ToolCall[], exec: (call: ToolCall) => Promise<string>, opts: { timeoutMs: (tool: string) => number; late: Map<Promise<unknown>, LateCall>; signal: AbortSignal }): Promise<CallOutcome[]> {
 	const held = calls.map(writePaths);
 	const outcomes: Promise<CallOutcome>[] = [];
 
 	calls.forEach((call, i) => {
 		const earlier = outcomes.filter((_, j) => overlaps(held[i], held[j]));
-		const start = (): Promise<CallOutcome> => runOne(call, exec, opts.timeoutMs(call.tool), opts.late);
+		const start = (): Promise<CallOutcome> => runOne(call, exec, opts.timeoutMs(call.tool), opts.late, opts.signal);
 		// With nothing to wait for, the call starts now, in this turn, so unrelated calls overlap fully.
 		outcomes.push(earlier.length === 0 ? start() : Promise.all(earlier).then(start));
 	});
@@ -470,6 +511,28 @@ async function runWave(calls: ToolCall[], exec: (call: ToolCall) => Promise<stri
 // RUN — the state of one run, and its steps
 // =============================================================================
 
+/** Thrown when the run is stopped while a model call is in flight. */
+class RunStopped extends Error {}
+
+/** Settles as `work` does, or rejects with RunStopped once the signal aborts; a later result or failure of `work` is dropped. */
+function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const stop = (): void => reject(new RunStopped());
+		if (signal.aborted) stop();
+		else signal.addEventListener('abort', stop, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener('abort', stop);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener('abort', stop);
+				reject(error);
+			}
+		);
+	});
+}
+
 /** One run's memory, results and timed-out calls. */
 class WaveRun {
 	/** Every stored tool result. */
@@ -478,6 +541,8 @@ class WaveRun {
 	readonly modelMs: number[] = [];
 	/** The model's working notes, carried from wave to wave. */
 	scratch = '';
+	/** Every message the user sent during this run, oldest first; each later question shows them in its context. */
+	readonly heard: string[] = [];
 	/** What every earlier call left behind, oldest first; what the next question shows. */
 	private results: Entry[] = [];
 	/** The calls that timed out and are still running, by the promise that settles when each ends. */
@@ -503,11 +568,18 @@ class WaveRun {
 		return this.results.length > 0 || this.scratch.length > 0;
 	}
 
-	/** Asks the model, timing the call. */
+	/** Takes the messages the user sent since the last take into `heard`, and returns how many came. */
+	hear(): number {
+		const taken = this.o.takeQueued();
+		this.heard.push(...taken);
+		return taken.length;
+	}
+
+	/** Asks the model, timing the call; a stop rejects at once with RunStopped. */
 	private async ask(q: QuestionSpec): Promise<string> {
 		const began = performance.now();
 		try {
-			return await this.o.model(q);
+			return await untilStopped(this.o.model(q), this.o.signal);
 		} finally {
 			this.modelMs.push(Math.round(performance.now() - began));
 		}
@@ -520,7 +592,7 @@ class WaveRun {
 	 * unless the retry writes new ones.
 	 */
 	async plan(): Promise<PlanReply> {
-		const state = { request: this.o.request, scratch: this.scratch, results: this.results, notes: [] };
+		const state = { request: this.o.request, scratch: this.scratch, results: this.results, notes: [], heard: this.heard };
 		const firstText = await this.ask(buildWaveQuestion(this.o.prefix, this.o.history, state));
 		let reply = parseReply(firstText);
 		if (!reply.toolCalls.length && !reply.done) {
@@ -564,7 +636,7 @@ class WaveRun {
 		});
 
 		const runnable = prepared.flatMap((p) => ('args' in p ? [{ tool: p.call.tool, args: p.args }] : []));
-		const outcomes = await runWave(runnable, (call) => this.exec(call), { timeoutMs: (tool) => this.limit(tool), late: this.late });
+		const outcomes = await runWave(runnable, (call) => this.exec(call), { timeoutMs: (tool) => this.limit(tool), late: this.late, signal: this.o.signal });
 
 		let next = 0;
 		const ran: RanCall[] = [];
@@ -728,6 +800,16 @@ class WaveRun {
 	}
 
 	/**
+	 * Ends a stopped run. It writes no answer (the chat closes the turn); its
+	 * last row names the calls still running, because they may still change
+	 * the work.
+	 */
+	stopped(waves: number): LoopResult {
+		if (this.late.size) this.o.emit('thinking', [STILL_RUNNING, ...[...this.late.values()].map(({ call }) => `- ${callName(call)}`)].join('\n'));
+		return this.finish('stopped', '', waves);
+	}
+
+	/**
 	 * Asks for a best-effort answer from what was gathered (Wave's
 	 * `_synthesize`): a plain question, not a plan, with the results as lines
 	 * and the model's notes. If that call fails or returns nothing, the answer
@@ -738,6 +820,7 @@ class WaveRun {
 		const context = [`Information gathered:\n${lines.length ? lines.join('\n') : '(no results gathered)'}`];
 		// The notes hold what the model worked out (counts, names, conclusions).
 		if (this.scratch) context.push(`Your working notes from the steps so far:\n${this.scratch}`);
+		if (this.heard.length) context.push(heardText(this.heard));
 		const q: QuestionSpec = {
 			role: FALLBACK_ROLE,
 			instructions: [],
@@ -766,11 +849,13 @@ class WaveRun {
 
 /**
  * Runs waves until the model's answer is accepted, a reply stays unusable
- * after one retry (`empty_plan`), or the model cannot be reached (`error`).
+ * after one retry (`empty_plan`), the model cannot be reached (`error`), or
+ * the run is stopped (`stopped`, with no answer).
  * Each wave plans, runs its calls, tells the finish rule what ran, and records
  * their entries for the next question. A done=true is sent back, with the
  * reason in an entry, while a timed-out call still runs, in the wave the check
- * tool is called, and while the finish rule finds something unchecked. Every
+ * tool is called, while the finish rule finds something unchecked, and while
+ * a message the user sent during the run is unread. Every
  * wave sends one thinking chunk except the one whose answer is accepted, which
  * goes out as the answer instead.
  *
@@ -781,11 +866,14 @@ class WaveRun {
 export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 	const run = new WaveRun(o);
 	for (let wave = 0; ; wave++) {
+		if (o.signal.aborted) return run.stopped(wave);
 		o.finish.beginWave(wave);
+		run.hear();
 		let reply: PlanReply;
 		try {
 			reply = await run.plan();
 		} catch (error) {
+			if (error instanceof RunStopped) return run.stopped(wave + 1);
 			// Nothing gathered: the cause (a bad key, a stopped pipeline) is the useful part.
 			if (!run.gathered) throw error;
 			return run.finish('error', await run.bestEffort(), wave + 1);
@@ -795,7 +883,7 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 		// step: done with nothing to run — the answer stands unless the work is unchecked
 		if (reply.done && !toolCalls.length) {
 			await o.finish.endWave(run.lateReturns());
-			const refused = run.unfinished();
+			const refused = run.unfinished() ?? (run.hear() ? READ_THE_USER : null);
 			if (!refused) {
 				return run.finish('done', resolveAnswerRefs(reply.answer, run.memory), wave + 1);
 			}
@@ -827,6 +915,10 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 		// call skipped for missing arguments never touched the work or a check, so
 		// the rule never hears of it.
 		await o.finish.endWave([...ran, ...run.lateReturns()]);
+		if (o.signal.aborted) {
+			run.think(reply.thought, lines);
+			return run.stopped(wave + 1);
+		}
 
 		// step: done with calls — the answer stands only if every call worked, the
 		// model has read any check it ran, and the work is checked
@@ -835,7 +927,7 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 			finished = false;
 			entries.push(refusal(wave, readTheCheck(o.finish.checkTool)));
 		} else if (finished) {
-			const refused = run.unfinished();
+			const refused = run.unfinished() ?? (run.hear() ? READ_THE_USER : null);
 			if (refused) {
 				finished = false;
 				entries.push(refusal(wave, refused));

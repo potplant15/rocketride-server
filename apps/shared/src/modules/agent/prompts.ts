@@ -158,7 +158,9 @@ const ROLE = `Do the work yourself with your tools instead of telling the user h
 const ENVIRONMENT = `- You run in the user's browser tab with no terminal, so you act only through the tools listed below.
 - Your edits save to the user's workspace just as their own do.
 - The code adds a checks line to your final answer, built from the actual check results.
-- The loop may append notes after the tool results. Read them every step, because they are your newest facts.`;
+- The loop may append notes after the tool results. Read them every step, because they are your newest facts.
+- The user can write to you while you work. Their messages show in the context as "Messages from the user during this run". They come after the request and change it where they differ, so act on them in your next plan and say in your answer how you handled them.
+- The user can stop a run. An earlier answer that starts "Stopped by you" ended before the work was done. Its list says what ran, and a call it names as still running may have finished since, so look before you redo work.`;
 
 /** 3. Wave's mechanics, under the titles Wave gives them. */
 const LOOP = `Memory:

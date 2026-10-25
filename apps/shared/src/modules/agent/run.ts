@@ -31,7 +31,7 @@
  * model, and the record of check results, which is also the loop's finish
  * rule. It streams each wave's progress as `thinking` chunks and sends the
  * answer as one `content` chunk, with the checks line the code builds from the
- * record.
+ * record. A stopped run sends no `content` chunk.
  *
  * Everything that only works in the browser (the model pipeline, the confirm
  * dialog, Monaco's markers) has a default here and comes in through `deps`
@@ -102,6 +102,10 @@ export interface AgentRunOptions {
 	token: () => Promise<string>;
 	/** Restarts the LLM pipeline after it fails. */
 	onPipelineError?: () => Promise<void>;
+	/** Aborted when the user stops the run; the loop then starts nothing new and ends. */
+	signal: AbortSignal;
+	/** Takes the messages the user sent since the last take, oldest first. */
+	takeQueued: () => string[];
 }
 
 /** What one run needs from its host. The optional parts have browser defaults; tests always pass them. */
@@ -401,6 +405,9 @@ function within(path: string, root: string): boolean {
  * Turns the chat's messages into the model's history: what the user said and
  * the answers the agent gave. Thinking rows (bot rows with a result key),
  * error banners, and system and status rows are not part of the conversation.
+ * A turn's request and the messages it took mid-run, or a request whose
+ * answer was an error, are consecutive user rows; they merge into one user
+ * turn, so the roles alternate.
  *
  * @param messages - The chat's messages, oldest first.
  * @returns The history turns, oldest first.
@@ -408,7 +415,9 @@ function within(path: string, root: string): boolean {
 function toHistory(messages: ChatMessage[]): HistoryTurn[] {
 	const turns: HistoryTurn[] = [];
 	for (const m of messages) {
-		if (m.sender === 'user') turns.push({ role: 'user', content: m.text });
+		const last = turns.at(-1);
+		if (m.sender === 'user' && last?.role === 'user') last.content = `${last.content}\n\n${m.text}`;
+		else if (m.sender === 'user') turns.push({ role: 'user', content: m.text });
 		else if (m.sender === 'bot' && !m.isError && !m.resultKey) turns.push({ role: 'assistant', content: m.text });
 	}
 	return turns;
@@ -608,7 +617,8 @@ function toRocketRideQuestion(q: QuestionSpec): Question {
 /**
  * Runs the agent once on a request. Progress goes to the callback as
  * `thinking` chunks, one per wave except the wave whose answer is accepted,
- * and the answer goes as one `content` chunk. One summary line is logged.
+ * and the answer goes as one `content` chunk; a stopped run sends no
+ * `content` chunk. One summary line is logged.
  *
  * @param request - What the user asked for.
  * @param callback - Receives each chunk as (type, content).
@@ -663,8 +673,12 @@ export async function runAgent(request: string, callback: (type: string, content
 		finish: checks,
 		emit: (type, text) => callback(type, text),
 		timeoutMs: (tool) => (tool === 'deploy_app' ? DEPLOY_APP_TIMEOUT_MS : TOOL_TIMEOUT_MS),
+		signal: options.signal,
+		takeQueued: options.takeQueued,
 	});
 
-	callback('content', finalText(result, checks));
+	// step: a stopped run writes no answer: the chat closes the turn with its stop row, and this adds the one fact that row can't know
+	if (result.stopReason !== 'stopped') callback('content', finalText(result, checks));
+	else if (checks.changed) callback('thinking', NOT_CHECKED);
 	console.log(`[agent] stop=${result.stopReason} waves=${result.waves} modelCalls=${result.modelMs.length} medianMs=${median(result.modelMs)} guides=[${[...vfs.guidesRead].join(',')}]`);
 }

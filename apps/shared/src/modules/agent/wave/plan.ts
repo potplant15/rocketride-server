@@ -92,7 +92,7 @@ export interface ResultEntry {
 }
 
 /** Why the loop stopped. */
-export type StopReason = 'done' | 'empty_plan' | 'error';
+export type StopReason = 'done' | 'empty_plan' | 'error' | 'stopped';
 
 // =============================================================================
 // MODEL CALL — the one seam to the language model
@@ -187,6 +187,8 @@ export interface WaveState {
 	results: ResultEntry[];
 	/** Messages from the loop to the model, such as why a finish was refused. */
 	notes: string[];
+	/** Messages the user sent during this run, oldest first. */
+	heard: string[];
 }
 
 // =============================================================================
@@ -222,19 +224,31 @@ export function buildPrefix(core: CorePrompt, app: AppPrompts, composed: Compose
 // =============================================================================
 
 /**
+ * Writes the messages the user sent during the run. They go in the context,
+ * never the history, so the cached start stays the same.
+ *
+ * @param heard - The messages, oldest first.
+ * @returns The labelled, numbered list.
+ */
+export function heardText(heard: string[]): string {
+	return `Messages from the user during this run (oldest first; they come after the request and change it where they differ):\n${heard.map((text, i) => `${i + 1}. ${text}`).join('\n')}`;
+}
+
+/**
  * Builds one wave's question: the fixed start, the history, then this wave's
  * request and context. Context items are always strings, because the client
  * turns any object into "[object Object]".
  *
  * @param prefix - The run's fixed start (see buildPrefix).
  * @param history - Earlier conversation turns, oldest first; it only grows at the end.
- * @param state - This wave's request, scratch notes, results and loop notes.
+ * @param state - This wave's request, scratch notes, results, the user's mid-run messages and loop notes.
  * @returns The question, asking for JSON and for the start to be cached.
  */
 export function buildWaveQuestion(prefix: PromptPrefix, history: HistoryTurn[], state: WaveState): QuestionSpec {
 	const context: string[] = [];
 	if (state.scratch) context.push(`Scratch (your working notes from previous steps):\n${state.scratch}`);
 	if (state.results.length) context.push(`Previous tool results:\n${JSON.stringify(state.results, null, 2)}`);
+	if (state.heard.length) context.push(heardText(state.heard));
 	context.push(...state.notes);
 	return {
 		role: prefix.role,

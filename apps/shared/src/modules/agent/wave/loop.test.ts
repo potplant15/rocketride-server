@@ -21,7 +21,7 @@
 // SOFTWARE.
 
 // =============================================================================
-// WAVE LOOP TESTS — the done rule, reading replies, and same-file order
+// WAVE LOOP TESTS — the done rule, reading replies, and same-file order, stop and steering
 // =============================================================================
 
 import assert from 'node:assert/strict';
@@ -133,6 +133,8 @@ function setup(model: ModelCall, tools: AgentTool[] = [], extra: Partial<LoopOpt
 		model,
 		finish: record(),
 		emit: () => undefined,
+		signal: new AbortController().signal,
+		takeQueued: () => [],
 		...extra,
 	};
 	return { run: () => runLoop(options) };
@@ -256,4 +258,59 @@ test('calls on one file in one wave run in planned order', async () => {
 	]);
 	await setup(model, [edit, checkTool(checks)], { finish: checks }).run();
 	assert.deepEqual(events, ['start 0', 'end 0', 'start 1', 'end 1']);
+});
+
+// =============================================================================
+// STOP AND STEERING
+// =============================================================================
+
+test('Stop mid-wave ends the run at once: nothing new starts, and what is still running is named', async () => {
+	const stop = new AbortController();
+	const emitted: string[] = [];
+	const edit = stub('edit_file');
+	// The deploy stops the run while it works, and never finishes.
+	const deploy = stub('deploy_app', () => {
+		stop.abort();
+		return new Promise<string>(() => undefined);
+	});
+	const model = scriptedModel([
+		plan([
+			['edit_file', { path: 'a.ts' }],
+			['deploy_app', { app: 'x' }],
+			['edit_file', { path: 'a.ts' }],
+		]),
+	]);
+	const result = await setup(model, [edit, deploy], { signal: stop.signal, emit: (_type, text) => emitted.push(text) }).run();
+	assert.equal(result.stopReason, 'stopped');
+	assert.equal(model.questions.length, 1, 'no model call after the stop');
+	assert.equal(edit.seen.length, 1, 'the edit waiting on the same file never started');
+	assert.match(emitted.at(-1) ?? '', /- deploy_app x/, 'the last row names the call still running');
+});
+
+test('a queued message reaches the next wave, and one sent before done is read before the run finishes', async () => {
+	const inbox: string[] = [];
+	const read = stub('read_file', () => {
+		inbox.push('use folder B');
+		return 'file text';
+	});
+	const replies = scriptedModel([plan([['read_file', { path: 'a.ts' }]]), done('too soon'), done('final')]);
+	// The user writes again just as the model first says it is done.
+	const model: ModelCall = async (q) => {
+		const reply = await replies(q);
+		if (replies.questions.length === 2) inbox.push('also do C');
+		return reply;
+	};
+	const result = await setup(model, [read], { takeQueued: () => inbox.splice(0) }).run();
+	const [first, second, third] = replies.questions;
+	assert.ok(!first.context.some((c) => c.includes('use folder B')));
+	assert.ok(
+		second.context.some((c) => c.includes('use folder B')),
+		'the next wave reads the message'
+	);
+	assert.deepEqual([second.instructions, second.history], [first.instructions, first.history], 'the cached start is unchanged');
+	assert.ok(
+		third.context.some((c) => c.includes('also do C')),
+		'the done was sent back so the message is read'
+	);
+	assert.equal(result.answer, 'final');
 });
