@@ -38,6 +38,7 @@
 
 import { getClient } from 'shell';
 import type { ChatMessage, TextResult } from 'shell';
+import type { ChatTurn } from 'shell/src/components/chat/types';
 import { getAgentHost } from './host';
 import { BUILDER_PROMPTS } from './prompts';
 import { runAgent } from './run';
@@ -57,10 +58,10 @@ export { AGENTS_DIR } from './sessions';
 /** Streaming callback: one (type, content) pair per agent output chunk. */
 export type AgentCallback = (type: string, content: string) => void;
 
-/** What one agent request is run with. Every part has a default. */
+/** What one agent request is run with. Every part but the turn has a default. */
 export interface AgentOptions {
-	/** The conversation before this request, as the chat renders it. */
-	history?: ChatMessage[];
+	/** The chat turn the request runs in: the conversation before it, the signal Stop aborts, and the messages the user sends during it. */
+	turn: ChatTurn;
 	/** The mounting app's workspace map and guide router (default: the pipe builder's). */
 	prompts?: AppPrompts;
 	/** The token of a running LLM pipeline (default: the stand-in pipeline, TEMPORARY). */
@@ -79,10 +80,10 @@ const standin = new StandinPipelines(getClient);
  *
  * @param request - The user's request text.
  * @param callback - Receives each output chunk as (type, content).
- * @param options - The conversation so far, the app's prompts, and the model pipeline.
+ * @param options - The chat turn, the app's prompts, and the model pipeline.
  */
-export async function agent(request: string, callback: AgentCallback, options: AgentOptions = {}): Promise<void> {
-	const { history = [], prompts = BUILDER_PROMPTS, token: given, conversationId = crypto.randomUUID() } = options;
+export async function agent(request: string, callback: AgentCallback, options: AgentOptions): Promise<void> {
+	const { turn, prompts = BUILDER_PROMPTS, token: given, conversationId = crypto.randomUUID() } = options;
 	// TEMPORARY (spec §11): delete when Rod's wiring lands
 	// step: a given token is used as is; without one, the conversation's stand-in pipeline answers (and restarts on a failure)
 	const token = given ? async () => given : () => standin.token(conversationId);
@@ -91,7 +92,7 @@ export async function agent(request: string, callback: AgentCallback, options: A
 		: async () => {
 				await standin.restart(conversationId);
 			};
-	await runAgent(request, callback, { history, prompts, token, onPipelineError }, { host: getAgentHost(), client: getClient });
+	await runAgent(request, callback, { history: [...turn.history], prompts, token, onPipelineError }, { host: getAgentHost(), client: getClient });
 }
 
 // =============================================================================
@@ -243,9 +244,13 @@ export class AgentSession {
 	 *
 	 * @param text - The user's request.
 	 * @param onStatus - The chat's live status sink (the hook's second `request` argument). With it, each `thinking` chunk goes to it as it arrives and is not returned; without it, every chunk is returned.
+	 * @param turn - The running chat turn (the hook's third `request` argument). The hook always passes it; it is optional only because the shell's v0 `request` type is frozen.
 	 * @returns One TextResult per agent output chunk that was not sent to the sink.
+	 * @throws When no turn is passed.
 	 */
-	async execute(text: string, onStatus?: AgentCallback): Promise<TextResult[]> {
+	async execute(text: string, onStatus?: AgentCallback, turn?: ChatTurn): Promise<TextResult[]> {
+		// queued turns can chain with no idle save between them, so this.messages may miss the turn before; the turn's history never does
+		if (!turn) throw new Error('AgentSession.execute runs inside a chat turn: pass the turn useChatMessages hands its request.');
 		// step: the first request names the session for the catalog row
 		if (this.title === UNTITLED) {
 			this.title = text.length > TITLE_MAX ? `${text.slice(0, TITLE_MAX - 1)}…` : text;
@@ -253,8 +258,7 @@ export class AgentSession {
 		// step: thinking streams live to the sink; the rest is collected into renderable rows
 		const { callback, results } = routeChunks(onStatus);
 		// TEMPORARY (spec §11): delete when Rod's wiring lands
-		// this.messages is the conversation as last saved: it holds the turns before this request
-		await agent(text, callback, { history: this.messages, conversationId: this.sessionId });
+		await agent(text, callback, { turn, conversationId: this.sessionId });
 		return results;
 	}
 

@@ -47,6 +47,7 @@ import type { CSSProperties } from 'react';
 import { ChatView, useChatMessages, useShellConnection, commonStyles } from 'shell';
 import type { DevToolProps } from 'shell';
 import type { TextResult } from 'shell';
+import type { ChatTurn } from 'shell/src/components/chat/types';
 import { AgentSession } from '../../modules/agent/agent';
 import type { AgentCallback } from '../../modules/agent/agent';
 import { buttonize } from '../../utils/buttonize';
@@ -227,7 +228,7 @@ const ExampleCard: React.FC<{ heading: string; prompt: string; onPick: (prompt: 
  */
 const AgentConversation: React.FC<{ session: AgentSession; isConnected: boolean }> = ({ session, isConnected }) => {
 	/** The injected chat transport: one request through the agent session. The hook's status sink carries the thinking rows live. */
-	const request = useCallback((text: string, onStatus?: AgentCallback): Promise<TextResult[]> => session.execute(text, onStatus), [session]);
+	const request = useCallback((text: string, onStatus?: AgentCallback, turn?: ChatTurn): Promise<TextResult[]> => session.execute(text, onStatus, turn), [session]);
 
 	const { messages, isTyping, sendMessage } = useChatMessages({ initialMessages: session.messages, request });
 

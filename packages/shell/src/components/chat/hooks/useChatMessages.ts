@@ -3,15 +3,10 @@
 // Copyright (c) 2026 Aparavi Software AG
 // =============================================================================
 
-import { useState, useCallback, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Question, QuestionType, type PIPELINE_RESULT } from 'rocketride';
-import type { ChatMessage, TextResult, UseChatMessagesOptions } from '../types';
-import { makeStatusSink, statusRow } from './statusRows';
-
-// Module-level monotonic counter — guarantees unique IDs even when multiple
-// messages are created within the same millisecond (e.g. batched SSE updates).
-let _nextId = 1;
-const nextId = () => _nextId++;
+import type { ChatMessage, ChatTurnView, TextResult, UseChatMessagesOptions } from '../types';
+import { TurnController, type ChatRequest } from '../turns/turnController';
 
 // =============================================================================
 // extractTextFromResult
@@ -47,6 +42,41 @@ function extractTextFromResult(result: PIPELINE_RESULT): TextResult[] {
 }
 
 // =============================================================================
+// BUILT-IN REQUEST
+// =============================================================================
+
+/** The client and token the latest sendMessage call passed. */
+type Transport = { client: any; authToken: string };
+
+/**
+ * The built-in chat call, used when the host injects no `request`. It sends
+ * the question with the last six non-system, non-status rows as history and
+ * adds one status row per server-sent event. It does not race the turn's
+ * signal: the stop grace closes a stopped built-in turn.
+ */
+function builtInRequest(transport: { current: Transport }): ChatRequest {
+	return async (text, onStatus, turn) => {
+		const { client, authToken } = transport.current;
+		if (!client || !authToken) throw new Error('Not connected. Please refresh the page.');
+
+		const question = new Question({ type: QuestionType.PROMPT, expectJson: false });
+		question.addQuestion(text);
+		[...turn.history.filter((m) => m.sender !== 'system' && m.sender !== 'status').map((m) => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.text })), { role: 'user', content: text }].slice(-6).forEach((entry) => question.addHistory(entry));
+
+		const result: PIPELINE_RESULT = await client.chat({
+			token: authToken,
+			question,
+			onSSE: async (type: string, data: Record<string, unknown>) => {
+				if (typeof data.message === 'string') onStatus(type, data.message);
+			},
+		});
+
+		const responses = extractTextFromResult(result);
+		return responses.length > 0 ? responses : [{ text: 'No valid response received', key: '' }];
+	};
+}
+
+// =============================================================================
 // useChatMessages
 // =============================================================================
 
@@ -56,118 +86,44 @@ export interface UseChatMessagesReturn {
 	sendMessage: (text: string, client: any, authToken: string) => Promise<void>;
 	clearMessages: () => void;
 	addSystemMessage: (text: string) => void;
+	/** Turn controls for ChatView's `turn` prop: Stop, and Edit and Remove on queued messages. */
+	turn: ChatTurnView;
 }
 
 /**
- * Manages chat message state and RocketRide API communication.
- *
- * IMPORTANT: always use the internal updateMessages helper — never call
- * setMessages directly. Direct setMessages calls bypass the messagesRef
- * sync and will cause sendMessage to build history from a stale snapshot.
+ * Manages one chat's transcript and its single turn, over a TurnController.
+ * One turn runs at a time: a send during a turn adds a queued message, which
+ * the running request may take and which otherwise runs next. Unmounting
+ * stops a running turn.
  */
-export function useChatMessages({ welcomeMessage, initialMessages, request }: UseChatMessagesOptions = {}): UseChatMessagesReturn {
-	const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
-	const [isTyping, setIsTyping] = useState(false);
+export function useChatMessages(options: UseChatMessagesOptions = {}): UseChatMessagesReturn {
+	const latest = useRef(options);
+	latest.current = options;
+	const transport = useRef<Transport>({ client: null, authToken: '' });
+	const [controller] = useState(() => new TurnController({ initialMessages: options.initialMessages, request: () => latest.current.request ?? builtInRequest(transport) }));
+	const snap = useSyncExternalStore(controller.subscribe, controller.snapshot);
 
-	const messagesRef = useRef<ChatMessage[]>(initialMessages ?? []);
-
-	const updateMessages = useCallback((updater: (prev: ChatMessage[]) => ChatMessage[]) => {
-		setMessages((prev) => {
-			const next = updater(prev);
-			messagesRef.current = next;
-			return next;
-		});
-	}, []);
-
-	const ts = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-	const sendMessageToAPI = useCallback(
-		async (userMessage: string, client: any, authToken: string): Promise<TextResult[]> => {
-			if (!client || !authToken) throw new Error('Not connected. Please refresh the page.');
-
-			const question = new Question({ type: QuestionType.PROMPT, expectJson: false });
-			question.addQuestion(userMessage);
-
-			// Use ref so history is always built from the latest messages
-			messagesRef.current
-				.filter((m) => m.sender !== 'system' && m.sender !== 'status')
-				.slice(-6)
-				.forEach((m) =>
-					question.addHistory({
-						role: m.sender === 'user' ? 'user' : 'assistant',
-						content: m.text,
-					})
-				);
-
-			const result: PIPELINE_RESULT = await client.chat({
-				token: authToken,
-				question,
-				onSSE: async (type: string, data: Record<string, unknown>) => {
-					const text = typeof data.message === 'string' ? data.message : undefined;
-					if (text) {
-						const row = statusRow(nextId(), type, text, ts());
-						updateMessages((prev) => [...prev, row]);
-					}
-				},
-			});
-
-			const responses = extractTextFromResult(result);
-			return responses.length > 0 ? responses : [{ text: 'No valid response received', key: '' }];
-		},
-		[updateMessages]
-	);
+	// step: unmounting stops a running turn (closing the agent tab), so no run goes on that nobody sees
+	useEffect(() => () => controller.stop(), [controller]);
 
 	const sendMessage = useCallback(
 		async (text: string, client: any, authToken: string) => {
-			if (!text.trim()) return;
-
-			updateMessages((prev) => [...prev, { id: nextId(), text, sender: 'user', timestamp: ts() }]);
-			setIsTyping(true);
-
-			try {
-				// step: an injected transport (agent sessions, tests) replaces the
-				// built-in chat API wholesale — same answer shape either way. Its
-				// status sink appends live rows while the request is pending.
-				const onStatus = makeStatusSink((row) => updateMessages((prev) => [...prev, row]), nextId, ts);
-				const answers = request ? await request(text, onStatus) : await sendMessageToAPI(text, client, authToken);
-				const botMsgs: ChatMessage[] = answers.map((a) => ({
-					id: nextId(),
-					text: a.text,
-					sender: 'bot' as const,
-					timestamp: ts(),
-					...(a.key ? { resultKey: a.key } : {}),
-				}));
-				updateMessages((prev) => [...prev, ...botMsgs]);
-			} catch (err) {
-				updateMessages((prev) => [
-					...prev,
-					{
-						id: nextId(),
-						text: err instanceof Error ? err.message : 'An unexpected error occurred. Please try again.',
-						sender: 'bot',
-						// Flag so MessageBubble renders this failure as an in-thread error Banner.
-						isError: true,
-						timestamp: ts(),
-					},
-				]);
-			} finally {
-				setIsTyping(false);
-			}
+			transport.current = { client, authToken };
+			controller.send(text);
 		},
-		[request, sendMessageToAPI, updateMessages]
+		[controller]
 	);
-
-	const addSystemMessage = useCallback(
-		(text: string) => {
-			updateMessages((prev) => [...prev, { id: nextId(), text, sender: 'system', timestamp: ts() }]);
-		},
-		[updateMessages]
+	const clearMessages = useCallback(() => controller.clear(latest.current.welcomeMessage ?? 'Chat cleared. How can I help you?'), [controller]);
+	const addSystemMessage = useCallback((text: string) => controller.addSystemMessage(text), [controller]);
+	const turn = useMemo<ChatTurnView>(
+		() => ({
+			phase: snap.phase,
+			returned: snap.returned,
+			stop: () => controller.stop(),
+			editQueued: (id) => controller.editQueued(id),
+			removeQueued: (id) => controller.removeQueued(id),
+		}),
+		[controller, snap.phase, snap.returned]
 	);
-
-	const clearMessages = useCallback(() => {
-		const text = welcomeMessage ?? 'Chat cleared. How can I help you?';
-		updateMessages(() => [{ id: nextId(), text, sender: 'system', timestamp: ts() }]);
-	}, [welcomeMessage, updateMessages]);
-
-	return { messages, isTyping, sendMessage, clearMessages, addSystemMessage };
+	return { messages: snap.messages, isTyping: snap.phase !== 'idle', sendMessage, clearMessages, addSystemMessage, turn };
 }

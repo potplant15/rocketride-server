@@ -31,6 +31,11 @@ export interface ChatMessage {
 	meta?: string;
 	/** When true, the message renders as an in-thread error Banner instead of a bubble. */
 	isError?: boolean;
+	/**
+	 * On a user row: sent while a turn was running, and not yet taken by it.
+	 * Queued rows are always the last rows of the list. A load clears the flag.
+	 */
+	queued?: true;
 }
 
 // =============================================================================
@@ -74,9 +79,11 @@ export interface UseChatMessagesOptions {
 	 * built-in chat API (the `client`/`authToken` arguments are then unused).
 	 * Each returned TextResult renders as one bot message. The hook passes a
 	 * status sink as the second argument: rows sent to it show up at once,
-	 * while the request is still pending (see {@link ChatStatusSink}).
+	 * while the request is still pending (see {@link ChatStatusSink}). The hook
+	 * always passes the running turn as the third argument; it is typed optional
+	 * only because v0 is frozen.
 	 */
-	request?: (text: string, onStatus?: ChatStatusSink) => Promise<TextResult[]>;
+	request?: (text: string, onStatus?: ChatStatusSink, turn?: ChatTurn) => Promise<TextResult[]>;
 }
 
 /**
@@ -89,6 +96,41 @@ export interface UseChatMessagesOptions {
  * @param text - The row's text; line breaks are kept.
  */
 export type ChatStatusSink = (type: string, text: string) => void;
+
+// =============================================================================
+// TURN
+// =============================================================================
+
+/**
+ * The running turn, as an injected `request` sees it. Once the turn settles
+ * (its answer or error, or Stop's grace running out) it is inert: the status
+ * sink drops rows and `takeQueued` returns [].
+ */
+export interface ChatTurn {
+	/** The rows before this turn's opening user row: the conversation the turn answers in. */
+	readonly history: readonly ChatMessage[];
+	/** Aborted when the user stops the turn or the chat unmounts. */
+	readonly signal: AbortSignal;
+	/**
+	 * Takes the messages the user sent since the turn began (or since the last
+	 * take), oldest first. They then belong to this turn and never open one of
+	 * their own. Returns [] once the turn is stopping.
+	 */
+	takeQueued(): string[];
+}
+
+/** Where a chat's one turn slot stands. */
+export type ChatTurnPhase = 'idle' | 'running' | 'stopping';
+
+/** The turn controls ChatView shows; useChatMessages returns them as `turn`. */
+export interface ChatTurnView {
+	readonly phase: ChatTurnPhase;
+	/** Text handed back to the composer by Stop (every queued message) or Edit (one); a new `id` each time. */
+	readonly returned: { readonly id: number; readonly text: string } | null;
+	stop(): void;
+	editQueued(id: number): void;
+	removeQueued(id: number): void;
+}
 
 // =============================================================================
 // PIPELINE RESULT (from rocketride SDK)

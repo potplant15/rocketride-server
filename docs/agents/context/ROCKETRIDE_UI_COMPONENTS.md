@@ -516,7 +516,9 @@ for custom layouts.
 `ChatMessage`: `{ id: number, text (markdown ok), sender: 'user' | 'bot' |
 'system' | 'status', timestamp: string, resultKey? (pipeline result key
 label under bot bubbles), sseType?, meta? (e.g. "2,340 tokens - 1.8s"),
-isError? (renders as an in-thread error Banner instead of a bubble) }`.
+isError? (renders as an in-thread error Banner instead of a bubble),
+queued? (true on a user message sent while a turn was running and not yet
+taken by it; queued messages are always the last rows) }`.
 `'status'` messages are SSE progress lines grouped as a thinking group.
 
 **Wiring ChatView to a chat pipeline** — the verified recipe.
@@ -565,10 +567,17 @@ function PipelineChat({ pipeline }: { pipeline: object }) {
 }
 ```
 
-`useChatMessages(options?)` — options `{ welcomeMessage?, initialMessages? }`
-(`initialMessages` restores a saved conversation) — returns `{ messages,
+`useChatMessages(options?)` — options `{ welcomeMessage?, initialMessages?,
+request? }` (`initialMessages` restores a saved conversation).
+`request(text, onStatus, turn)` replaces the built-in chat call.
+`onStatus(type, text)` adds a live status row. `turn` carries `history` (the
+rows before this turn), `signal` (aborted when the user stops the turn or the
+chat unmounts) and `takeQueued()` (takes the messages sent since the turn
+began, so they never open a turn of their own). Returns `{ messages,
 isTyping, sendMessage(text, client, authToken), clearMessages,
-addSystemMessage }`. `clearMessages()` resets the thread to the welcome
+addSystemMessage, turn }`. One turn runs at a time: `sendMessage` during a
+turn adds a queued message, which the running request may take and which
+otherwise runs next. `clearMessages()` resets the thread to the welcome
 message; `addSystemMessage(text)` appends a system note. Persist only
 `user`/`bot` messages; `system`/`status` are ephemeral.
 
