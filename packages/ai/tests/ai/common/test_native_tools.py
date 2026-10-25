@@ -3,18 +3,26 @@
 # Copyright (c) 2026 Aparavi Software AG
 # =============================================================================
 
-"""Native tool calling: the name map, the stop table, and the LangChain codec.
+"""Native tool calling: the name map, the stop table, the LangChain codec, and the turn path.
 
 The codec is checked by what the provider would receive: each turn is encoded, then
 LangChain's own request builder turns it into the wire payload, which is what the
-assertions read.
+assertions read. The turn path runs the real drivers over mocked HTTP transports.
 """
 
 from __future__ import annotations
 
+import ast
+import functools
+import importlib.util
+import json
 import re
+from pathlib import Path
 
 import pytest
+
+from ai.common.config import Config
+from ai.common.llm_base import LLMBase
 
 from ai.common.llm_tools import (
     ToolNames,
@@ -200,3 +208,375 @@ def test_think_tags_in_plain_text_become_reasoning_not_text():
         ('TextBlock', 'Done.'),
     ]
     assert stop == 'end_turn'
+
+
+# ---------------------------------------------------------------------------
+# The turn path, through the real drivers
+# ---------------------------------------------------------------------------
+
+NODES = Path(__file__).resolve().parents[5] / 'nodes' / 'src' / 'nodes'
+
+
+class _Transport:
+    """Replays canned HTTP responses and records each request body."""
+
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.bodies = []
+
+    def __call__(self, request):
+        import httpx
+        import httpx2
+
+        lib = httpx2 if type(request).__module__.startswith('httpx2') else httpx
+        self.bodies.append(json.loads(request.content))
+        status, content_type, body = self.responses.pop(0)
+        return lib.Response(status, headers={'content-type': content_type}, content=body)
+
+
+def _sse(events, named=True):
+    return ''.join((f'event: {e["type"]}\n' if named else '') + f'data: {json.dumps(e)}\n\n' for e in events).encode()
+
+
+def _driver(monkeypatch, node: str, module: str, config: dict):
+    monkeypatch.setattr(Config, 'getNodeConfig', staticmethod(lambda *a, **k: dict(config)))
+    spec = importlib.util.spec_from_file_location(f'_turn_{node}', NODES / node / module)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod, mod.Chat(node, {}, {})
+
+
+def _anthropic_driver(monkeypatch, transport, thinking=True):
+    import httpx2
+    import langchain_anthropic.chat_models as lca
+
+    monkeypatch.setattr(
+        lca,
+        '_get_default_httpx_client',
+        lambda **kw: httpx2.Client(transport=httpx2.MockTransport(transport), base_url=kw['base_url']),
+    )
+    config = {
+        'model': 'claude-sonnet-4-6',
+        'apikey': 'sk-ant-test',
+        'modelTotalTokens': 200000,
+        'modelOutputTokens': 8192,
+        'capabilities': {'reasoning': True},
+        'extendedThinking': thinking,
+    }
+    return _driver(monkeypatch, 'llm_anthropic', 'anthropic.py', config)[1]
+
+
+def _anthropic_stream(text, tool=None):
+    events = [
+        {
+            'type': 'message_start',
+            'message': {
+                'id': 'msg_1',
+                'type': 'message',
+                'role': 'assistant',
+                'model': 'claude-sonnet-4-6',
+                'content': [],
+                'stop_reason': None,
+                'stop_sequence': None,
+                'usage': {'input_tokens': 50, 'output_tokens': 1},
+            },
+        },
+        {
+            'type': 'content_block_start',
+            'index': 0,
+            'content_block': {'type': 'thinking', 'thinking': '', 'signature': ''},
+        },
+        {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'thinking_delta', 'thinking': 'Plan the call.'}},
+        {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'signature_delta', 'signature': SIG}},
+        {'type': 'content_block_stop', 'index': 0},
+        {'type': 'content_block_start', 'index': 1, 'content_block': {'type': 'text', 'text': ''}},
+        {'type': 'content_block_delta', 'index': 1, 'delta': {'type': 'text_delta', 'text': text}},
+        {'type': 'content_block_stop', 'index': 1},
+    ]
+    if tool:
+        events += [
+            {
+                'type': 'content_block_start',
+                'index': 2,
+                'content_block': {'type': 'tool_use', 'id': 'toolu_1', 'name': tool, 'input': {}},
+            },
+            {
+                'type': 'content_block_delta',
+                'index': 2,
+                'delta': {'type': 'input_json_delta', 'partial_json': '{"title": "Flaky"}'},
+            },
+            {'type': 'content_block_stop', 'index': 2},
+        ]
+    events += [
+        {
+            'type': 'message_delta',
+            'delta': {'stop_reason': 'tool_use' if tool else 'end_turn', 'stop_sequence': None},
+            'usage': {'output_tokens': 30},
+        },
+        {'type': 'message_stop'},
+    ]
+    return 200, 'text/event-stream', _sse(events)
+
+
+def _turn(**fields) -> Question:
+    return Question(
+        role='You are the Rocket agent.',
+        cachePrefix=True,
+        tools=[{'name': 'tool_github_1.create_issue', 'description': 'File an issue.'}],
+        messages=[UserMessage(content='File an issue about the flaky test.')],
+        **fields,
+    )
+
+
+def test_a_streamed_anthropic_tool_loop_with_thinking(monkeypatch):
+    transport = _Transport(
+        _anthropic_stream('Filing it.', tool='tool_github_1__create_issue'), _anthropic_stream('Filed #42.')
+    )
+    chat = _anthropic_driver(monkeypatch, transport)
+    q = _turn()
+    thinking = []
+
+    first = chat.chat(q, on_chunk=lambda _t: None, on_reasoning_chunk=thinking.append)
+
+    sent = transport.bodies[0]
+    assert sent['thinking'] == chat._thinking_mode_kwargs['thinking']
+    assert sent['tools'][0]['name'] == 'tool_github_1__create_issue'
+    assert sent['system'][0]['cache_control'] == {'type': 'ephemeral'}
+    assert 'Plan the call.' in ''.join(thinking)
+    assert first.stopReason == 'tool_use'
+    assert first.getText() == 'Filing it.'
+    assert [(c.id, c.name, c.args) for c in first.toolCalls()] == [
+        ('toolu_1', 'tool_github_1.create_issue', {'title': 'Flaky'})
+    ]
+
+    q.addMessage(first.message)
+    q.addToolResult('toolu_1', '#42')
+    second = chat.chat(q, on_chunk=lambda _t: None)
+
+    replayed = transport.bodies[1]['messages'][1]['content']
+    assert replayed[0] == {'type': 'thinking', 'thinking': 'Plan the call.', 'signature': SIG}
+    assert replayed[-1]['type'] == 'tool_use' and replayed[-1]['id'] == 'toolu_1'
+    assert transport.bodies[1]['messages'][2]['content'][0]['tool_use_id'] == 'toolu_1'
+    assert (second.stopReason, second.getText(), second.toolCalls()) == ('end_turn', 'Filed #42.', [])
+
+
+def test_a_failed_stream_falls_back_to_one_invoke(monkeypatch):
+    reply = {
+        'id': 'msg_2',
+        'type': 'message',
+        'role': 'assistant',
+        'model': 'claude-sonnet-4-6',
+        'content': [{'type': 'text', 'text': 'Done.'}],
+        'stop_reason': 'end_turn',
+        'stop_sequence': None,
+        'usage': {'input_tokens': 10, 'output_tokens': 2},
+    }
+    error = {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'bad stream'}}
+    rejected = (400, 'application/json', json.dumps(error).encode())
+    transport = _Transport(rejected, rejected, (200, 'application/json', json.dumps(reply).encode()))
+    chat = _anthropic_driver(monkeypatch, transport, thinking=False)
+    finished = []
+
+    answer = chat.chat(_turn(), on_chunk=lambda _t: None, on_finish=finished.append)
+
+    assert [body.get('stream', False) for body in transport.bodies] == [True, True, False]
+    assert (answer.getText(), answer.stopReason, finished) == ('Done.', 'end_turn', ['end_turn'])
+
+
+def test_an_openai_reasoning_turn_round_trips_encrypted_reasoning(monkeypatch):
+    pytest.importorskip('langchain_openai')
+    import httpx
+
+    def response(item_id):
+        return {
+            'id': item_id,
+            'type': 'reasoning',
+            'summary': [{'type': 'summary_text', 'text': 'Need to file.'}],
+            'encrypted_content': 'gAAAAenc==',
+        }
+
+    call = {
+        'id': 'fc_1',
+        'type': 'function_call',
+        'call_id': 'call_1',
+        'name': 'tool_github_1__create_issue',
+        'arguments': '{"title": "Flaky"}',
+        'status': 'completed',
+    }
+    usage = {
+        'input_tokens': 40,
+        'output_tokens': 20,
+        'total_tokens': 60,
+        'input_tokens_details': {'cached_tokens': 0},
+        'output_tokens_details': {'reasoning_tokens': 10},
+    }
+    base = {
+        'id': 'resp_1',
+        'object': 'response',
+        'created_at': 1,
+        'model': 'gpt-5',
+        'tools': [],
+        'parallel_tool_calls': True,
+        'tool_choice': 'auto',
+    }
+    events = [
+        {'type': 'response.created', 'sequence_number': 0, 'response': {**base, 'status': 'in_progress', 'output': []}},
+        {
+            'type': 'response.output_item.added',
+            'sequence_number': 1,
+            'output_index': 0,
+            'item': {**response('rs_1'), 'summary': []},
+        },
+        {
+            'type': 'response.reasoning_summary_part.added',
+            'sequence_number': 2,
+            'item_id': 'rs_1',
+            'output_index': 0,
+            'summary_index': 0,
+            'part': {'type': 'summary_text', 'text': ''},
+        },
+        {
+            'type': 'response.reasoning_summary_text.delta',
+            'sequence_number': 3,
+            'item_id': 'rs_1',
+            'output_index': 0,
+            'summary_index': 0,
+            'delta': 'Need to file.',
+        },
+        {'type': 'response.output_item.done', 'sequence_number': 4, 'output_index': 0, 'item': response('rs_1')},
+        {
+            'type': 'response.output_item.added',
+            'sequence_number': 5,
+            'output_index': 1,
+            'item': {**call, 'arguments': '', 'status': 'in_progress'},
+        },
+        {
+            'type': 'response.function_call_arguments.delta',
+            'sequence_number': 6,
+            'item_id': 'fc_1',
+            'output_index': 1,
+            'delta': call['arguments'],
+        },
+        {'type': 'response.output_item.done', 'sequence_number': 7, 'output_index': 1, 'item': call},
+        {
+            'type': 'response.completed',
+            'sequence_number': 8,
+            'response': {**base, 'status': 'completed', 'output': [response('rs_1'), call], 'usage': usage},
+        },
+    ]
+    transport = _Transport(
+        (200, 'text/event-stream', _sse(events, named=False)), (200, 'text/event-stream', _sse(events, named=False))
+    )
+    config = {
+        'model': 'gpt-5',
+        'apikey': 'sk-test',
+        'modelTotalTokens': 400000,
+        'modelOutputTokens': 8192,
+        'capabilities': {'reasoning': True},
+    }
+    mod, _ = _driver(monkeypatch, 'llm_openai', 'openai_client.py', config)
+    monkeypatch.setattr(
+        mod,
+        '_ResponsesChatOpenAI',
+        functools.partial(mod._ResponsesChatOpenAI, http_client=httpx.Client(transport=httpx.MockTransport(transport))),
+    )
+    chat = mod.Chat('llm_openai', {}, {})
+    q = _turn()
+    thinking = []
+
+    first = chat.chat(q, on_chunk=lambda _t: None, on_reasoning_chunk=thinking.append)
+    q.addMessage(first.message)
+    q.addToolResult('call_1', '#42')
+    chat.chat(q, on_chunk=lambda _t: None)
+
+    sent = transport.bodies[0]
+    assert (sent['store'], sent['include'], sent['max_output_tokens']) == (False, ['reasoning.encrypted_content'], 8192)
+    assert 'Need to file.' in ''.join(thinking)
+    assert first.stopReason == 'tool_use'
+    assert [(c.id, c.name) for c in first.toolCalls()] == [('call_1', 'tool_github_1.create_issue')]
+    replayed = transport.bodies[1]['input']
+    kinds = [item.get('type') for item in replayed]
+    assert kinds.index('reasoning') < kinds.index('function_call') < kinds.index('function_call_output')
+    assert replayed[kinds.index('reasoning')]['encrypted_content'] == 'gAAAAenc=='
+
+
+class _Inner:
+    def __init__(self):
+        self.written = []
+
+    def writeAnswers(self, answer):
+        self.written.append(answer)
+
+    def sendSSE(self, *a, **k):
+        pass
+
+
+class _Untouchable:
+    """A driver without native tools whose model fails the test if it is ever called."""
+
+    _model = 'some-model'
+
+    def chat(self, question):
+        raise AssertionError('the provider must not be called')
+
+
+def _node(chat) -> LLMBase:
+    node = LLMBase.__new__(LLMBase)
+    node.IGlobal = type('G', (), {'_chat': chat})()
+    node.instance = _Inner()
+    return node
+
+
+def test_a_turn_to_a_driver_without_native_tools_is_refused_before_any_request():
+    node = _node(_Untouchable())
+
+    node.writeQuestions(_turn())
+
+    error = node.instance.written[0].error
+    assert error.code == 'tools_unsupported'
+    with pytest.raises(Exception, match='does not support native tool calling'):
+        node.ask(type('Ask', (), {'question': _turn(), 'stop': None})())
+
+
+def test_a_failed_turn_is_a_typed_error_and_a_text_question_keeps_its_text_error():
+    class _Failing:
+        supports_tools = True
+
+        def chat(self, question, on_chunk=None, on_finish=None, on_reasoning_chunk=None):
+            raise RuntimeError('provider down')
+
+    node = _node(_Failing())
+    text = Question()
+    text.addQuestion('hi')
+
+    node.writeQuestions(_turn())
+    node.writeQuestions(text)
+
+    turn_answer, text_answer = node.instance.written
+    assert (turn_answer.error.code, turn_answer.message) == ('provider_error', None)
+    assert text_answer.getText().startswith('**LLM error**') and text_answer.error is None
+
+
+def _flagged_drivers():
+    """Each llm_* Chat class that sets SUPPORTS_NATIVE_TOOLS = True, with the methods it defines."""
+    found = {}
+    for path in sorted(NODES.glob('llm_*/*.py')):
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            if isinstance(node, ast.ClassDef) and node.name == 'Chat':
+                flags = {
+                    t.id
+                    for s in node.body
+                    if isinstance(s, ast.Assign) and getattr(s.value, 'value', None) is True
+                    for t in s.targets
+                    if isinstance(t, ast.Name)
+                }
+                if 'SUPPORTS_NATIVE_TOOLS' in flags:
+                    found[path.parent.name] = {s.name for s in node.body if isinstance(s, ast.FunctionDef)}
+    return found
+
+
+def test_drivers_with_native_tools_do_not_override_chat():
+    drivers = _flagged_drivers()
+
+    assert set(drivers) == {'llm_anthropic', 'llm_openai', 'llm_openai_api'}
+    assert [name for name, methods in drivers.items() if 'chat' in methods] == []
