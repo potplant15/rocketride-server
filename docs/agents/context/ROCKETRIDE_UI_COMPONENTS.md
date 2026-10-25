@@ -495,7 +495,7 @@ import { Card, Button } from 'shell';
 ### ChatView
 
 The single chat implementation, everywhere: message thread + input sharing
-one centered column (720px cap, exported as `CHAT_COLUMN_MAX_WIDTH`),
+one centered column (720px cap),
 markdown rendering, typing indicator, in-thread error banners. The host owns
 the message state and transport (via `useChatMessages`); ChatView only
 renders and collects input. The composer is disabled while `isConnected` is
@@ -1450,30 +1450,26 @@ const { settings, updateSetting, appState, updateAppState, activeAppId } = useWo
   `interval` ms; by default only while the shell is connected
   (`options.gate: 'shell'`, the default; `'none'` polls unconditionally) —
   views never poll into a dead socket.
-- `useDashboardData(): { data, events, error, refresh }` — the ONE shared
-  dashboard feed: a module singleton where the FIRST consumer starts the 3s
-  poll plus the `shell:event` subscription and the LAST unmount stops it.
-  Data survives view switches; one request in flight regardless of
-  consumers. `data` = the current `DashboardResponse` (null until first
-  load); `events` = activity events newest-first.
+- Dashboard data comes from `client.getDashboard()`, which returns a
+  `DashboardResponse` (`overview`, `connections`, `tasks`). Poll it with
+  `usePolling`.
 
 Related exported types: `DashboardResponse`, `DashboardOverview`,
 `DashboardConnection`, `DashboardTask`, `DashboardEvent`, `TaskEvent`,
-`ActivityEvent`, plus `ListPageRequest` / `ListPageResponse` — the paged
+plus `ListPageRequest` / `ListPageResponse` — the paged
 contract of the server `list_*` APIs that feed `DataGrid.fetchPage`.
 
-**Rule:** Do not hand-roll a poll-every-N-seconds effect for dashboard data
-— the shared feed exists so N views cost one poll.
-
 ```tsx
-import { usePolling, useDashboardData, Banner, MiniContainer } from 'shell';
-
-usePolling(() => refreshRunList(), 5000);
+import { useState } from 'react';
+import { getClient, usePolling, MiniContainer, type DashboardResponse } from 'shell';
 
 function OverviewTiles() {
-	const { data, events, error, refresh } = useDashboardData();
-	if (error) return <Banner variant="error">{error}</Banner>;
-	return <MiniContainer>{/* tiles from data.overview */}</MiniContainer>;
+	const [data, setData] = useState<DashboardResponse | null>(null);
+	usePolling(async () => {
+		const client = getClient();
+		if (client) setData(await client.getDashboard());
+	}, 3000);
+	return <MiniContainer>{/* tiles from data?.overview */}</MiniContainer>;
 }
 ```
 
