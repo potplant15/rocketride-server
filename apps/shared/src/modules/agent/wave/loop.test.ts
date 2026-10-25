@@ -61,6 +61,29 @@ function scriptedModel(replies: Array<string | Error>): ScriptedModel {
 	return Object.assign(call, { questions });
 }
 
+/**
+ * A model behind the engine's JSON check. A question with expectJson gets
+ * the engine's strict parse (one JSON value, in at most one fence), and a
+ * reply that fails it throws the error createChatModel throws for the
+ * engine's answer after its retries. A question without expectJson gets the
+ * reply as written.
+ *
+ * @param model - The model the engine asks.
+ * @returns The model as the loop sees it through the engine.
+ */
+function behindEngine(model: ModelCall): ModelCall {
+	return async (q) => {
+		const text = await model(q);
+		if (!q.expectJson) return text;
+		try {
+			JSON.parse(text.replace(/^```json\s*|\s*```$/g, ''));
+		} catch {
+			throw new Error('The model provider failed: ValueError: Failed to get valid JSON response after 3 attempts.');
+		}
+		return text;
+	};
+}
+
 // =============================================================================
 // FIXTURES
 // =============================================================================
@@ -233,6 +256,19 @@ test('an unusable reply is sent back once, then the run ends with a best-effort 
 	const gaveUp = await setup(stuck).run();
 	assert.deepEqual({ answer: gaveUp.answer, stopReason: gaveUp.stopReason }, { answer: 'best effort', stopReason: 'empty_plan' });
 	assert.equal(stuck.questions[2].expectJson, false, 'the third call asks for a plain answer, not another plan');
+});
+
+test('an unreadable reply goes back with a note, and the clean retry carries the run on', async () => {
+	// GPT-5.5's replies, trimmed: one call object lost its closing brace, and the retry was clean.
+	const unreadable = '```json\n{"thought":"I’m getting oriented in the workspace and reading the required RocketRide pipeline guides before creating the support-chat pipeline.","remove":[],"tool_calls":[{"tool":"list_workspace","args":{}},{"tool":"read_file","args":{"path":".rocketride/skills/rocketride-running-pipelines/SKILL.md"}]}\n```';
+	const clean = '```json\n{"thought":"I’m getting oriented and reading the required RocketRide pipeline guides before creating the support-chat pipeline.","remove":[],"tool_calls":[{"tool":"list_workspace","args":{}},{"tool":"read_file","args":{"path":".rocketride/skills/rocketride-running-pipelines/SKILL.md"}}]}\n```';
+	// A clean first wave, so the run has gathered results: an engine error then ends it with 'error'.
+	const model = scriptedModel([plan([['list_components']]), unreadable, clean, done('built')]);
+	const read = stub('read_file');
+	const result = await setup(behindEngine(model), [stub('list_components'), stub('list_workspace'), read]).run();
+	assert.equal(model.questions[2].context.at(-1), 'Your previous reply was not usable: the reply was not valid JSON. Reply with exactly one of the two shapes in Response Format.');
+	assert.deepEqual(read.seen, [{ path: '.rocketride/skills/rocketride-running-pipelines/SKILL.md' }]);
+	assert.deepEqual({ answer: result.answer, stopReason: result.stopReason, waves: result.waves }, { answer: 'built', stopReason: 'done', waves: 3 });
 });
 
 // =============================================================================
