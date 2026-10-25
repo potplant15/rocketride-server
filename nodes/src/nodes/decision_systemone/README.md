@@ -4,7 +4,7 @@ A RocketRide pipeline node that asks typed questions (yes/no, pick-one, rubric) 
 
 ## About TypeSafe
 
-TypeSafe develops System One decision models such as Jev. Instead of generating
+TypeSafe develops System One decision models. Instead of generating
 text, these models answer a fixed set of typed questions about a piece of text
 and return a probability for each possible answer. The same request format is
 served by several other backends, including Ollama.

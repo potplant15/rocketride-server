@@ -109,10 +109,10 @@ class IInstance(IInstanceBase):
             enriched_doc.metadata.anomaly_is_anomalous = result['is_anomalous']
             if result.get('details'):
                 enriched_doc.metadata.anomaly_details = result['details']
-            if _has_usable_metric(metadata_dict, self.IGlobal.detector.metric):
+            if _has_usable_metric(metadata_dict, self.IGlobal.detector.metric) and math.isfinite(result['score']):
                 self.recordDecision(QUESTIONS, _answers(result), doc=enriched_doc)
             else:
-                # Not scored (no metric, or not a number): never a confident 'no'.
+                # Not scored (no metric, not a number, or a score that overflowed): never a confident 'no'.
                 self.recordDecision(QUESTIONS, status='unsupported', doc=enriched_doc)
 
             enriched_docs.append(enriched_doc)

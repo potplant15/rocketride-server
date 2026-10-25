@@ -141,6 +141,15 @@ def test_documents_without_a_usable_metric_are_recorded_unsupported():
     assert forwarded[2].metadata.anomaly_details == 'metric "value" is not numeric'
 
 
+def test_a_score_that_overflows_is_recorded_unsupported():
+    inst, out = _node()
+    inst.IGlobal.detector = detector_module.AnomalyDetector(dict(CONFIG, method='rolling_avg'))
+    _run(inst, [_doc(0, 1e-300), _doc(1, 1e-300), _doc(2, 1e300)])
+    items = _group(inst)['items']
+    assert [item['status'] for item in items] == ['ok', 'ok', 'unsupported']
+    assert len(out['documents'][0]) == 3
+
+
 def test_existing_metadata_fields_are_unchanged():
     inst, out = _node()
     _run(inst, [_doc(i, v) for i, v in enumerate(VALUES)])

@@ -82,10 +82,10 @@ class IInstance(IInstanceBase):
         """Ask the runner about one item; the outcome has ``size`` when too long, else ``answers``/``usage``."""
         return self.IGlobal.runner.decide(state, source=component_id(self))
 
-    def _too_long(self, lane: str, preview_text: str, size: dict) -> None:
+    def _too_long(self, lane: str, size: dict) -> None:
         warning(
             f'{component_id(self)}: {lane} item too long for the model ({_size_text(size)}); '
-            f'recorded as too_long, so every gate blocks it: "{preview_text}"'
+            'recorded as too_long, so every gate blocks it'
         )
 
     def _too_long_error(self, lane: str, size: dict) -> ValueError:
@@ -161,7 +161,7 @@ class IInstance(IInstanceBase):
             if outcome is not None:
                 size = outcome.size
             if size is not None:
-                self._too_long('documents', preview(doc.page_content), size)
+                self._too_long('documents', size)
                 self._record(status='too_long', doc=copy, size=size)
             else:
                 self._record(outcome.answers, doc=copy, usage=outcome.usage)
@@ -176,7 +176,7 @@ class IInstance(IInstanceBase):
             raise ValueError(f'{component_id(self)}: a table has no content to decide on')
         outcome = self._decide(table)
         if outcome.size is not None:
-            self._too_long('table', preview(table), outcome.size)
+            self._too_long('table', outcome.size)
             self._record(status='too_long', table=table, size=outcome.size)
         else:
             self._record(outcome.answers, table=table, usage=outcome.usage)

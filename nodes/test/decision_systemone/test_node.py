@@ -75,6 +75,7 @@ def test_too_long_document_is_recorded_warned_and_still_forwarded(node):
     assert second['status'] == 'ok'
     assert node.client.states == ['hello']  # no paid call for the too-long one
     assert any('too_long' in w for w in node.warnings)
+    assert not any('xxxx' in w for w in node.warnings)  # never logs the content
     assert len(node.written['documents'][0]) == 2
 
 
