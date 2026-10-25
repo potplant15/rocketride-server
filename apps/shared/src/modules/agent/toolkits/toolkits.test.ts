@@ -32,7 +32,7 @@ import type { RocketRideClient } from 'rocketride';
 
 import type { ConsoleRow, WatchStatus } from '../../../tools/appdev/types';
 import type { IWorkspaceFileSystem, VfsEntry } from '../../vfs/vfsTypes';
-import { GuideFileSystem } from '../guides';
+import { GuideFileSystem, guidePathFor } from '../guides';
 import type { AgentDevSession, AgentHost } from '../host';
 import type { AgentTool } from '../tools';
 import { AppCheckToolkit, type AppCheckOptions, type CheckReport, type MarkerInfo } from './appCheck';
@@ -417,6 +417,17 @@ test('the file tools read guides but cannot change them', async () => {
 	await assert.rejects(run('write_file', { path: '.rocketride/notes.md', content: 'x' }), readOnly);
 	await assert.rejects(run('create_directory', { path: '.rocketride/mine' }), readOnly);
 	assert.deepEqual(base.log, [], 'nothing reached the workspace');
+});
+
+test('the README, CLI and Python guides are not served', async () => {
+	const bundle = ['./context/ROCKETRIDE_APPS.md', './context/ROCKETRIDE_README.md', './context/ROCKETRIDE_CLI.md', './context/ROCKETRIDE_python_API.md'];
+	const paths = bundle.map((key) => guidePathFor(key)).filter((path): path is string => path !== null);
+	const guides = { paths: () => paths, read: async () => '# Apps\n' };
+	const tools = new Map(new FilesystemTools(new GuideFileSystem(createMemoryWorkspace({}), guides)).tools().map((t) => [t.name, t]));
+	const run = (name: string, args: Record<string, unknown>) => (tools.get(name) as NonNullable<ReturnType<typeof tools.get>>).execute(args);
+
+	assert.deepEqual(JSON.parse(await run('list_directory', { path: '.rocketride/docs' })), [{ name: 'ROCKETRIDE_APPS.md', type: 'file' }]);
+	await assert.rejects(run('read_file', { path: '.rocketride/docs/ROCKETRIDE_README.md' }), /^Error: No guide at \.rocketride\/docs\/ROCKETRIDE_README\.md\. Guides: \.rocketride\/docs\/ROCKETRIDE_APPS\.md$/);
 });
 
 // =============================================================================

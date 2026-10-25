@@ -90,17 +90,25 @@ function guideRelative(path: string): string | null {
 // =============================================================================
 
 /**
+ * Context docs that are not served as guides. README and CLI teach a shell and
+ * python_API a Python runtime, and the tab has neither. The builder prompt's
+ * router replaces the README's task router.
+ */
+const HIDDEN_GUIDES = new Set(['context/ROCKETRIDE_README.md', 'context/ROCKETRIDE_CLI.md', 'context/ROCKETRIDE_python_API.md']);
+
+/**
  * Maps a docs/agents bundle key to the guide path it is served at. Only
  * './context/X.md' files are guides, and each becomes 'docs/X.md' (the
- * installer stubs under './context/stubs/' are not guides). Everything else,
- * such as the folder README, the task battery and scripts, is not a guide.
+ * installer stubs under './context/stubs/' and HIDDEN_GUIDES are not guides).
+ * Everything else, such as the folder README, the task battery and scripts,
+ * is not a guide.
  *
  * @param contextKey - A key from the docs/agents bundle, e.g. './context/ROCKETRIDE_APPS.md'.
  * @returns The path relative to '.rocketride/' (e.g. 'docs/ROCKETRIDE_APPS.md'), or null when the file is not a guide.
  */
 export function guidePathFor(contextKey: string): string | null {
 	const key = contextKey.replace(/^\.\//, '');
-	if (!key.endsWith('.md') || key.startsWith('context/stubs/')) return null;
+	if (!key.endsWith('.md') || key.startsWith('context/stubs/') || HIDDEN_GUIDES.has(key)) return null;
 	if (key.startsWith('context/')) return `docs/${key.slice('context/'.length)}`;
 	return null;
 }
