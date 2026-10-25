@@ -7,13 +7,14 @@
  * MessageList — the scrollable chat thread.
  *
  * Renders each message (grouping consecutive "thinking" status messages into a
- * collapsible block), the streaming TypingIndicator, and a stock EmptyState for
+ * collapsible block), the streaming TypingIndicator, the messages queued behind
+ * the running turn (below the indicator), and a stock EmptyState for
  * brand-new conversations. Autoscroll is scroll-locked: the thread only follows
  * new messages while the user is already at/near the bottom.
  */
 
 import React, { useEffect, useRef, useMemo, useState, type CSSProperties } from 'react';
-import { ChatMessage, CHAT_COLUMN_MAX_WIDTH } from '../types';
+import { ChatMessage, CHAT_COLUMN_MAX_WIDTH, type ChatTurnView } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { TypingIndicator } from './TypingIndicator';
 import { EmptyState } from '../../empty-state/EmptyState';
@@ -129,6 +130,8 @@ export interface MessageListProps {
 	emptyDescription?: string;
 	/** Rich replacement for the stock EmptyState (e.g. example-prompt cards). */
 	emptySlot?: React.ReactNode;
+	/** Turn controls, for the queued messages' Edit and Remove and the typing label. */
+	turn?: ChatTurnView;
 }
 
 /**
@@ -137,7 +140,7 @@ export interface MessageListProps {
  * @param props - {@link MessageListProps}.
  * @returns The thread element (or an EmptyState when empty).
  */
-export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, emptyTitle, emptyDescription, emptySlot }) => {
+export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, emptyTitle, emptyDescription, emptySlot, turn }) => {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const endRef = useRef<HTMLDivElement>(null);
 	// Whether the user is pinned to the bottom (within 40px). Starts true so the
@@ -158,11 +161,14 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, em
 	}, [messages, isTyping]);
 
 	// Fold consecutive "thinking" status messages into a single collapsible group.
-	const items = useMemo((): RenderItem[] => {
+	// Queued messages are always the last rows; they render apart, below the indicator.
+	const { items, queued } = useMemo((): { items: RenderItem[]; queued: ChatMessage[] } => {
 		const out: RenderItem[] = [];
 		let group: ChatMessage[] | null = null;
+		const firstQueued = messages.findIndex((m) => m.queued);
+		const thread = firstQueued < 0 ? messages : messages.slice(0, firstQueued);
 
-		for (const msg of messages) {
+		for (const msg of thread) {
 			if (msg.sender === 'status' && msg.sseType === 'thinking') {
 				if (!group) {
 					group = [];
@@ -174,7 +180,7 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, em
 				out.push({ kind: 'message', message: msg });
 			}
 		}
-		return out;
+		return { items: out, queued: firstQueued < 0 ? [] : messages.slice(firstQueued) };
 	}, [messages]);
 
 	// A brand-new conversation shows the host's rich empty slot when provided,
@@ -188,7 +194,10 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, em
 			{/* Inner column mirrors the entry bar width so thread and input align. */}
 			<div style={styles.column}>
 				{items.map((item) => (item.kind === 'thinking-group' ? <ThinkingGroup key={`tg-${item.id}`} messages={item.messages} /> : <MessageBubble key={item.message.id} message={item.message} />))}
-				{isTyping && <TypingIndicator />}
+				{isTyping && <TypingIndicator label={turn?.phase === 'stopping' ? 'Stopping…' : undefined} />}
+				{queued.map((m) => (
+					<MessageBubble key={m.id} message={m} turn={turn} />
+				))}
 				<div ref={endRef} />
 			</div>
 		</div>

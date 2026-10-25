@@ -62,6 +62,8 @@ export interface IChatViewProps {
 	emptySlot?: ReactNode;
 	/** Optional node rendered before the input field (reserved for future attachments). */
 	leadingInputSlot?: ReactNode;
+	/** Turn controls from `useChatMessages().turn`: Stop (and Esc) while a turn runs, and Edit and Remove on queued messages. Without it the view is v0's. */
+	turn?: ChatTurnView;
 }
 
 // =============================================================================

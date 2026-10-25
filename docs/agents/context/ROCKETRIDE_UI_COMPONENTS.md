@@ -500,7 +500,7 @@ markdown rendering, typing indicator, in-thread error banners. The host owns
 the message state and transport (via `useChatMessages`); ChatView only
 renders and collects input. The composer is disabled while `isConnected` is
 false. `MessageList` (the scrollable thread with scroll-locked autoscroll;
-props `{ messages, isTyping, emptyTitle?, emptyDescription? }`) is exported
+props `{ messages, isTyping, emptyTitle?, emptyDescription?, turn? }`) is exported
 for custom layouts.
 
 | Prop | Type | Dir | Note |
@@ -511,6 +511,7 @@ for custom layouts.
 | `placeholder` | `string` | in | Input placeholder. Default "Ask anything...". |
 | `emptyTitle` / `emptyDescription` | `string` | in | EmptyState text when there are no messages. |
 | `leadingInputSlot` | `ReactNode` | in | Node before the input (reserved for attachments). |
+| `turn` | `ChatTurnView` | in | From `useChatMessages().turn`: a Stop button (and Esc in the composer) while a turn runs, and Edit and Remove on queued messages. Leave it out for a plain chat. |
 | `onSend` | `(text: string) => void` | out (req) | User submitted a message. |
 
 `ChatMessage`: `{ id: number, text (markdown ok), sender: 'user' | 'bot' |
@@ -577,7 +578,8 @@ began, so they never open a turn of their own). Returns `{ messages,
 isTyping, sendMessage(text, client, authToken), clearMessages,
 addSystemMessage, turn }`. One turn runs at a time: `sendMessage` during a
 turn adds a queued message, which the running request may take and which
-otherwise runs next. `clearMessages()` resets the thread to the welcome
+otherwise runs next. Pass `turn` to ChatView's `turn` prop.
+`clearMessages()` resets the thread to the welcome
 message; `addSystemMessage(text)` appends a system note. Persist only
 `user`/`bot` messages; `system`/`status` are ephemeral.
 

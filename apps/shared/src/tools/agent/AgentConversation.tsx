@@ -32,6 +32,9 @@
 //
 //   send  → useChatMessages → session.execute (the injected request
 //           transport, wrapping the agent() stub) → bot rows render
+//
+// The hook runs one turn at a time: a send during a turn queues, and the
+// agent reads it at its next step. ChatView's Stop ends the turn.
 //   after → session.save(hook messages) persists the conversation and the
 //           catalog row (announced on the shell bus; the sidebar re-lists)
 //
@@ -230,7 +233,7 @@ const AgentConversation: React.FC<{ session: AgentSession; isConnected: boolean 
 	/** The injected chat transport: one request through the agent session. The hook's status sink carries the thinking rows live. */
 	const request = useCallback((text: string, onStatus?: AgentCallback, turn?: ChatTurn): Promise<TextResult[]> => session.execute(text, onStatus, turn), [session]);
 
-	const { messages, isTyping, sendMessage } = useChatMessages({ initialMessages: session.messages, request });
+	const { messages, isTyping, sendMessage, turn: controls } = useChatMessages({ initialMessages: session.messages, request });
 
 	// step: persist after each completed exchange (bot reply landed). The
 	// ref dodges saving on mount when a restored conversation ends idle.
@@ -272,7 +275,7 @@ const AgentConversation: React.FC<{ session: AgentSession; isConnected: boolean 
 
 	return (
 		<div style={styles.root}>
-			<ChatView messages={messages} isTyping={isTyping} isConnected={isConnected} onSend={handleSend} placeholder="Reply to the agent..." emptySlot={welcome} />
+			<ChatView messages={messages} isTyping={isTyping} isConnected={isConnected} onSend={handleSend} placeholder="Reply to the agent..." emptySlot={welcome} turn={controls} />
 		</div>
 	);
 };
