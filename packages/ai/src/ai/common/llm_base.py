@@ -7,12 +7,7 @@ from rocketlib import IInstanceBase, invoke_function, warning
 from ai.common.schema import Question, Answer, AnswerError
 from ai.common.llm_native_stream import STOP_SEQUENCES_VAR
 from ai.common.llm_adapter import turn_usage
-from ai.common.llm_tools import ToolsUnsupported
-
-
-def _is_turn(question) -> bool:
-    # Callers may hand in question-like objects; only a real Question can be in turn mode.
-    return isinstance(question, Question) and question.isTurn()
+from ai.common.llm_tools import ToolsUnsupported, is_turn
 
 
 class LLMBase(IInstanceBase):
@@ -33,7 +28,7 @@ class LLMBase(IInstanceBase):
         chat = self.IGlobal._chat
         # Every driver passes here, including those that override chat(), so the refusal
         # happens before any provider call and costs no tokens.
-        if _is_turn(question) and not getattr(chat, 'supports_tools', False):
+        if is_turn(question) and not getattr(chat, 'supports_tools', False):
             raise ToolsUnsupported(getattr(chat, '_model', None) or type(chat).__name__)
         # Publish the stop sequences on the per-call contextvar so ChatBase's model sinks
         # forward them to the provider API. A contextvar (not a chat() kwarg) leaves the
@@ -103,7 +98,7 @@ class LLMBase(IInstanceBase):
                 )
             except Exception as e:
                 warning(f'writeQuestions: LLM call failed: {type(e).__name__}: {e}')
-                if _is_turn(question):
+                if is_turn(question):
                     # Typed, so a client can tell "no tools here" from "the provider failed".
                     code = 'tools_unsupported' if isinstance(e, ToolsUnsupported) else 'provider_error'
                     answer = Answer(error=AnswerError(code=code, message=f'{type(e).__name__}: {e}'))

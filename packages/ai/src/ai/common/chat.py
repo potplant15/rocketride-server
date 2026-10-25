@@ -29,7 +29,7 @@ from ai.common.validation import (
 )
 from ai.common.llm_native_stream import PROMPT_CACHE_PREFIX_VAR, STOP_SEQUENCES_VAR, dispatch_native_chat_stream
 from ai.common.llm_adapter import LangChainAdapter, NativeOpenAIResponsesAdapter, drive_adapter
-from ai.common.llm_tools import ToolNames, from_langchain, model_origin, to_langchain, tool_specs
+from ai.common.llm_tools import ToolNames, from_langchain, is_turn, model_origin, to_langchain, tool_specs
 
 
 # Finish reasons that mean the model ran out of output budget, as the Responses API
@@ -692,7 +692,7 @@ class ChatBase:
         """Chat with Question/Answer objects (JSON validation + retry); forwards the
         streaming callbacks unless expectJson, which needs the validated final answer.
         """
-        if question.isTurn():
+        if is_turn(question):
             return self.chat_turn(question, on_chunk, on_finish, on_reasoning_chunk)
 
         # No streaming for expectJson: repair retries would paint a bad first attempt.

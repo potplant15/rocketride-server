@@ -225,10 +225,10 @@ class _Transport:
         self.bodies = []
 
     def __call__(self, request):
-        import httpx
-        import httpx2
+        import importlib
 
-        lib = httpx2 if type(request).__module__.startswith('httpx2') else httpx
+        # The Anthropic SDK is on httpx2 in newer pins and httpx in older ones; answer in its flavour.
+        lib = importlib.import_module(type(request).__module__.split('.')[0])
         self.bodies.append(json.loads(request.content))
         status, content_type, body = self.responses.pop(0)
         return lib.Response(status, headers={'content-type': content_type}, content=body)
@@ -565,6 +565,22 @@ def test_a_failed_turn_is_a_typed_error_and_a_text_question_keeps_its_text_error
     turn_answer, text_answer = node.instance.written
     assert (turn_answer.error.code, turn_answer.message) == ('provider_error', None)
     assert text_answer.getText().startswith('**LLM error**') and text_answer.error is None
+
+
+def test_a_question_like_object_takes_the_text_path():
+    from ai.common.chat import ChatBase
+
+    class _QuestionLike:
+        expectJson = False
+        cachePrefix = False
+
+        def getPrompt(self):
+            return 'hi'
+
+    chat = ChatBase.__new__(ChatBase)
+    chat.chat_string = lambda prompt, **_: f'echo {prompt}'
+
+    assert chat.chat(_QuestionLike()).getText() == 'echo hi'
 
 
 def _flagged_drivers():

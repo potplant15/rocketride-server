@@ -19,6 +19,7 @@ from ai.common.llm_adapter import flatten_content_parts
 from ai.common.schema import (
     AssistantMessage,
     Message,
+    Question,
     ReasoningBlock,
     StopReason,
     TextBlock,
@@ -27,6 +28,11 @@ from ai.common.schema import (
     ToolResultBlock,
 )
 from ai.common.validation import sanitize_prompt
+
+
+def is_turn(question: Any) -> bool:
+    """True for a turn-mode Question. Callers may hand in question-like objects, which never are."""
+    return isinstance(question, Question) and question.isTurn()
 
 
 class ToolsUnsupported(Exception):
