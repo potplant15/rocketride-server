@@ -339,7 +339,7 @@ function toolOf(toolkit: { tools(): AgentTool[] }, name: string): AgentTool {
 }
 
 /** The app tools over a fake client and a workspace with one app, `a-ui`, whose manifest id is `acme.a`. */
-function appTools(client: RocketRideClient, confirm: ConfirmFn): AppToolkit {
+function appTools(client: RocketRideClient, confirm: ConfirmFn, signal?: AbortSignal): AppToolkit {
 	const host: AgentHost = {
 		vfs: createMemoryWorkspace({ 'apps/a-ui/package.json': JSON.stringify({ name: 'x', appManifest: { id: 'acme.a', name: 'Alpha' } }) }),
 		guides: { paths: () => [], read: async () => '' },
@@ -347,7 +347,7 @@ function appTools(client: RocketRideClient, confirm: ConfirmFn): AppToolkit {
 		packApp: async () => new Uint8Array([1, 2, 3]),
 		devSession: () => null,
 	};
-	return new AppToolkit(() => client, host, confirm, { pollMs: 0, buildWaitMs: 50 });
+	return new AppToolkit(() => client, host, confirm, { pollMs: 0, buildWaitMs: 50, signal });
 }
 
 // =============================================================================
@@ -423,13 +423,23 @@ test('the file tools read guides but cannot change them', async () => {
 // THE USER SAYS YES FIRST
 // =============================================================================
 
-test('publish_app asks first; a no publishes nothing', async () => {
+test('publish_app asks first; a no, or a yes after Stop, publishes nothing', async () => {
 	const { client, calls } = fakeClient({ listings: [[row(4, 'ok', 'ready')]] });
 	const { confirm, asked } = fakeConfirm(false);
 	const result = await toolOf(appTools(client, confirm), 'publish_app').execute({ app: 'a-ui', target: 'public' });
 	assert.equal(asked.length, 1);
 	assert.equal(result, declined(asked[0]));
 	assert.deepEqual(calls, ['listDeployments'], 'nothing was published or submitted');
+
+	const yes = fakeClient({ listings: [[row(4, 'ok', 'ready')]] });
+	await toolOf(appTools(yes.client, fakeConfirm(true).confirm), 'publish_app').execute({ app: 'a-ui', target: 'public' });
+	assert.deepEqual(yes.calls, ['listDeployments', 'publishApp'], 'a yes publishes');
+
+	const stop = new AbortController();
+	stop.abort();
+	const late = fakeClient({ listings: [[row(4, 'ok', 'ready')]] });
+	await assert.rejects(toolOf(appTools(late.client, fakeConfirm(true).confirm, stop.signal), 'publish_app').execute({ app: 'a-ui', target: 'public' }));
+	assert.deepEqual(late.calls, ['listDeployments'], 'a yes after Stop publishes nothing');
 });
 
 // =============================================================================

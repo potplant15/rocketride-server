@@ -529,6 +529,8 @@ export interface ChatModelOptions {
 	toQuestion: (q: QuestionSpec) => unknown;
 	/** Restarts the LLM pipeline. Called once per model call, when the pipeline fails the first time. */
 	onPipelineError?: () => Promise<void>;
+	/** Aborted when the user stops the run: a call that fails after it neither restarts the pipeline nor retries. */
+	signal?: AbortSignal;
 }
 
 /**
@@ -536,12 +538,14 @@ export interface ChatModelOptions {
  *
  * The call resolves with the model's text, or rejects: a missing client with a
  * plain Error, anything else with a ModelError. A pipeline failure gets one
- * restart (`onPipelineError`) and one retry; a second failure is final.
+ * restart (`onPipelineError`) and one retry; a second failure is final. Once
+ * the run is stopped the loop has walked away from the call, so a failure then
+ * gets no restart: it would end the pipeline the next turn is about to use.
  *
  * @param o - The client, token and hooks the host supplies.
  * @returns The model call.
  */
-function createChatModel(o: ChatModelOptions): ModelCall {
+export function createChatModel(o: ChatModelOptions): ModelCall {
 	return async (q) => {
 		const client = o.client();
 		if (!client) throw new Error(NOT_CONNECTED_MESSAGE);
@@ -555,7 +559,7 @@ function createChatModel(o: ChatModelOptions): ModelCall {
 			try {
 				result = await ask();
 			} catch (first) {
-				if (!o.onPipelineError) throw pipelineError(first);
+				if (!o.onPipelineError || o.signal?.aborted) throw pipelineError(first);
 				try {
 					await o.onPipelineError();
 					result = await ask();
@@ -628,7 +632,7 @@ function toRocketRideQuestion(q: QuestionSpec): Question {
  */
 export async function runAgent(request: string, callback: (type: string, content: string) => void, options: AgentRunOptions, deps: AgentDeps): Promise<void> {
 	const { host, client } = deps;
-	const model = deps.model ?? createChatModel({ client, token: options.token, toQuestion: toRocketRideQuestion, onPipelineError: options.onPipelineError });
+	const model = deps.model ?? createChatModel({ client, token: options.token, toQuestion: toRocketRideQuestion, onPipelineError: options.onPipelineError, signal: options.signal });
 	const confirm = deps.confirm ?? shellConfirm();
 	const markers = deps.markers ?? editorMarkers;
 
@@ -659,9 +663,9 @@ export async function runAgent(request: string, callback: (type: string, content
 		new FilesystemTools(vfs, undefined, afterSave),
 		new InventoryToolkit(vfs, (id) => host.devSession(id) !== null),
 		new RocketRideClientToolkit(client, vfs),
-		new AppToolkit(client, host, confirm),
+		new AppToolkit(client, host, confirm, { signal: options.signal }),
 		// check_app hands each report to the record
-		new AppCheckToolkit(host, markers, (folder, report) => checks.appChecked(folder, report)),
+		new AppCheckToolkit(host, markers, (folder, report) => checks.appChecked(folder, report), { signal: options.signal }),
 	]);
 
 	const result = await runLoop({

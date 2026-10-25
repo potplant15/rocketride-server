@@ -27,7 +27,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CheckRecord } from '../run';
+import { CheckRecord, createChatModel } from '../run';
 import type { CheckStatus } from '../toolkits/appCheck';
 import { AgentTool } from '../tools';
 import { runLoop, type LoopOptions } from './loop';
@@ -313,4 +313,50 @@ test('a queued message reaches the next wave, and one sent before done is read b
 		'the done was sent back so the message is read'
 	);
 	assert.equal(result.answer, 'final');
+});
+
+test('a model call abandoned by Stop does not restart the pipeline when it fails late', async () => {
+	let restarts = 0;
+	const restart = async (): Promise<void> => {
+		restarts++;
+	};
+	const token = async (): Promise<string> => 'tk-model';
+
+	// Not stopped, the same failure restarts the pipeline once, so this test can see a restart.
+	const failing = createChatModel({
+		client: () => ({
+			chat: async () => {
+				throw new Error('pipeline ended');
+			},
+		}),
+		token,
+		toQuestion: (q) => q,
+		onPipelineError: restart,
+		signal: new AbortController().signal,
+	});
+	await assert.rejects(setup(failing).run(), /stopped responding/);
+	assert.equal(restarts, 1);
+
+	const stop = new AbortController();
+	let failLate: ((error: Error) => void) | undefined;
+	const abandoned = createChatModel({
+		client: () => ({
+			chat: () =>
+				new Promise<{ answers?: unknown[] }>((_resolve, reject) => {
+					failLate = reject;
+				}),
+		}),
+		token,
+		toQuestion: (q) => q,
+		onPipelineError: restart,
+		signal: stop.signal,
+	});
+	const running = setup(abandoned, [], { signal: stop.signal }).run();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.ok(failLate, 'the model call is in flight');
+	stop.abort();
+	assert.equal((await running).stopReason, 'stopped');
+	failLate?.(new Error('pipeline ended'));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(restarts, 1, 'the late failure restarted nothing');
 });

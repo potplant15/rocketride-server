@@ -250,6 +250,8 @@ export class AppToolkit extends AgentToolkit {
 	private readonly pollMs: number;
 	/** How long to wait for the build. */
 	private readonly buildWaitMs: number;
+	/** Aborted when the user stops the run; the build wait ends, and a yes that comes after it publishes nothing. */
+	private readonly signal?: AbortSignal;
 
 	/**
 	 * Builds the toolkit.
@@ -257,15 +259,16 @@ export class AppToolkit extends AgentToolkit {
 	 * @param client - The host's client getter.
 	 * @param host - The agent host.
 	 * @param confirm - Asks the user before a version is published or submitted for review.
-	 * @param opts - Timing: how often to read the build's progress (default 3 s) and how long to wait for it (default 540 s).
+	 * @param opts - Timing: how often to read the build's progress (default 3 s) and how long to wait for it (default 540 s); and the run's stop signal.
 	 */
-	constructor(client: ClientGetter, host: AgentHost, confirm: ConfirmFn, opts: { pollMs?: number; buildWaitMs?: number } = {}) {
+	constructor(client: ClientGetter, host: AgentHost, confirm: ConfirmFn, opts: { pollMs?: number; buildWaitMs?: number; signal?: AbortSignal } = {}) {
 		super();
 		this.client = client;
 		this.host = host;
 		this.confirm = confirm;
 		this.pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
 		this.buildWaitMs = opts.buildWaitMs ?? DEFAULT_BUILD_WAIT_MS;
+		this.signal = opts.signal;
 	}
 
 	/**
@@ -355,11 +358,11 @@ export class AppToolkit extends AgentToolkit {
 					return `Deployed v${version.registryVersion}; server build FAILED:\n${log.slice(-BUILD_LOG_TAIL_CHARS) || '(the build recorded no log)'}`;
 				}
 			}
-			if (Date.now() >= deadline) break;
-			await sleep(this.pollMs);
+			if (Date.now() >= deadline || this.signal?.aborted) break;
+			await sleep(this.pollMs, this.signal);
 		}
 
-		const waited = `after ${Math.round(this.buildWaitMs / 1000)} s`;
+		const waited = this.signal?.aborted ? 'when the run was stopped' : `after ${Math.round(this.buildWaitMs / 1000)} s`;
 		if (target === undefined) return `Deployed, but the new version isn't on the version list ${waited}. Tell the user to check the app's Deploy view.`;
 		return `Deployed v${target}; the server build is still running (${version?.buildStatus ?? 'queued'}) ${waited}.`;
 	}
@@ -385,6 +388,8 @@ export class AppToolkit extends AgentToolkit {
 		const plan = this.planFor(client, app, version, target, team);
 		if (typeof plan === 'string') return plan;
 		if (!(await this.confirm(plan.title, plan.message))) return declined(plan.title);
+		// a yes clicked after Stop must not publish: the run that asked is over
+		if (this.signal?.aborted) throw new Error(`The user stopped the run, so this was not done: ${plan.title}.`);
 		return plan.run();
 	}
 

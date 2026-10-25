@@ -281,10 +281,10 @@ export async function monacoMarkerSource(): Promise<MarkerSource> {
  * skipped: the quiet window still applies.
  *
  * @param src - The marker source.
- * @param opts - `quietMs` (default 1500) and `maxMs` (default 10 000, for the whole wait).
- * @returns A promise that resolves when the markers are quiet or the cap is reached.
+ * @param opts - `quietMs` (default 1500), `maxMs` (default 10 000, for the whole wait), and the run's stop signal, which ends the wait at once.
+ * @returns A promise that resolves when the markers are quiet, the cap is reached, or the run is stopped.
  */
-function settleMarkers(src: MarkerSource, opts: { quietMs?: number; maxMs?: number } = {}): Promise<void> {
+function settleMarkers(src: MarkerSource, opts: { quietMs?: number; maxMs?: number; signal?: AbortSignal } = {}): Promise<void> {
 	const quietMs = opts.quietMs ?? DEFAULT_QUIET_MS;
 	const maxMs = opts.maxMs ?? DEFAULT_MAX_MS;
 	return new Promise((resolve) => {
@@ -301,12 +301,17 @@ function settleMarkers(src: MarkerSource, opts: { quietMs?: number; maxMs?: numb
 			if (windowOpen) restart();
 		});
 		function done(): void {
+			if (finished) return;
 			finished = true;
 			clearTimeout(quiet);
 			clearTimeout(cap);
 			stop();
+			opts.signal?.removeEventListener('abort', done);
 			resolve();
 		}
+		// after the subscribe, which done() releases
+		if (opts.signal?.aborted) done();
+		else opts.signal?.addEventListener('abort', done, { once: true });
 		const open = (): void => {
 			if (finished) return;
 			windowOpen = true;
@@ -532,6 +537,8 @@ export interface AppCheckOptions {
 	build?: AppBuildOptions;
 	/** How long Monaco's markers must be quiet, and the longest the wait runs, in milliseconds (defaults: 1500 and 10 000). */
 	types?: { quietMs?: number; maxMs?: number };
+	/** Aborted when the user stops the run: the marker settle and the build wait end at once. */
+	signal?: AbortSignal;
 }
 
 // =============================================================================
@@ -572,7 +579,7 @@ async function typeScriptFiles(vfs: IWorkspaceFileSystem, dir: string, base = ''
  * @param files - The app's TypeScript files.
  * @returns The evidence; `not_run` when the editor is not there, did not load, or holds none of the app's files.
  */
-async function typesStep(app: AppEntry, markers: () => Promise<MarkerSource | null>, settle: AppCheckOptions['types'], files: string[]): Promise<CheckEvidence> {
+async function typesStep(app: AppEntry, markers: () => Promise<MarkerSource | null>, settle: { quietMs?: number; maxMs?: number; signal?: AbortSignal } | undefined, files: string[]): Promise<CheckEvidence> {
 	let src: MarkerSource | null;
 	try {
 		src = await markers();
@@ -609,7 +616,7 @@ function noIdEvidence(app: AppEntry): CheckEvidence[] {
  * @param host - The agent host: its workspace holds the app's files, and it finds the app's running dev session.
  * @param markers - Gets Monaco's marker source; resolves null when there is none (outside a browser, or before the editor loads).
  * @param app - The app to check, as `findApp` found it.
- * @param opts - Timings; tests pass short ones.
+ * @param opts - Timings (tests pass short ones) and the run's stop signal.
  * @returns The evidence from every step, in the order they ran.
  * @throws When the app's package.json cannot be read, with the read error; nothing was checked then.
  */
@@ -619,8 +626,8 @@ async function checkApp(host: AgentHost, markers: () => Promise<MarkerSource | n
 	if (!app.id) return noIdEvidence(app);
 
 	const files = await typeScriptFiles(host.vfs, app.path);
-	const types = await typesStep(app, markers, opts.types, files);
-	const build = await appBuildEvidence(host.devSession(app.id), opts.build);
+	const types = await typesStep(app, markers, { ...opts.types, signal: opts.signal }, files);
+	const build = await appBuildEvidence(host.devSession(app.id), { ...opts.build, signal: opts.signal });
 	return [types, ...build];
 }
 
@@ -714,10 +721,12 @@ interface AppBuildOptions {
 	settleMs?: number;
 	/** How long after the build settles the preview is watched for mount errors, in milliseconds (default 1500). */
 	runtimeGraceMs?: number;
+	/** Aborted when the user stops the run: the build wait ends at once. */
+	signal?: AbortSignal;
 }
 
 /** How the wait for the build ended. */
-type BuildOutcome = { kind: 'settled'; status: WatchStatus } | { kind: 'timeout'; started: boolean } | { kind: 'unstarted'; message: string };
+type BuildOutcome = { kind: 'settled'; status: WatchStatus } | { kind: 'timeout'; started: boolean } | { kind: 'unstarted'; message: string } | { kind: 'stopped' };
 
 // =============================================================================
 // EVIDENCE
@@ -805,6 +814,9 @@ async function appBuildEvidence(session: AgentDevSession | null, opts: AppBuildO
 	try {
 		const outcome = await new Promise<BuildOutcome>((resolve) => {
 			capTimer = setTimeout(() => resolve({ kind: 'timeout', started }), buildWaitMs);
+			// a run stopped during the types step asks for no rebuild
+			if (opts.signal?.aborted) return resolve({ kind: 'stopped' });
+			opts.signal?.addEventListener('abort', () => resolve({ kind: 'stopped' }), { once: true });
 			// step: one push per subscribe, so a later subscribe that throws still leaves the earlier ones to be released
 			stops.push(
 				session.subscribeErrors((row) => {
@@ -839,6 +851,7 @@ async function appBuildEvidence(session: AgentDevSession | null, opts: AppBuildO
 				.catch((err: unknown) => resolve({ kind: 'unstarted', message: messageOf(err) }));
 		});
 
+		if (outcome.kind === 'stopped') return [notRun('build', BUILD_RAN, 'The run was stopped before the build finished, so the build was not checked.', 'build not checked: run stopped')];
 		if (outcome.kind === 'timeout') {
 			const wait = describeWait(buildWaitMs);
 			if (!outcome.started) return [notRun('build', BUILD_RAN, `No build started within ${wait} of the rebuild request, so nothing was built or checked. The preview may be paused or closed; ${OPEN_PREVIEW}.`, `no build started within ${wait}`)];
@@ -941,7 +954,7 @@ export class AppCheckToolkit extends AgentToolkit {
 	 * @param host - The agent host.
 	 * @param markers - Gets Monaco's marker source; resolves null when there is none (outside a browser, or before the editor loads).
 	 * @param onResult - Hears each result; the run keeps the record, not this toolkit.
-	 * @param opts - Timings; tests pass short ones.
+	 * @param opts - Timings (tests pass short ones) and the run's stop signal.
 	 */
 	constructor(host: AgentHost, markers: () => Promise<MarkerSource | null>, onResult: AppCheckListener, opts: AppCheckOptions = {}) {
 		super();

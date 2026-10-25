@@ -274,10 +274,20 @@ export function brief(text: string): string {
  * Waits.
  *
  * @param ms - Milliseconds.
- * @returns Resolves after the wait.
+ * @param signal - Ends the wait at once when it aborts (immediately if it already has).
+ * @returns Resolves after the wait, or when the signal aborts.
  */
-export function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve();
+		const end = (): void => {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', end);
+			resolve();
+		};
+		const timer = setTimeout(end, ms);
+		signal?.addEventListener('abort', end, { once: true });
+	});
 }
 
 // =============================================================================
