@@ -160,7 +160,7 @@ def test_reasoning_from_another_model_is_not_sent():
     assert [b['type'] for b in assistant['content']] == ['text', 'tool_use', 'tool_use']
 
 
-def test_openai_wire_maps_names_and_replays_bad_arguments_as_sent():
+def test_openai_wire_maps_names_and_sends_unparsable_arguments_back_empty():
     langchain_openai = pytest.importorskip('langchain_openai')
     llm = langchain_openai.ChatOpenAI(model='gpt-4.1', api_key='sk-test')
     q = _loop_question(_anthropic())
@@ -170,7 +170,7 @@ def test_openai_wire_maps_names_and_replays_bad_arguments_as_sent():
     assistant = payload['messages'][2]
     assert [(c['id'], c['function']['name'], c['function']['arguments']) for c in assistant['tool_calls']] == [
         ('call_1', 'tool_github_1__create_issue', '{"title": "Flaky"}'),
-        ('call_2', 'memory__peek', '{"key": '),
+        ('call_2', 'memory__peek', '{}'),
     ]
     assert 'thinking' not in str(assistant['content'])
     assert [(m['role'], m.get('tool_call_id')) for m in payload['messages'][3:]] == [
@@ -246,15 +246,25 @@ def _driver(monkeypatch, node: str, module: str, config: dict):
     return mod, mod.Chat(node, {}, {})
 
 
-def _anthropic_driver(monkeypatch, transport, thinking=True):
-    import httpx2
+def _mock_anthropic_http(monkeypatch, transport):
+    """Route langchain-anthropic's HTTP client through `transport`, with the httpx flavour its SDK uses."""
+    import importlib
+
     import langchain_anthropic.chat_models as lca
 
+    client = type(lca._get_default_httpx_client(base_url=None))
+    lib = importlib.import_module(
+        next(c.__module__ for c in client.__mro__ if c.__module__.startswith('httpx')).split('.')[0]
+    )
     monkeypatch.setattr(
         lca,
         '_get_default_httpx_client',
-        lambda **kw: httpx2.Client(transport=httpx2.MockTransport(transport), base_url=kw['base_url']),
+        lambda **kw: lib.Client(transport=lib.MockTransport(transport), base_url=kw['base_url']),
     )
+
+
+def _anthropic_driver(monkeypatch, transport, thinking=True):
+    _mock_anthropic_http(monkeypatch, transport)
     config = {
         'model': 'claude-sonnet-4-6',
         'apikey': 'sk-ant-test',

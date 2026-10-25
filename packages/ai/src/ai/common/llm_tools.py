@@ -189,7 +189,7 @@ def _to_ai_message(message: AssistantMessage, origin: str) -> Any:
     if isinstance(message.content, str):
         return AIMessage(content=message.content)
     content: List[Any] = []
-    calls, bad_calls = [], []
+    calls = []
     for block in message.content:
         if isinstance(block, ReasoningBlock):
             state = block.state if isinstance(block.state, dict) else {}
@@ -197,19 +197,12 @@ def _to_ai_message(message: AssistantMessage, origin: str) -> Any:
                 content.append(state['block'])
         elif isinstance(block, TextBlock):
             content.append({'type': 'text', 'text': block.text})
-        elif isinstance(block.args, dict):
-            calls.append({'id': block.id, 'name': provider_tool_name(block.name), 'args': block.args})
         else:
-            bad_calls.append(
-                {
-                    'id': block.id,
-                    'name': provider_tool_name(block.name),
-                    'args': block.args,
-                    'error': None,
-                    'type': 'invalid_tool_call',
-                }
-            )
-    return AIMessage(content=content, tool_calls=calls, invalid_tool_calls=bad_calls)
+            # A call whose arguments were not valid JSON goes back with none: some LangChain
+            # versions drop invalid_tool_calls when formatting, which would orphan its result.
+            args = block.args if isinstance(block.args, dict) else {}
+            calls.append({'id': block.id, 'name': provider_tool_name(block.name), 'args': args})
+    return AIMessage(content=content, tool_calls=calls)
 
 
 def from_langchain(message: Any, names: ToolNames, origin: str) -> Tuple[AssistantMessage, StopReason]:

@@ -64,8 +64,12 @@ def test_text_and_json_answers_are_written_as_before():
 
 def _anthropic_chat(monkeypatch, bodies):
     pytest.importorskip('langchain_anthropic')
-    import httpx2
     import langchain_anthropic.chat_models as lca
+
+    client = type(lca._get_default_httpx_client(base_url=None))
+    lib = importlib.import_module(
+        next(c.__module__ for c in client.__mro__ if c.__module__.startswith('httpx')).split('.')[0]
+    )
 
     reply = {
         'id': 'msg_1',
@@ -83,12 +87,12 @@ def _anthropic_chat(monkeypatch, bodies):
 
     def transport(request):
         bodies.append(json.loads(request.content))
-        return httpx2.Response(200, headers={'content-type': 'application/json'}, content=json.dumps(reply).encode())
+        return lib.Response(200, headers={'content-type': 'application/json'}, content=json.dumps(reply).encode())
 
     monkeypatch.setattr(
         lca,
         '_get_default_httpx_client',
-        lambda **kw: httpx2.Client(transport=httpx2.MockTransport(transport), base_url=kw['base_url']),
+        lambda **kw: lib.Client(transport=lib.MockTransport(transport), base_url=kw['base_url']),
     )
     config = {
         'model': 'claude-sonnet-4-6',
