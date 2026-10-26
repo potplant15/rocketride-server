@@ -32,7 +32,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { gateStatement } from '../src/sql/gate';
+import { APPLY_UNKNOWN_DIALECT_TEXT, gateApplyStatements, gateStatement } from '../src/sql/gate';
 
 describe('T10 — a write the server runs is never repeatable, however it is hidden', () => {
 	it('mysql: a write inside an executable comment (/*!50000 ... */) makes the text a write', () => {
@@ -75,5 +75,42 @@ describe('T10 — the gate needs the node\'s dialect: with it, PL/pgSQL passes; 
 	it('with the dialect known, the DA batches are writes', () => {
 		assert.equal(gateStatement('SELECT 1--1; DELETE FROM orders', 'mysql', true).idempotent, false);
 		assert.equal(gateStatement('SELECT $$ -- $$; DELETE FROM orders', 'postgres', true).idempotent, false);
+	});
+});
+
+describe('T10 — an Apply\'s list: one app-written statement each, never transaction control', () => {
+	const EDIT = 'UPDATE "orders" SET "status" = $1 WHERE "order_id" = $2';
+
+	it('passes app-written row edits and DDL in every dialect it knows', () => {
+		for (const dialect of ['postgres', 'mysql', 'clickhouse'] as const) {
+			assert.equal(gateApplyStatements([EDIT, 'DELETE FROM "orders" WHERE "order_id" = $1', 'ALTER TABLE "orders" ADD COLUMN "notes" text'], dialect, true), null, dialect);
+		}
+	});
+
+	it('refuses transaction control anywhere in the list, before anything is sent', () => {
+		for (const [tx, dialect] of [['BEGIN', 'postgres'], ['COMMIT', 'mysql'], ['ROLLBACK', 'postgres'], ['SAVEPOINT s1', 'postgres'], ['START TRANSACTION', 'mysql'], ['END', 'postgres'], ['SET autocommit = 1', 'mysql']] as const) {
+			const refusal = gateApplyStatements([EDIT, tx], dialect, true);
+			assert.match(refusal ?? '', /^Statement 2 is transaction control\./, `${dialect}: ${tx}`);
+			assert.match(refusal ?? '', /nothing was applied/);
+		}
+		// Not atomic either: an apply never carries its own transaction text.
+		assert.notEqual(gateApplyStatements(['COMMIT'], 'mysql', false), null);
+	});
+
+	it('refuses an entry that holds two statements (a value typed into the designer cannot smuggle one in)', () => {
+		assert.match(gateApplyStatements(['ALTER TABLE "t" ADD COLUMN "x" int; COMMIT'], 'postgres', true) ?? '', /^Statement 1 holds more than one statement/);
+		assert.match(gateApplyStatements([EDIT, 'SELECT 1; DELETE FROM "orders"'], 'mysql', false) ?? '', /^Statement 2 holds more than one statement/);
+		assert.equal(gateApplyStatements(["UPDATE \"t\" SET \"note\" = 'a; b'"], 'postgres', true), null, 'a semicolon in a literal is not a second statement');
+	});
+
+	it('refuses an empty list and an empty entry', () => {
+		assert.notEqual(gateApplyStatements([], 'postgres', true), null);
+		assert.match(gateApplyStatements([EDIT, '  -- nothing\n'], 'postgres', true) ?? '', /^Statement 2 is empty/);
+		assert.match(gateApplyStatements(['   '], 'unknown', false) ?? '', /^Statement 1 is empty/);
+	});
+
+	it('unknown dialect: one transaction is refused; without one, each entry is sent once and the node decides', () => {
+		assert.equal(gateApplyStatements([EDIT], 'unknown', true), APPLY_UNKNOWN_DIALECT_TEXT);
+		assert.equal(gateApplyStatements([EDIT, 'BEGIN'], 'unknown', false), null);
 	});
 });

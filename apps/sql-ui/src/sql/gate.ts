@@ -50,6 +50,16 @@
 // standard_conforming_strings off) is not seen, and a read with side effects
 // (`SELECT nextval('s')`) is a read.
 //
+// AN APPLY'S LIST (gateApplyStatements). Staged row edits and designer plans
+// are written by the app, but their values and types come from the user, so
+// the engine core checks the whole list before anything is sent: every entry
+// must be exactly one statement (a type typed as `int; COMMIT` must not end
+// the transaction early, and a row count belongs to one statement), and none
+// may be transaction control, since the apply opens and ends its own. One
+// transaction needs the dialect: without it no entry can be split, so an
+// atomic apply is refused, and an apply without a transaction is sent entry
+// by entry, once each, as `execute` sends a statement.
+//
 // Pure (no engine), so it is tested directly.
 // =============================================================================
 
@@ -80,4 +90,34 @@ export function gateStatement(sql: string, dialect: SqlDialect, idempotentReques
 	const kinds = statements.length > 0 ? statements.map((statement) => classifyStatement(statement.sql, dialect)) : [classifyStatement(sql, dialect)];
 	if (kinds.includes('tx')) return { refusal: TRANSACTION_REFUSAL_TEXT, idempotent: false };
 	return { refusal: null, idempotent: idempotentRequested && kinds.every((kind) => kind === 'read') };
+}
+
+/** Why an atomic apply is refused when the node did not report its dialect. */
+export const APPLY_UNKNOWN_DIALECT_TEXT = 'The database did not report its type, so these statements cannot be checked and run as one transaction. Nothing was applied.';
+
+/**
+ * Check an apply's whole list the way the engine core will send it.
+ *
+ * @param sqls - The statements, in order.
+ * @param dialect - The dialect the node reported; 'unknown' refuses one transaction and otherwise checks only for empty entries.
+ * @param atomic - Whether they are to run as one transaction.
+ * @returns Why the list is refused (nothing is sent), or null.
+ */
+export function gateApplyStatements(sqls: readonly string[], dialect: SqlDialect, atomic: boolean): string | null {
+	if (sqls.length === 0) return 'There is nothing to apply.';
+	if (atomic && dialect === 'unknown') return APPLY_UNKNOWN_DIALECT_TEXT;
+	for (const [index, sql] of sqls.entries()) {
+		const which = `Statement ${index + 1}`;
+		if (dialect === 'unknown') {
+			if (sql.trim() === '') return `${which} is empty, so nothing was applied.`;
+			continue;
+		}
+		const statements = splitStatements(sql, dialect);
+		if (statements.length === 0) return `${which} is empty, so nothing was applied.`;
+		if (statements.length > 1) return `${which} holds more than one statement, so nothing was applied.`;
+		if (classifyStatement(statements[0]!.sql, dialect) === 'tx') {
+			return `${which} is transaction control. An apply opens and ends its own transaction, so nothing was applied.`;
+		}
+	}
+	return null;
 }
