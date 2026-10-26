@@ -51,7 +51,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { GridCellComponent, GridColumnDefinition } from 'shell';
-import { Banner, Button, Card, CardDataGrid, ConfirmDialog, ContentHeader, EmptyState, StatusBadge, ToggleGroup, commonStyles, monoEl, mutedEl } from 'shell';
+import { AnchoredPopup, Banner, Button, Card, CardDataGrid, ConfirmDialog, ContentHeader, EmptyState, StatusBadge, ToggleGroup, commonStyles, isInVSCode, monoEl, mutedEl } from 'shell';
 import type { SqlEndpoint, SqlExecuteResult, SqlDialect } from '../connect';
 import { useSchema } from '../schema/schemaStore';
 import { useSqlEnv } from '../sqlEnv';
@@ -86,6 +86,8 @@ import {
 } from '../sql/failure';
 import type { FailureNotice } from '../sql/failure';
 import { inferColumnTypes } from '../sql/resultTypes';
+import { browserCopy, browserDownload, deliverExport, exportFileName, exportResult } from '../sql/export';
+import type { ExportFormat } from '../sql/export';
 import { buildCompletionModel } from '../sql/completion';
 import { buildExplain } from '../sql/explain';
 import type { HistoryEntry } from '../history/types';
@@ -136,6 +138,9 @@ const SAFETY_LINE: Record<SafetyLevel, string> = {
 	risky: 'Asks before risky writes',
 	every: 'Asks before every write',
 };
+
+/** How the export announcements name each format. */
+const EXPORT_NAMES: Record<ExportFormat, string> = { csv: 'CSV', json: 'JSON', markdown: 'Markdown' };
 
 /** The column list of a result that has none (a stable empty array for memos). */
 const EMPTY_COLUMNS: readonly string[] = [];
@@ -191,6 +196,22 @@ const styles = {
 		gap: 8,
 		fontSize: 11,
 		color: 'var(--rr-text-secondary)',
+	} as CSSProperties,
+
+	// The Export button's menu.
+	exportMenu: {
+		...commonStyles.popupMenu,
+		display: 'flex',
+		flexDirection: 'column',
+		alignItems: 'stretch',
+		gap: 2,
+		minWidth: 200,
+	} as CSSProperties,
+
+	exportHeading: {
+		fontSize: 11,
+		color: 'var(--rr-text-secondary)',
+		padding: '4px 8px',
 	} as CSSProperties,
 };
 
@@ -304,9 +325,11 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// The affected-row estimate for the open write confirmation.
 	const [estimate, setEstimate] = useState<RowEstimate>({ state: 'none' });
 	const [estimateGeneration] = useState(createGeneration);
+	const [exportOpen, setExportOpen] = useState(false);
 
 	// ── Refs ─────────────────────────────────────────────────────────────────
 	const editorRef = useRef<SqlEditorHandle>(null);
+	const exportAnchorRef = useRef<HTMLSpanElement>(null);
 	// The buffer text as of the last run or the last load: anything else in the
 	// editor is unsaved work that must not be replaced without asking.
 	const committedTextRef = useRef(initialSql ?? '');
@@ -736,6 +759,28 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		};
 	}, [displayed, rows.length, lastRun]);
 
+	// A VS Code webview refuses downloads, so there an export is copied.
+	const copiesExports = useMemo(() => isInVSCode(), []);
+
+	/**
+	 * Export the shown statement's rows: CSV and JSON download (or are copied
+	 * where downloads are refused), Markdown is copied. The rows are the
+	 * statement's own, by its captured columns, as the run returned them.
+	 *
+	 * @param format - The format.
+	 */
+	const exportRows = useCallback((format: ExportFormat): void => {
+		setExportOpen(false);
+		if (!displayed) return;
+		const payload = { ...exportResult(format, resultCols, rows), fileName: exportFileName(label, displayed.index, format) };
+		const what = `${rows.length.toLocaleString()} ${rows.length === 1 ? 'row' : 'rows'} as ${EXPORT_NAMES[format]}`;
+		void deliverExport(payload, { downloadsRefused: copiesExports, download: browserDownload, copy: browserCopy }).then((outcome) => {
+			if (outcome === 'downloaded') announce(`Downloaded ${what}`);
+			else if (outcome === 'failed') announce(`Could not export ${what}`);
+			else announce(format === 'markdown' ? `Copied ${what}` : `Downloads are not available here, so ${what} was copied`);
+		});
+	}, [displayed, resultCols, rows, label, copiesExports]);
+
 	/** Title for the results region when there is no grid to show. */
 	const emptyTitle = !displayed
 		? 'No results yet'
@@ -867,7 +912,23 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 									<span style={styles.meta}>
 										{meta.text}
 										{meta.limitReached && <StatusBadge variant="warning">Limit reached, more rows may exist</StatusBadge>}
-										<span title="The grid's gear menu exports the rows this run returned.">Export: grid menu (gear)</span>
+										<span ref={exportAnchorRef}>
+											<Button
+												variant="secondary"
+												small
+												ariaExpanded={exportOpen}
+												title="Export the rows this statement returned"
+												onClick={() => setExportOpen((open) => !open)}
+											>
+												Export
+											</Button>
+										</span>
+										<AnchoredPopup anchorRef={exportAnchorRef} open={exportOpen} onClose={() => setExportOpen(false)} align="end" style={styles.exportMenu}>
+											<div style={styles.exportHeading}>{`Rows this statement returned (${rows.length.toLocaleString()})`}</div>
+											<Button variant="ghost" small onClick={() => exportRows('csv')}>{copiesExports ? 'Copy as CSV' : 'Download CSV'}</Button>
+											<Button variant="ghost" small onClick={() => exportRows('json')}>{copiesExports ? 'Copy as JSON' : 'Download JSON'}</Button>
+											<Button variant="ghost" small onClick={() => exportRows('markdown')}>Copy as Markdown</Button>
+										</AnchoredPopup>
 									</span>
 								}
 								columns={columns}
