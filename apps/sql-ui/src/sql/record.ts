@@ -94,6 +94,18 @@ export interface BoundStatement {
 }
 
 /**
+ * Whether a row's value(s) for a key can be followed: every key column holds
+ * a value (a NULL key points at nothing).
+ *
+ * @param edge - The foreign key.
+ * @param row - The referencing row.
+ * @returns True when no key column is NULL or missing.
+ */
+export function hasKeyValues(edge: RelationEdge, row: Record<string, unknown>): boolean {
+	return edge.columns.every((column) => row[column] !== null && row[column] !== undefined);
+}
+
+/**
  * The statement a foreign-key link runs: the referenced row, looked up by the
  * key's value(s). LIMIT 2 so a key that is not unique can say so. Returns
  * null when any key value is NULL: a NULL key points at nothing.
@@ -104,12 +116,11 @@ export interface BoundStatement {
  * @returns The statement, or null when there is nothing to look up.
  */
 export function referencedRowStatement(dialect: SqlDialect, edge: RelationEdge, row: Record<string, unknown>): BoundStatement | null {
+	if (!hasKeyValues(edge, row)) return null;
 	const params: unknown[] = [];
 	const conditions: string[] = [];
 	for (let i = 0; i < edge.columns.length; i++) {
-		const value = row[edge.columns[i]!];
-		if (value === null || value === undefined) return null;
-		params.push(value);
+		params.push(row[edge.columns[i]!]);
 		conditions.push(`${quoteIdent(dialect, edge.refColumns[i]!)} = $${params.length}`);
 	}
 	return { sql: `SELECT * FROM ${quoteIdent(dialect, edge.refTable)} WHERE ${conditions.join(' AND ')} LIMIT 2`, params };
