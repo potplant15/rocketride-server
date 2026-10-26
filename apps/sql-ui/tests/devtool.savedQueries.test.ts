@@ -306,6 +306,8 @@ describe('saved queries in a dev tool: frames follow a small revision topic, and
 			await until(() => other.entriesOf(ENDPOINT).length === 1, 'the second view to follow');
 			assert.equal(other.entriesOf(ENDPOINT)[0]!.id, 'from-first');
 			assert.match(other.privacyNotice(), /rocketride\.sql\.queries\.json/);
+			// A read still in flight when the controller goes would hold its op timer.
+			await until(() => r.frame.caller.pending() === 0, 'the view\'s reads to be answered');
 		} finally {
 			other.dispose();
 			r.dispose();
@@ -469,6 +471,9 @@ describe('T7 — saved queries: nothing of one account is served to, kept for, o
 			await until(() => r.view.entriesOf(ENDPOINT).length === 1, 'A\'s query in the view');
 			r.engine.realm.root.accountChanged(USER_B);
 			await until(() => r.view.entriesOf(ENDPOINT).length === 0, 'the view to forget A\'s');
+			// The view's read for A, sent as the revision moved, is refused: wait
+			// for that answer so no call is in flight when the controller goes.
+			await until(() => r.frame.caller.pending() === 0, 'the view\'s last read to be answered');
 		} finally {
 			r.dispose();
 		}

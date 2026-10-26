@@ -48,11 +48,12 @@ describe('saved queries: the entry points', () => {
 		assert.match(header[1]!, /<SavedQueriesButton endpoint=\{endpoint\} \/>/);
 	});
 
-	it('each History entry offers "Save as query" for its own statement', () => {
+	it('each History entry offers "Save as query" for its own statement, unless history kept only part of it', () => {
 		const panel = source('components/HistoryPanel.tsx');
 		const actions = /<div style=\{styles\.actions\}>([\s\S]*?)<\/div>/.exec(panel);
 		assert.ok(actions, 'the entry actions');
-		assert.match(actions[1]!, /<SaveQueryButton endpoint=\{endpoint\} sql=\{entry\.sql\} small \/>/);
+		// A truncated entry holds the first 8 KB only: saving it would keep a statement that was never run.
+		assert.match(actions[1]!, /\{!entry\.truncated && <SaveQueryButton endpoint=\{endpoint\} sql=\{entry\.sql\} small \/>\}/);
 	});
 });
 

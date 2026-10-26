@@ -59,7 +59,7 @@ export interface RemoteSavedQueries extends SqlSavedQueriesApi {
 	entriesOf(endpoint: SqlEndpoint): SavedQuery[];
 	/** Whether one connection's queries have been read (outside React). */
 	loaded(endpoint: SqlEndpoint): boolean;
-	/** The privacy line as of the last answer (outside React). */
+	/** The privacy line as of the last answer ('' before the controller said where they are kept; outside React). */
 	privacyNotice(): string;
 	/** Forget everything read (identity change, sign-out, a dropped connection). */
 	reset(): void;
@@ -187,7 +187,8 @@ export function createRemoteSavedQueries(opts: RemoteSavedQueriesOptions): Remot
 		fetch(endpoint.key);
 	};
 
-	const notice = (): string => devToolSavedQueriesNotice(storage ?? 'none');
+	// Nothing until the controller has said where they are kept (never a guess).
+	const notice = (): string => (storage === null ? '' : devToolSavedQueriesNotice(storage));
 
 	return {
 		useSavedQueries(endpoint) {

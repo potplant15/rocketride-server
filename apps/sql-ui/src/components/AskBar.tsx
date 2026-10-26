@@ -271,8 +271,9 @@ export const AskBar: React.FC<{ endpoint: SqlEndpoint }> = ({ endpoint }) => {
 					{ASK_CONTEXT_TEXT}
 				</details>
 			)}
+			{/* Announced when it arrives (announce above), so not a live region too. */}
 			{reply && (
-				<div role="status">
+				<div>
 					<div style={styles.meta}>{REPLY_LABEL[reply.kind]}</div>
 					<pre style={styles.reply}>{reply.text}</pre>
 				</div>

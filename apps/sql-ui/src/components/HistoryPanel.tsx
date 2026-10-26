@@ -517,7 +517,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 									Delete
 								</Button>
 								<Button variant="ghost" small onClick={() => openInNewQuery(entry)}>Open in new query</Button>
-								<SaveQueryButton endpoint={endpoint} sql={entry.sql} small />
+								{!entry.truncated && <SaveQueryButton endpoint={endpoint} sql={entry.sql} small />}
 							</div>
 						</div>
 					)}
