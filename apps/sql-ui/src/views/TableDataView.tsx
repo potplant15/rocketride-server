@@ -28,13 +28,28 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createGeneration } from 'shared/explorer/generation';
 import type { CSSProperties } from 'react';
 import type { GridCellComponent } from 'shell';
-import { Banner, Card, ContentHeader, DataGrid, EmptyState, monoEl, mutedEl } from 'shell';
-import type { GridColumnDefinition, IDataGridPage, IDataGridPageRequest } from 'shell';
+import { Banner, Button, Card, ContentHeader, DataGrid, EmptyState, monoEl, mutedEl } from 'shell';
+import type { GridColumnDefinition, IDataGridHandle, IDataGridPage, IDataGridPageRequest } from 'shell';
 import { commonStyles } from 'shell';
 import type { SqlEndpoint } from '../connect';
 import { useSchema } from '../schema/schemaStore';
 import { useSqlEnv } from '../sqlEnv';
-import { buildPageStatements } from '../sql/paging';
+import { buildPageStatements, countKey } from '../sql/paging';
+import {
+	applyEstimate,
+	applyTotal,
+	emptyCountCache,
+	estimateStatement,
+	overfetchPage,
+	parseEstimate,
+	planCount,
+} from '../sql/estimate';
+import type { CountCache } from '../sql/estimate';
+import type { FilterChip } from '../sql/filters';
+import { buildRelationGraph, fkMarker } from '../schema/relations';
+import { FilterChips } from '../components/FilterChips';
+import type { SortChip } from '../components/FilterChips';
+import { RecordDrawer } from '../components/RecordDrawer';
 import { DatabaseIcon } from '../icons';
 
 // =============================================================================
@@ -47,6 +62,28 @@ export interface TableDataViewProps {
 	endpoint: SqlEndpoint;
 	/** The table to browse. */
 	table: string;
+	/**
+	 * Whether the connection can run statements. False = schema only: the
+	 * browser sends no page, count or estimate statement (default true).
+	 */
+	executeAllowed?: boolean;
+	/** Filter chips the page opens with (a foreign key's "Show rows"). */
+	presetFilters?: readonly FilterChip[];
+	/** Opens another table's Data page with chips preset; absent = no "Show rows". */
+	onOpenTable?: (table: string, chips: FilterChip[]) => void;
+}
+
+/** What the count line says when the pager's total is not an exact count. */
+type CountNote = { kind: 'estimate'; rows: number } | { kind: 'more'; estimate: number | null } | null;
+
+/** The row drawer's state: a snapshot of the page the row was clicked on. */
+interface OpenRow {
+	/** The page's rows as fetched (the grid is handed copies). */
+	rows: Record<string, unknown>[];
+	/** Index of the open row. */
+	index: number;
+	/** Rows before the page. */
+	offset: number;
 }
 
 // =============================================================================
@@ -72,6 +109,16 @@ const styles = {
 		margin: '0 0 8px',
 		fontSize: 12,
 		opacity: 0.7,
+	} as CSSProperties,
+
+	// The count line: the estimate or "more rows" note with its button.
+	countNote: {
+		display: 'flex',
+		alignItems: 'center',
+		gap: 8,
+		margin: '0 0 8px',
+		fontSize: 12,
+		opacity: 0.85,
 	} as CSSProperties,
 
 	// The load-failure banner sits above the grid, inside the body padding.
@@ -106,7 +153,7 @@ function dataCellEl(value: unknown): HTMLElement {
  * ORDER BY from the grid's sorters, WHERE from search + column filters) and
  * executes them through the connection's session.
  */
-export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table }) => {
+export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, executeAllowed = true, presetFilters, onOpenTable }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 
@@ -114,9 +161,42 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 	// previous rows on failure, so without this the error is invisible.
 	const [loadError, setLoadError] = useState<string | null>(null);
 
-	// Whether the grid is currently sorted by the user. Read from the page
-	// requests themselves — remote sorting is the only way sorters reach here.
-	const [gridSorted, setGridSorted] = useState(false);
+	// The grid's current sorters. Read from the page requests themselves —
+	// remote sorting is the only way sorters reach here.
+	const [gridSort, setGridSort] = useState<SortChip[]>([]);
+
+	const gridRef = useRef<IDataGridHandle>(null);
+
+	// Filter chips. The ref is what a page request reads, so changing a chip
+	// does not change `fetchPage`'s identity (which would rebuild the grid);
+	// the effect below asks the grid for page 1 again.
+	const [chips, setChipsState] = useState<FilterChip[]>(() => [...(presetFilters ?? [])]);
+	const chipsRef = useRef<FilterChip[]>(chips);
+	const setChips = useCallback((next: FilterChip[]): void => {
+		chipsRef.current = next;
+		setChipsState(next);
+	}, []);
+	const chipsMounted = useRef(false);
+	useEffect(() => {
+		// The first fetch already reads the preset chips.
+		if (!chipsMounted.current) {
+			chipsMounted.current = true;
+			return;
+		}
+		gridRef.current?.refetch({ resetPage: true });
+	}, [chips]);
+
+	// What is known about this table's size and the total shown for the
+	// current filter (see sql/estimate.ts). "Count exactly" sets the flag the
+	// next request reads.
+	const countRef = useRef<CountCache>(emptyCountCache(table));
+	const forceExactRef = useRef(false);
+	const [countNote, setCountNote] = useState<CountNote>(null);
+
+	// The page the grid shows, for the row drawer: the rows as fetched, and
+	// the copies the grid was handed (Tabulator writes into those).
+	const pageRef = useRef<{ rows: Record<string, unknown>[]; gridRows: Record<string, unknown>[]; offset: number }>({ rows: [], gridRows: [], offset: 0 });
+	const [openRow, setOpenRow] = useState<OpenRow | null>(null);
 
 	// Stale-response guard. Two page requests can be in flight (a fast typist
 	// on the search box, a double page click), and the grid applies whichever
@@ -133,35 +213,63 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 	const [generation] = useState(createGeneration);
 	useEffect(() => () => generation.invalidate(), [generation]);
 
+	// The row drawer's foreign-key lookups have a ticket sequence of their own:
+	// opening another key expires the lookup before it, and a page request's
+	// ticket never expires a lookup (nor the other way round).
+	const [lookupGeneration] = useState(createGeneration);
+	useEffect(() => () => lookupGeneration.invalidate(), [lookupGeneration]);
+
 	// The table's reflected schema drives columns, search targets, and the
 	// default sort (primary key).
 	const tableDef = snapshot.schema?.tables?.[table] ?? null;
 	const dialect = snapshot.dialect;
 
+	const graph = useMemo(() => buildRelationGraph(snapshot.schema), [snapshot.schema]);
+
 	// Grid columns straight from the reflected schema.
 	const columns = useMemo<GridColumnDefinition[]>(() => {
 		if (!tableDef) return [];
 		const pk = new Set(tableDef.primary_key ?? []);
-		return tableDef.columns.map((col) => ({
-			title: col.column,
-			field: col.column,
-			rrType: /int|dec|num|float|double/i.test(col.type) ? 'number' : 'string',
-			rrDefault: true,
-			rrDescription: `${col.type}${pk.has(col.column) ? ' - primary key' : ''}`,
-			headerSort: true,
-			formatter: (cell: GridCellComponent) => dataCellEl(cell.getValue()),
-		} satisfies GridColumnDefinition));
-	}, [tableDef]);
+		return tableDef.columns.map((col) => {
+			const fk = fkMarker(graph, table, col.column);
+			return {
+				title: col.column,
+				field: col.column,
+				rrType: /int|dec|num|float|double/i.test(col.type) ? 'number' : 'string',
+				rrDefault: true,
+				rrDescription: `${col.type}${pk.has(col.column) ? ' - primary key' : ''}${fk ? ` ${fk}` : ''}`,
+				headerSort: true,
+				formatter: (cell: GridCellComponent) => dataCellEl(cell.getValue()),
+			} satisfies GridColumnDefinition;
+		});
+	}, [tableDef, graph, table]);
 
 	/**
-	 * REMOTE page fetcher: SELECT + COUNT per request through the session,
-	 * with every filter and search value bound as a `$n` parameter.
+	 * Run a bound SELECT for the row drawer's foreign-key links, on the
+	 * lookups' own ticket sequence.
+	 *
+	 * @param sql - The statement.
+	 * @param params - Its bind values.
+	 * @returns The rows.
+	 */
+	const lookup = useCallback(async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
+		const ticket = lookupGeneration.next();
+		const result = await env.getSession(endpoint).execute(sql, { params, idempotent: true, generation: ticket });
+		return result.rows;
+	}, [env, endpoint, lookupGeneration]);
+
+	/**
+	 * REMOTE page fetcher: the page SELECT, plus whatever the count planner says
+	 * the total needs (nothing for another page of a counted filter, the
+	 * catalog estimate for a big unfiltered table, one extra row for a big
+	 * filtered one, an exact COUNT otherwise). Every filter, chip and search
+	 * value is bound as a `$n` parameter.
 	 *
 	 * @param req - The grid's page request.
 	 * @returns The page rows and the matching total.
 	 */
 	const fetchPage = useCallback((req: IDataGridPageRequest): Promise<IDataGridPage<Record<string, unknown>>> => {
-		setGridSorted(req.sort.length > 0);
+		setGridSort(req.sort.map((s) => ({ field: s.field, dir: s.dir })));
 		const seq = ++seqRef.current;
 		// The banner describes ONE request. A new search, sort or page is a
 		// different question, so the previous answer's failure stops being
@@ -169,32 +277,84 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 		setLoadError(null);
 		const ticket = generation.next();
 
-		const run = (async (): Promise<IDataGridPage<Record<string, unknown>>> => {
-			if (!env.ready || !tableDef) return { rows: [], total: 0 };
+		const run = async (): Promise<{ page: IDataGridPage<Record<string, unknown>>; note: CountNote; source: Record<string, unknown>[] }> => {
+			const empty = { page: { rows: [], total: 0 }, note: null, source: [] };
+			if (!env.ready || !tableDef) return empty;
 			const session = env.getSession(endpoint);
-			const { select, count, params } = buildPageStatements(dialect, table, tableDef, req);
+			const exec = (sql: string, params: unknown[]) => session.execute(sql, { params, idempotent: true, generation: ticket });
+			if (countRef.current.table !== table) countRef.current = emptyCountCache(table);
 
-			// Page rows + total over the same WHERE (drives the pager). The two
-			// statements are independent, so one round trip instead of two.
-			// Both statements are SELECTs, so they opt in to the session's one
-			// retry, which follows only a TASK_STOPPED refusal raised before the
-			// statement reaches the node (the task may be restarting since this
-			// view last paged).
+			let stmts = buildPageStatements(dialect, table, tableDef, req, { chips: chipsRef.current });
+			const key = countKey(table, stmts);
+			const forceExact = forceExactRef.current;
+			forceExactRef.current = false;
+			const probe = estimateStatement(dialect, table);
+			const countReq = { key, filtered: stmts.where !== '', executeAllowed, forceExact, canProbe: probe !== null };
+
+			// A schema-only node runs nothing, so nothing is sent.
+			let plan = planCount(countRef.current, countReq);
+			if (plan === 'none') return empty;
+
+			// The table's size is read once from the catalog; no estimate means
+			// an exact count. A catalog the role cannot read is the same answer.
+			if (plan === 'probe' && probe) {
+				const estimate = await exec(probe.sql, probe.params).then((r) => parseEstimate(r.rows), () => null);
+				countRef.current = applyEstimate(countRef.current, estimate);
+				plan = planCount(countRef.current, countReq);
+			}
+
+			// A big filtered table is not counted: ask for one row past the page.
+			if (plan === 'overfetch') {
+				stmts = buildPageStatements(dialect, table, tableDef, req, { chips: chipsRef.current, overfetch: true });
+				const result = await exec(stmts.select, stmts.params);
+				const over = overfetchPage(result.rows, req.page, req.size);
+				return {
+					page: { rows: over.rows.map((r) => ({ ...r })), total: over.total },
+					note: over.hasMore ? { kind: 'more', estimate: countRef.current.estimate ?? null } : null,
+					source: over.rows,
+				};
+			}
+
+			// Page rows (+ the exact total over the same WHERE, when planned). The
+			// statements are independent, so one round trip. Both are SELECTs, so
+			// they opt in to the session's one retry, which follows only a
+			// TASK_STOPPED refusal raised before the statement reaches the node
+			// (the task may be restarting since this view last paged).
 			const [pageResult, countResult] = await Promise.all([
-				session.execute(select, { params, idempotent: true, generation: ticket }),
-				session.execute(count, { params, idempotent: true, generation: ticket }),
+				exec(stmts.select, stmts.params),
+				plan === 'count' ? exec(stmts.count, stmts.params) : Promise.resolve(null),
 			]);
-			const total = Number((countResult.rows[0] as { total?: unknown } | undefined)?.total ?? pageResult.rows.length);
-			return { rows: pageResult.rows, total };
-		})();
 
+			let total: number;
+			let note: CountNote = null;
+			if (plan === 'count') {
+				total = Number((countResult?.rows[0] as { total?: unknown } | undefined)?.total ?? pageResult.rows.length);
+				countRef.current = applyTotal(countRef.current, key, total, true);
+			} else if (plan === 'estimate') {
+				total = countRef.current.estimate ?? pageResult.rows.length;
+				countRef.current = applyTotal(countRef.current, key, total, false);
+				note = { kind: 'estimate', rows: total };
+			} else {
+				// Another page of a filter already counted.
+				total = countRef.current.total ?? pageResult.rows.length;
+				if (!countRef.current.exact) note = { kind: 'estimate', rows: total };
+			}
+			// The grid is handed copies: Tabulator writes a key into each row
+			// object for every column it renders, so a row it has seen is not
+			// a record of the result's columns.
+			return { page: { rows: pageResult.rows.map((r) => ({ ...r })), total }, note, source: pageResult.rows };
+		};
+
+		const attempt = run();
 		// `newest` is assigned BEFORE any await settles, so a superseded
 		// request always finds the newer chain here — which in turn resolves
 		// to the newest of all (each link applies the same rule).
-		const chain = run.then(
-			(page) => {
+		const chain = attempt.then(
+			({ page, note, source }) => {
 				if (seq !== seqRef.current) return newestRef.current ?? page;
 				setLoadError(null);
+				setCountNote(note);
+				pageRef.current = { rows: source, gridRows: page.rows, offset: (req.page - 1) * req.size };
 				return page;
 			},
 			(err: unknown) => {
@@ -206,7 +366,41 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 		);
 		newestRef.current = chain;
 		return chain;
-	}, [env, endpoint, table, tableDef, dialect, generation]);
+	}, [env, endpoint, table, tableDef, dialect, generation, executeAllowed]);
+
+	/**
+	 * Count the rows exactly (the user asked, after an estimate or a "more
+	 * rows" page) and show the current page again with the exact total.
+	 */
+	const countExactly = useCallback((): void => {
+		forceExactRef.current = true;
+		gridRef.current?.refetch();
+	}, []);
+
+	/**
+	 * Open the row drawer on a clicked row. The grid reports its own row
+	 * object; the drawer reads the pristine copy of the same position.
+	 *
+	 * @param row - The row the grid reports.
+	 */
+	const handleRowClick = useCallback((row: Record<string, unknown>): void => {
+		const { rows, gridRows, offset } = pageRef.current;
+		const index = gridRows.indexOf(row);
+		if (index >= 0 && rows[index]) setOpenRow({ rows, index, offset });
+		else setOpenRow({ rows: [row], index: 0, offset });
+	}, []);
+
+	/**
+	 * Mirror a removed sort chip onto the grid's sorters; the grid re-requests.
+	 *
+	 * @param next - The sorters that remain.
+	 */
+	const handleSortChange = useCallback((next: SortChip[]): void => {
+		const grid = gridRef.current?.table;
+		if (!grid) return;
+		if (next.length === 0) grid.clearSort();
+		else grid.setSort(next.map((s) => ({ column: s.field, dir: s.dir })));
+	}, []);
 
 	/**
 	 * Surface a page-load failure (the grid itself only shows a transient
@@ -248,7 +442,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 	// ORDER BY at all, and SQL does not promise a stable row order between
 	// calls — rows can repeat or vanish across pages. Say so rather than let
 	// the pager look authoritative.
-	const unordered = (tableDef.primary_key ?? []).length === 0 && !gridSorted;
+	const unordered = (tableDef.primary_key ?? []).length === 0 && gridSort.length === 0;
 
 	return (
 		<div style={styles.root}>
@@ -267,12 +461,31 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 				{unordered && (
 					<div style={styles.note}>No primary key: page order is not guaranteed by the database</div>
 				)}
+				<FilterChips
+					columns={tableDef.columns.map((c) => c.column)}
+					chips={chips}
+					onChipsChange={setChips}
+					sort={gridSort}
+					onSortChange={handleSortChange}
+				/>
+				{countNote && (
+					<div style={styles.countNote}>
+						<span>
+							{countNote.kind === 'estimate'
+								? `About ${countNote.rows.toLocaleString()} rows (estimate)`
+								: 'More rows match. They are not counted because the table is large.'}
+						</span>
+						<Button variant="ghost" small onClick={countExactly}>Count exactly</Button>
+					</div>
+				)}
 				<Card noBodyPadding fill>
 					<DataGrid<Record<string, unknown>>
+						ref={gridRef}
 						title={table}
 						columns={columns}
 						fetchPage={env.ready ? fetchPage : undefined}
 						remoteSort
+						onRowClick={handleRowClick}
 						onLoadError={handleLoadError}
 						tableId={`sql-data-${endpoint.provider}`}
 						persistence={env.gridPersistence}
@@ -282,6 +495,20 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 					/>
 				</Card>
 			</div>
+
+			<RecordDrawer
+				dialect={dialect}
+				graph={graph}
+				tables={snapshot.schema?.tables ?? {}}
+				table={table}
+				rows={openRow?.rows ?? []}
+				index={openRow?.index ?? null}
+				offset={openRow?.offset ?? 0}
+				onIndexChange={(index) => setOpenRow((current) => (current ? { ...current, index } : current))}
+				onClose={() => setOpenRow(null)}
+				lookup={env.ready && executeAllowed ? lookup : null}
+				onShowRows={onOpenTable}
+			/>
 		</div>
 	);
 };

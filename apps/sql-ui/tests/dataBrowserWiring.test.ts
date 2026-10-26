@@ -1,0 +1,112 @@
+// =============================================================================
+// MIT License
+// Copyright (c) 2026 Aparavi Software AG
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// =============================================================================
+// DATA BROWSER WIRING — what the view hands the grid, the drawer and the planner
+// =============================================================================
+//
+// The view has no DOM harness here, so this checks the source, as
+// queryViewWiring.test.ts does. The pure parts (statements, the count planner,
+// the drawer's model) have their own tests; this pins how the view uses them.
+// =============================================================================
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/**
+ * Read one source file of the app.
+ *
+ * @param parts - Path segments under `src`.
+ * @returns The file's text.
+ */
+function read(...parts: string[]): string {
+	return fs.readFileSync(path.resolve(__dirname, '..', 'src', ...parts), 'utf8');
+}
+
+const view = read('views', 'TableDataView.tsx');
+const drawer = read('components', 'RecordDrawer.tsx');
+const record = read('sql', 'record.ts');
+
+describe('TableDataView wiring', () => {
+	it('opens the record drawer on a row click', () => {
+		assert.match(view, /onRowClick=\{handleRowClick\}/);
+		assert.match(view, /<RecordDrawer/);
+	});
+
+	it('hands the grid copies of the rows, never the rows it keeps', () => {
+		// Tabulator writes an undefined key into each row object per rendered column.
+		assert.match(view, /pageResult\.rows\.map\(\(r\) => \(\{ \.\.\.r \}\)\)/);
+		assert.match(view, /over\.rows\.map\(\(r\) => \(\{ \.\.\.r \}\)\)/);
+	});
+
+	it('plans the total before sending any count or estimate, and sends nothing for "none"', () => {
+		assert.match(view, /planCount\(countRef\.current, countReq\)/);
+		assert.match(view, /if \(plan === 'none'\) return empty;/);
+		// The exact COUNT only runs when the plan says so.
+		assert.match(view, /plan === 'count' \? exec\(stmts\.count, stmts\.params\)/);
+		assert.match(view, /executeAllowed,/);
+	});
+
+	it('asks the grid for page 1 again when a chip changes', () => {
+		assert.match(view, /gridRef\.current\?\.refetch\(\{ resetPage: true \}\)/);
+		assert.match(view, /\}, \[chips\]\);/);
+	});
+
+	it('feeds the chips into every page statement', () => {
+		const calls = view.match(/buildPageStatements\([^)]*\)/g) ?? [];
+		assert.ok(calls.length >= 2);
+		for (const call of calls) assert.match(call, /chips: chipsRef\.current/);
+	});
+
+	it('marks foreign-key columns in the header descriptions', () => {
+		assert.match(view, /fkMarker\(graph, table, col\.column\)/);
+	});
+
+	it('does not call the page-navigation hook (the standalone routes render this view)', () => {
+		assert.ok(!/useSqlPageNav/.test(view));
+		assert.ok(!/useSqlPageNav/.test(drawer));
+	});
+
+	it('mirrors the sort chips onto the grid sorters', () => {
+		assert.match(view, /grid\.clearSort\(\)/);
+		assert.match(view, /grid\.setSort\(/);
+	});
+});
+
+describe('RecordDrawer', () => {
+	it('never derives its fields from the keys of a row', () => {
+		for (const [name, text] of [['RecordDrawer', drawer], ['record', record]] as const) {
+			assert.ok(!/Object\.(keys|entries)\(/.test(text), `${name} lists a row's own keys`);
+		}
+	});
+
+	it('runs the foreign-key lookup through the statement the model builds', () => {
+		assert.match(drawer, /referencedRowStatement\(dialect, edge, row\)/);
+		assert.match(drawer, /lookup\(stmt\.sql, stmt\.params\)/);
+	});
+
+	it('says so when the lookup finds no row', () => {
+		assert.match(drawer, /No row in \$\{edge\.refTable\} where/);
+	});
+});
