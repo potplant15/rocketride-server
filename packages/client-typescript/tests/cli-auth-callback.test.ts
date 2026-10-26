@@ -23,50 +23,80 @@
  */
 
 /**
- * The page the browser lands on after `rocketride login` (#2850): success
- * closes the tab or continues to the web app — never a dead end the user
- * must close — and failure explains itself without redirecting.
+ * The page the browser lands on after `rocketride login` (#2850): branded
+ * like the RocketRide landing page, themed with the web app's palettes,
+ * tries to close itself on success (no redirect), and explains a failure.
  */
 
 import { describe, expect, it } from '@jest/globals';
-import { renderCallbackPage } from '../src/cli/commands/auth';
+import * as fs from 'fs';
+import * as path from 'path';
+import { CALLBACK_PALETTES, renderCallbackPage } from '../src/cli/commands/auth';
 
-/** The inline script's body. */
+/** The inline script's body ('' when the page has none). */
 const scriptOf = (page: string): string => /<script>([\s\S]*)<\/script>/.exec(page)?.[1] ?? '';
 
+/** A shell theme's tokens (packages/shell/public/themes/<id>.json). */
+const theme = (id: string): Record<string, string> => JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'shell', 'public', 'themes', `${id}.json`), 'utf8'));
+
 describe('renderCallbackPage', () => {
-	it('closes the tab, else continues to the web app, with a visible link', () => {
+	it('success: branded, themed, tries to close, links the web app, never redirects', () => {
 		const page = renderCallbackPage({ ok: true, webUrl: 'https://api.rocketride.ai/' });
 
-		expect(page).toContain('Signed in to RocketRide.');
-		expect(page).toContain('<meta name="color-scheme" content="light dark">');
-		expect(scriptOf(page)).toBe('window.close();setTimeout(function(){location.replace("https://api.rocketride.ai/");},300);');
-		expect(page).toContain('<a href="https://api.rocketride.ai/">Continue to RocketRide</a>');
-		expect(page).not.toContain('You can close this window');
+		expect(page).toContain("<h1>You're signed in</h1>");
+		expect(page).toContain('<span>RocketRide</span>');
+		expect(page).toContain('fill="#F93822"');
+		expect(page).toContain('@media (prefers-color-scheme:dark)');
+		expect(scriptOf(page)).toBe('window.close();');
+		expect(page).not.toMatch(/location\.(replace|assign|href)/);
+		expect(page).toContain('<a class="btn" href="https://api.rocketride.ai/">Open RocketRide</a>');
 	});
 
-	it('keeps a hostile URL inside the JSON string and out of the markup', () => {
-		const page = renderCallbackPage({ ok: true, webUrl: 'https://evil.test/"</script><script>alert(1)</script>' });
-
-		expect(page.match(/<\/script>/g)).toHaveLength(1);
-		expect(page).not.toContain('<script>alert(1)');
-		expect(scriptOf(page)).not.toMatch(/</);
-	});
-
-	it('never redirects to a non-http(s) target', () => {
+	it('success without a usable web URL drops the button, never a non-http link', () => {
 		for (const webUrl of ['javascript:alert(1)', 'file:///etc/passwd', 'not a url', undefined]) {
 			const page = renderCallbackPage({ ok: true, webUrl });
 
+			expect(page).not.toContain('class="btn"');
+			expect(page).not.toContain('javascript:');
 			expect(scriptOf(page)).toBe('window.close();');
-			expect(page).toContain('You can return to the terminal.');
 		}
 	});
 
-	it('shows an escaped failure reason with no close or redirect', () => {
+	it('keeps a hostile URL out of the markup', () => {
+		const page = renderCallbackPage({ ok: true, webUrl: 'https://evil.test/"><script>alert(1)</script>' });
+
+		expect(page.match(/<script>/g)).toHaveLength(1);
+		expect(page).not.toContain('<script>alert(1)');
+	});
+
+	it('failure: escaped reason, branded, no close attempt', () => {
 		const page = renderCallbackPage({ ok: false, error: 'access_denied <b>by user</b>' });
 
-		expect(page).toContain('RocketRide sign-in failed.');
+		expect(page).toContain('<h1>Sign-in failed</h1>');
 		expect(page).toContain('access_denied &lt;b&gt;by user&lt;/b&gt;');
+		expect(page).toContain('<span>RocketRide</span>');
 		expect(page).not.toContain('<script>');
+	});
+});
+
+describe('CALLBACK_PALETTES', () => {
+	it.each([
+		['dark', 'rocketride'],
+		['light', 'rocketride-light'],
+	] as const)('%s matches the web app theme %s', (mode, id) => {
+		const tokens = theme(id);
+		const palette = CALLBACK_PALETTES[mode];
+
+		expect(palette).toEqual({
+			bg: tokens['--rr-bg-default'],
+			paper: tokens['--rr-bg-paper'],
+			text: tokens['--rr-text-primary'],
+			muted: tokens['--rr-text-secondary'],
+			border: tokens['--rr-border'],
+			buttonBg: tokens['--rr-bg-button'],
+			buttonFg: tokens['--rr-fg-button'],
+			success: tokens['--rr-color-success'],
+			error: tokens['--rr-color-error'],
+		});
 	});
 });
