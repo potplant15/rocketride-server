@@ -46,6 +46,7 @@ import InsightsPanel from './InsightsPanel';
 import { DiagramView } from './DiagramView';
 import { QueryView } from './QueryView';
 import { TableDataView } from './TableDataView';
+import type { FilterChip } from '../sql/filters';
 import { TableDesignView } from './TableDesignView';
 
 // =============================================================================
@@ -218,7 +219,7 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 	// On-demand page seeds. Data / design are PAGES of this document (one
 	// surface each, no inner documents); a new seed remounts the page's
 	// content via the seq key, replacing what it showed.
-	const [dataSeed, setDataSeed] = useState<{ table: string; seq: number } | null>(null);
+	const [dataSeed, setDataSeed] = useState<{ table: string; chips: FilterChip[]; seq: number } | null>(null);
 	const [designSeed, setDesignSeed] = useState<{ table: string | null; seq: number } | null>(null);
 	const seedSeqRef = useRef(0);
 
@@ -226,8 +227,8 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 	// (in place of opening inner documents).
 	const pageNav = useMemo<SqlPageNav>(() => ({
 		openQuery: addQuery,
-		openTableData: (table: string) => {
-			setDataSeed({ table, seq: ++seedSeqRef.current });
+		openTableData: (table: string, chips?: FilterChip[]) => {
+			setDataSeed({ table, chips: chips ?? [], seq: ++seedSeqRef.current });
 			selectPage('data');
 		},
 		openDesign: (table: string | null) => {
@@ -438,7 +439,7 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 									),
 								},
 							} : {}),
-							...(dataSeed ? { data: { content: <TableDataView key={dataSeed.seq} endpoint={endpoint} table={dataSeed.table} /> } } : {}),
+							...(dataSeed ? { data: { content: <TableDataView key={dataSeed.seq} endpoint={endpoint} table={dataSeed.table} presetFilters={dataSeed.chips} onOpenTable={pageNav.openTableData} /> } } : {}),
 							...(designSeed ? { design: { content: <TableDesignView key={designSeed.seq} endpoint={endpoint} table={designSeed.table} /> } } : {}),
 						}}
 					/>

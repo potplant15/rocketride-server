@@ -65,7 +65,7 @@ describe('TableDataView wiring', () => {
 		assert.match(view, /if \(plan === 'none'\) return empty;/);
 		// The exact COUNT only runs when the plan says so.
 		assert.match(view, /plan === 'count' \? exec\(stmts\.count, stmts\.params\)/);
-		assert.match(view, /executeAllowed,/);
+		assert.match(view, /executeAllowed: sendAllowed,/);
 	});
 
 	it('does not cache a probe that was only superseded, and keeps "Count exactly" until a count lands', () => {
@@ -106,6 +106,25 @@ describe('TableDataView wiring', () => {
 	it('mirrors the sort chips onto the grid sorters', () => {
 		assert.match(view, /grid\.clearSort\(\)/);
 		assert.match(view, /grid\.setSort\(/);
+	});
+});
+
+describe('Data page wiring in ConnectionView', () => {
+	const connection = read('views', 'ConnectionView.tsx');
+	const nav = read('pageNav.tsx');
+
+	it('carries preset chips in the data seed and hands them to the page', () => {
+		assert.match(nav, /openTableData\(table: string, chips\?: FilterChip\[\]\): void;/);
+		assert.match(connection, /openTableData: \(table: string, chips\?: FilterChip\[\]\) => \{\s*setDataSeed\(\{ table, chips: chips \?\? \[\], seq: \+\+seedSeqRef\.current \}\);/);
+		assert.match(connection, /<TableDataView key=\{dataSeed\.seq\} endpoint=\{endpoint\} table=\{dataSeed\.table\} presetFilters=\{dataSeed\.chips\} onOpenTable=\{pageNav\.openTableData\} \/>/);
+	});
+
+	it('stops statements once the node is known to be schema only, from the one execute state', () => {
+		// The view reads the same per-connection state the framing does, so there is
+		// one schema-only message and one source for "may I send".
+		assert.match(view, /const sendAllowed = executeAllowed && executeState !== 'off';/);
+		assert.match(view, /executeAllowed: sendAllowed, forceExact/);
+		assert.match(view, /lookup=\{env\.ready && sendAllowed \? lookup : null\}/);
 	});
 });
 

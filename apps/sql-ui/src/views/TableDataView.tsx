@@ -164,6 +164,8 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 	const executeState = useExecuteState(endpoint.key);
+	// The prop and the per-connection state both have to allow statements (unknown counts as allowed).
+	const sendAllowed = executeAllowed && executeState !== 'off';
 
 	// Last page-load failure, surfaced as a banner. The grid keeps showing the
 	// previous rows on failure, so without this the error is invisible.
@@ -310,7 +312,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			// total is then out of date and must not land (see applyTotalIfCurrent).
 			const epoch = countRef.current.epoch;
 			const probe = estimateStatement(dialect, table);
-			const countReq = { key, filtered: stmts.where !== '', executeAllowed, forceExact, canProbe: probe !== null };
+			const countReq = { key, filtered: stmts.where !== '', executeAllowed: sendAllowed, forceExact, canProbe: probe !== null };
 
 			// A schema-only node runs nothing, so nothing is sent.
 			let plan = planCount(countRef.current, countReq);
@@ -397,7 +399,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 		);
 		newestRef.current = chain;
 		return chain;
-	}, [env, endpoint, table, tableDef, dialect, generation, executeAllowed]);
+	}, [env, endpoint, table, tableDef, dialect, generation, sendAllowed]);
 
 	/**
 	 * Count the rows exactly (the user asked, after an estimate or a "more
@@ -555,7 +557,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 				offset={openRow?.offset ?? 0}
 				onIndexChange={(index) => setOpenRow((current) => (current ? { ...current, index } : current))}
 				onClose={() => setOpenRow(null)}
-				lookup={env.ready && executeAllowed ? lookup : null}
+				lookup={env.ready && sendAllowed ? lookup : null}
 				onShowRows={onOpenTable}
 			/>
 		</div>
