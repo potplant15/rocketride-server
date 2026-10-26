@@ -85,7 +85,7 @@ import {
 	maxRowsText,
 } from '../sql/failure';
 import type { FailureNotice } from '../sql/failure';
-import { inferColumnTypes } from '../sql/resultTypes';
+import { MERGED_COLUMNS_NOTE, inferColumnTypes, mayMergeColumns, precisionNoteApplies } from '../sql/resultTypes';
 import { browserCopy, browserDownload, deliverExport, exportFileName, exportResult } from '../sql/export';
 import type { ExportFormat } from '../sql/export';
 import { buildCompletionModel } from '../sql/completion';
@@ -730,8 +730,11 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		});
 	}, [rows, resultCols, columnTypes]);
 
-	/** True when at least one shown column is numeric (float-precision note). */
-	const hasNumeric = useMemo(() => Object.values(columnTypes).some((info) => info.rrType === 'number'), [columnTypes]);
+	// The precision note, only when a value could have lost digits on the way
+	// (a DECIMAL/NUMERIC column, a long float, an integer beyond 2^53).
+	const showPrecisionNote = useMemo(() => precisionNoteApplies(resultCols, rows, columnTypes), [resultCols, rows, columnTypes]);
+	// Rows arrive as objects, so two columns with one name merge into one.
+	const showMergedNote = useMemo(() => displayed !== null && rows.length > 0 && mayMergeColumns(displayed.sql, dialect), [displayed, rows.length, dialect]);
 
 	/** The result meta line's parts. */
 	const meta = useMemo((): { text: string; limitReached: boolean } => {
@@ -956,9 +959,10 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 							}
 						/>
 					)}
-					{hasNumeric && rows.length > 0 && (
+					{showPrecisionNote && (
 						<div style={styles.meta}>Decimal values arrive as floating point; integers above 2^53 lose precision.</div>
 					)}
+					{showMergedNote && <div style={styles.meta}>{MERGED_COLUMNS_NOTE}</div>}
 				</div>
 			</div>
 
