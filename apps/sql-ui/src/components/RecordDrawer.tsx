@@ -43,10 +43,10 @@ import { announce } from '../a11y/announce';
 import type { SqlDialect, SqlSchemaTable } from '../connect';
 import type { RelationEdge, RelationGraph } from '../schema/relations';
 import type { FilterChip } from '../sql/filters';
-import { childRowsPreset, hasKeyValues, recordFields, recordJson, referencedRowStatement, referencingEdges } from '../sql/record';
+import { childRowsPreset, fallbackDef, hasKeyValues, recordFields, recordJson, referencedRowStatement, referencingEdges } from '../sql/record';
 
 /** What a row of SQL values loses on the way to the browser. */
-const NOTE = 'Values as received: decimals arrive as floating point; integers above 2^53 may be rounded.';
+const NOTE = 'Very large numbers and decimals may be shown rounded.';
 
 /** Props for the {@link RecordDrawer} component. */
 export interface RecordDrawerProps {
@@ -80,6 +80,8 @@ interface Followed {
 	table: string;
 	/** The row. */
 	row: Record<string, unknown>;
+	/** Its columns: the schema's, or the row's own when the schema lacks the table. */
+	def: SqlSchemaTable;
 	/** Where it was reached from, e.g. `orders.customer_id`. */
 	from: string;
 	/** Set when the lookup matched more than one row. */
@@ -297,7 +299,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 				setStatus(null);
 				setFollowed((current) => [
 					...current.slice(0, depth),
-					{ table: edge.refTable, row: first, from: `${fromTable}.${edge.columns.join(', ')}`, ambiguous: found.length > 1 },
+					{ table: edge.refTable, row: first, def: tables[edge.refTable] ?? fallbackDef(first), from: `${fromTable}.${edge.columns.join(', ')}`, ambiguous: found.length > 1 },
 				]);
 			},
 			(err: unknown) => {
@@ -305,7 +307,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 				setStatus({ depth, kind: 'error', text: `Could not open the ${edge.refTable} row: ${err instanceof Error ? err.message : String(err)}` });
 			},
 		);
-	}, [dialect, lookup]);
+	}, [dialect, lookup, tables]);
 
 	const row = index === null ? undefined : rows[index];
 	const def = tables[table];
@@ -338,12 +340,10 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 				status={statusFor(0)}
 			/>
 			{followed.map((level, depth) => {
-				const levelDef = tables[level.table];
-				if (!levelDef) return null;
 				return (
 					<Level
 						key={`${level.table}-${depth}`}
-						def={levelDef}
+						def={level.def}
 						table={level.table}
 						row={level.row}
 						title={level.table}

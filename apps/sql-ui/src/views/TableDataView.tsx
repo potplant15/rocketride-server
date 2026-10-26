@@ -36,12 +36,12 @@ import { useSchema } from '../schema/schemaStore';
 import { useSqlEnv } from '../sqlEnv';
 import { buildPageStatements, countKey } from '../sql/paging';
 import {
-	applyEstimate,
+	applyProbeResult,
 	applyTotal,
 	emptyCountCache,
 	estimateStatement,
+	invalidateTotals,
 	overfetchPage,
-	parseEstimate,
 	planCount,
 } from '../sql/estimate';
 import type { CountCache } from '../sql/estimate';
@@ -69,6 +69,12 @@ export interface TableDataViewProps {
 	executeAllowed?: boolean;
 	/** Filter chips the page opens with (a foreign key's "Show rows"). */
 	presetFilters?: readonly FilterChip[];
+	/**
+	 * Bump this after a write to the table (a staged apply, say): the cached
+	 * totals are forgotten and the current page is requested again, so the
+	 * pager does not keep an old count. The catalog estimate is kept.
+	 */
+	countEpoch?: number;
 	/** Opens another table's Data page with chips preset; absent = no "Show rows". */
 	onOpenTable?: (table: string, chips: FilterChip[]) => void;
 }
@@ -153,7 +159,7 @@ function dataCellEl(value: unknown): HTMLElement {
  * ORDER BY from the grid's sorters, WHERE from search + column filters) and
  * executes them through the connection's session.
  */
-export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, executeAllowed = true, presetFilters, onOpenTable }) => {
+export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, executeAllowed = true, presetFilters, countEpoch, onOpenTable }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 
@@ -192,6 +198,15 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 	const countRef = useRef<CountCache>(emptyCountCache(table));
 	const forceExactRef = useRef(false);
 	const [countNote, setCountNote] = useState<CountNote>(null);
+
+	// A write changed the table: forget the totals and ask for the page again.
+	const epochSeen = useRef(countEpoch);
+	useEffect(() => {
+		if (epochSeen.current === countEpoch) return;
+		epochSeen.current = countEpoch;
+		countRef.current = invalidateTotals(countRef.current);
+		gridRef.current?.refetch();
+	}, [countEpoch]);
 
 	// The page the grid shows, for the row drawer: the rows as fetched, and
 	// the copies the grid was handed (Tabulator writes into those).
@@ -286,8 +301,9 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 
 			let stmts = buildPageStatements(dialect, table, tableDef, req, { chips: chipsRef.current });
 			const key = countKey(table, stmts);
+			// Read, not cleared: "Count exactly" survives a request that is
+			// replaced or fails, and is cleared where the exact total lands.
 			const forceExact = forceExactRef.current;
-			forceExactRef.current = false;
 			const probe = estimateStatement(dialect, table);
 			const countReq = { key, filtered: stmts.where !== '', executeAllowed, forceExact, canProbe: probe !== null };
 
@@ -298,8 +314,17 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			// The table's size is read once from the catalog; no estimate means
 			// an exact count. A catalog the role cannot read is the same answer.
 			if (plan === 'probe' && probe) {
-				const estimate = await exec(probe.sql, probe.params).then((r) => parseEstimate(r.rows), () => null);
-				countRef.current = applyEstimate(countRef.current, estimate);
+				const settled = applyProbeResult(
+					countRef.current,
+					await exec(probe.sql, probe.params).then(
+						(r) => ({ rows: r.rows }),
+						// A probe replaced by a newer request says nothing about the
+						// table: do not cache "no estimate" for it, just stop.
+						() => ({ error: true as const, superseded: !ticket.isCurrent() }),
+					),
+				);
+				if (!settled) throw new Error('superseded');
+				countRef.current = settled;
 				plan = planCount(countRef.current, countReq);
 			}
 
@@ -329,6 +354,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			let note: CountNote = null;
 			if (plan === 'count') {
 				total = Number((countResult?.rows[0] as { total?: unknown } | undefined)?.total ?? pageResult.rows.length);
+				forceExactRef.current = false;
 				countRef.current = applyTotal(countRef.current, key, total, true);
 			} else if (plan === 'estimate') {
 				total = countRef.current.estimate ?? pageResult.rows.length;

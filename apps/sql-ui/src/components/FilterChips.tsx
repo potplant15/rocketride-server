@@ -201,7 +201,7 @@ export const FilterChips: React.FC<FilterChipsProps> = ({ columns, chips, onChip
 					<Button variant="primary" small disabled={!isCompleteChip(draft)} onClick={add}>Add filter</Button>
 					<Button variant="ghost" small onClick={reset}>Cancel</Button>
 					<div style={styles.hint}>
-						Values are sent as bound parameters, never pasted into the SQL. Text matches ignore case.
+						Text matches ignore upper and lower case.
 					</div>
 				</div>
 			)}

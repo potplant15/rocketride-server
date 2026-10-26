@@ -135,8 +135,10 @@ as a wildcard. The header filters match the same way.
 
 **+ Filter** adds a chip above the grid: a column, an operator (equals, not
 equals, contains, starts with, `>`, `<`, `≥`, `≤`, is null, is not null) and a
-value. Values are always bound parameters, and `is null` and `is not null`
-bind nothing. Chips, header filters and the search box all apply together
+value. What you type is sent to the database separately from the statement,
+never pasted into it, and `is null` and `is not null` send no value. On a
+number or yes/no column the value is sent as a number or a boolean, so `5`
+compares as 5. Chips, header filters and the search box all apply together
 (AND). The grid's sorters show as chips too; removing one clears that sort.
 Any change goes back to page 1.
 
@@ -167,12 +169,12 @@ Click a row to open it. The drawer lists every column in the table's own
 order, with its type, a `PK` mark where it applies, and a copy button for each
 value and for the whole row as JSON. Prev and Next move through the page; the
 title reads `Row N` counting from the first row of the table. A value is shown
-as the browser received it (see [Results](#results)): decimals arrive as
-floating point and integers above 2^53 may be rounded.
+as the browser received it (see [Results](#results)): very large numbers and
+decimals may be shown rounded.
 
 A value that belongs to a foreign key is a link. It runs `SELECT * FROM
-<referenced> WHERE <key> = $1 LIMIT 2` (every column of a composite key,
-bound) and opens that row in a drawer on top, with a back arrow and a Back
+<referenced> WHERE <key> = $1 LIMIT 2` (every column of a composite key, with
+the values sent separately) and opens that row in a drawer on top, with a back arrow and a Back
 button. If nothing matches, the drawer says so; if more than one row matches,
 it shows the first and says that too. A NULL key is not a link.
 

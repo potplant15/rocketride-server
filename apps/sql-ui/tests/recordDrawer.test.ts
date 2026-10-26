@@ -36,6 +36,7 @@ import type { SqlSchemaResponse } from '../src/connect';
 import { buildRelationGraph } from '../src/schema/relations';
 import {
 	childRowsPreset,
+	fallbackDef,
 	recordFields,
 	recordJson,
 	referencedRowStatement,
@@ -169,5 +170,13 @@ describe('rows that reference this one', () => {
 	it('presets nothing when a key value is NULL', () => {
 		const edge = GRAPH.edges.find((e) => e.table === 'orders')!;
 		assert.equal(childRowsPreset(edge, { id: null }), null);
+	});
+});
+
+describe('fallbackDef', () => {
+	it('lists the columns of a freshly looked-up row when the schema has no entry for its table', () => {
+		const def = fallbackDef({ id: 4, name: 'Ada' });
+		assert.deepEqual(def.columns.map((c) => c.column), ['id', 'name']);
+		assert.deepEqual(recordFields(def, { id: 4, name: 'Ada' }).map((f) => f.value), [4, 'Ada']);
 	});
 });

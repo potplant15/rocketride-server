@@ -68,6 +68,21 @@ describe('TableDataView wiring', () => {
 		assert.match(view, /executeAllowed,/);
 	});
 
+	it('does not cache a probe that was only superseded, and keeps "Count exactly" until a count lands', () => {
+		assert.match(view, /superseded: !ticket\.isCurrent\(\)/);
+		assert.match(view, /applyProbeResult\(/);
+		assert.match(view, /if \(!settled\) throw/);
+		// The flag is read without clearing it, and cleared where the exact total lands.
+		assert.match(view, /const forceExact = forceExactRef\.current;\n/);
+		assert.match(view, /forceExactRef\.current = false;\n\t\t\t\tcountRef\.current = applyTotal\(countRef\.current, key, total, true\)/);
+	});
+
+	it('forgets cached totals when the countEpoch prop changes', () => {
+		assert.match(view, /countEpoch\?: number/);
+		assert.match(view, /invalidateTotals\(countRef\.current\)/);
+		assert.match(view, /\}, \[countEpoch\]\);/);
+	});
+
 	it('asks the grid for page 1 again when a chip changes', () => {
 		assert.match(view, /gridRef\.current\?\.refetch\(\{ resetPage: true \}\)/);
 		assert.match(view, /\}, \[chips\]\);/);
@@ -95,10 +110,13 @@ describe('TableDataView wiring', () => {
 });
 
 describe('RecordDrawer', () => {
-	it('never derives its fields from the keys of a row', () => {
-		for (const [name, text] of [['RecordDrawer', drawer], ['record', record]] as const) {
-			assert.ok(!/Object\.(keys|entries)\(/.test(text), `${name} lists a row's own keys`);
-		}
+	it('never derives its fields from the keys of a row the grid has seen', () => {
+		assert.ok(!/Object\.(keys|entries)\(/.test(drawer), 'the drawer lists a row\'s own keys');
+		// The one place that lists a row's keys is the fallback for a table the
+		// schema lacks, and it takes a row fresh from a lookup.
+		const body = /export function recordFields\([\s\S]*?\n\}/.exec(record);
+		assert.ok(body && !/Object\.(keys|entries)\(/.test(body[0]));
+		assert.match(drawer, /tables\[edge\.refTable\] \?\? fallbackDef\(first\)/);
 	});
 
 	it('runs the foreign-key lookup through the statement the model builds', () => {
