@@ -62,13 +62,24 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
+ * Whether the element sits inside an open dialog, which owns the keyboard.
+ *
+ * @param target - The event target.
+ * @returns True inside a dialog.
+ */
+function isInsideDialog(target: EventTarget | null): boolean {
+	const el = target as Partial<HTMLElement> | null;
+	return typeof el?.closest === 'function' && el.closest('[role="dialog"], [role="alertdialog"], [aria-modal="true"]') !== null;
+}
+
+/**
  * Whether this key press should open the shortcut sheet: a bare `?` that is
- * not typed into a text field or the editor.
+ * not typed into a text field or the editor, and not while a dialog is open.
  *
  * @param event - The keydown event.
  * @returns True when the sheet should open.
  */
 export function opensShortcutSheet(event: ShortcutKeyEvent): boolean {
 	if (event.key !== '?' || event.ctrlKey || event.metaKey || event.altKey) return false;
-	return !isEditableTarget(event.target);
+	return !isEditableTarget(event.target) && !isInsideDialog(event.target);
 }

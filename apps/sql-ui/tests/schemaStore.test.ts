@@ -38,7 +38,7 @@ import assert from 'node:assert/strict';
 import type { IExplorerClient, IExplorerEndpoint } from 'shared/explorer/types';
 import type { SqlSession } from '../src/connect';
 import { createSqlSession } from '../src/connect/session';
-import { clearSchemas, executeStateFromFailure, noteExecuteFailure, noteExecuteSuccess, probeExecute, refreshSchema, schemaSnapshot } from '../src/schema/schemaStore';
+import { clearSchemas, executeStateFromFailure, schemaGeneration, noteExecuteFailure, noteExecuteSuccess, probeExecute, refreshSchema, schemaSnapshot } from '../src/schema/schemaStore';
 import { currentRows, describeEndpoint, registerEndpoint, resetEndpoints, sqlEndpoints } from './support';
 
 // =============================================================================
@@ -272,6 +272,14 @@ describe('the execute state of a connection', () => {
 		noteExecuteFailure(describeEndpoint(endpoint).key, EXECUTE_OFF_MESSAGE);
 		await refreshSchema(sessionFor(client, endpoint));
 		assert.equal(schemaSnapshot(describeEndpoint(endpoint).key).executeState, 'off');
+	});
+});
+
+describe('schemaGeneration', () => {
+	it('moves on when the store is cleared, so a view can probe again', () => {
+		const before = schemaGeneration();
+		clearSchemas();
+		assert.equal(schemaGeneration(), before + 1);
 	});
 });
 

@@ -67,10 +67,20 @@ describe('executeGateReason', () => {
 describe('the gated button', () => {
 	const button = src('components', 'GatedButton.tsx');
 
-	it('carries aria-disabled, the reason as its description, and a disabled button inside', () => {
-		assert.match(button, /aria-disabled="true"/);
-		assert.match(button, /aria-describedby=\{reasonId\}/);
-		assert.match(button, /<Button \{\.\.\.button\} disabled title=\{gateReason\}/);
+	it('is one focusable button with aria-disabled, a description and a no-op click', () => {
+		const gated = /if \(!gateReason\) return[\s\S]*$/.exec(button)![0];
+		assert.match(gated, /<button\b/);
+		assert.match(gated, /aria-disabled="true"/);
+		assert.match(gated, /aria-describedby=\{reasonId\}/);
+		assert.match(gated, /onClick=\{\(\) => undefined\}/);
+		assert.ok(!/\sdisabled[=\s>]/.test(gated.replace(/aria-disabled/g, '')), 'a natively disabled button cannot be focused');
+		assert.ok(!/<span/.test(gated), 'no wrapper span');
+	});
+
+	it('the drawer gives its reason note a per-instance id', () => {
+		const drawer = src('components', 'TableRecordPanel.tsx');
+		assert.ok(!/GATE_NOTE_ID/.test(drawer));
+		assert.match(drawer, /const gateNoteId = useId\(\)/);
 	});
 });
 

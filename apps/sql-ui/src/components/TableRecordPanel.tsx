@@ -92,9 +92,6 @@ interface PathResult {
 /** First line of every generated preview statement. */
 const PREVIEW_HEADER = '-- Generated preview: review, then Run.';
 
-/** Id of the visible note the gated controls point at. */
-const GATE_NOTE_ID = 'sql-drawer-gate-note';
-
 /** Said when the schema declares no foreign keys at all. */
 const NO_KEYS_GENERIC = 'This schema declares no foreign keys; join paths are unavailable.';
 
@@ -276,6 +273,8 @@ export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 
 	// Primary key membership for the per-column PK badge.
 	const pkColumns = new Set(def?.primary_key ?? []);
+	// One id per drawer: stacked drawers are open at once.
+	const gateNoteId = useId();
 	// Where each foreign-key column points ("→ customers.customer_id").
 	const fkLabels = useMemo(() => fkLabelsByColumn(def), [def]);
 
@@ -417,7 +416,7 @@ export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 				<>
 					<Button variant="ghost" onClick={onClose}>Close</Button>
 					<Button variant="secondary" onClick={onDesign}>Design</Button>
-					<GatedButton variant="primary" onClick={onOpenData} gateReason={gateReason} reasonId={GATE_NOTE_ID}>Open data</GatedButton>
+					<GatedButton variant="primary" onClick={onOpenData} gateReason={gateReason} reasonId={gateNoteId}>Open data</GatedButton>
 				</>
 			}
 		>
@@ -477,14 +476,14 @@ export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 			{/* ── Query ──────────────────────────────────────────────────────── */}
 			<Section label="Query">
 				<div style={styles.actionRow}>
-					<GatedButton variant="secondary" small onClick={openTopRows} gateReason={gateReason} reasonId={GATE_NOTE_ID}>Select top 100</GatedButton>
-					<GatedButton variant="secondary" small onClick={openCount} gateReason={gateReason} reasonId={GATE_NOTE_ID}>Count rows</GatedButton>
+					<GatedButton variant="secondary" small onClick={openTopRows} gateReason={gateReason} reasonId={gateNoteId}>Select top 100</GatedButton>
+					<GatedButton variant="secondary" small onClick={openCount} gateReason={gateReason} reasonId={gateNoteId}>Count rows</GatedButton>
 					<Button variant="ghost" small onClick={() => copy(table, 'the table name')}>Copy name</Button>
 					<Button variant="ghost" small onClick={() => copy(topRowsSql, 'the SELECT statement')}>Copy SELECT</Button>
 				</div>
 				<div style={styles.snapshotNote}>Opens a new query. Nothing runs until you run it.</div>
 				{gateReason && (
-					<div id={GATE_NOTE_ID} style={styles.snapshotNote}>{`Schema only: ${SCHEMA_ONLY_REASON} Open data, Select top 100 and Count rows are off.`}</div>
+					<div id={gateNoteId} style={styles.snapshotNote}>{`Schema only: ${SCHEMA_ONLY_REASON} Open data, Select top 100 and Count rows are off.`}</div>
 				)}
 			</Section>
 

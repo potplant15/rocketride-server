@@ -69,6 +69,7 @@ const GROUPS: ShortcutGroup[] = [
 		rows: [
 			{ action: 'Show this list', keys: '?' },
 			{ action: 'Close a drawer or this list', keys: 'Esc' },
+			{ action: 'When the node is schema only, a keyboard run still tries and re-checks it', keys: 'Ctrl or Cmd + Enter' },
 		],
 	},
 ];

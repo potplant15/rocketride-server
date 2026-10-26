@@ -80,6 +80,11 @@ describe('opensShortcutSheet', () => {
 		assert.equal(opensShortcutSheet(press('?', el('DIV', { closest: () => ({}) }))), false);
 	});
 
+	it('ignores ? while a dialog is open', () => {
+		const inDialog = el('BUTTON', { closest: (sel: string) => (sel.includes('[role="dialog"]') ? {} : null) });
+		assert.equal(opensShortcutSheet(press('?', inDialog)), false);
+	});
+
 	it('ignores other keys and chorded ?', () => {
 		assert.equal(opensShortcutSheet(press('/', el('BODY'))), false);
 		assert.equal(opensShortcutSheet(press('?', el('BODY'), { ctrlKey: true })), false);
@@ -95,6 +100,11 @@ describe('the workbench wiring', () => {
 		assert.match(view, /addEventListener\('keydown'/);
 		assert.match(view, /opensShortcutSheet\(event\)/);
 		assert.match(view, /<ShortcutSheet\b/);
+	});
+
+	it('probes again after the store is cleared', () => {
+		assert.match(view, /useSchemaGeneration\(\)/);
+		assert.match(view, /`\$\{endpoint\.key\}#\$\{epoch\}`/);
 	});
 
 	it('has a header button that opens the same sheet', () => {

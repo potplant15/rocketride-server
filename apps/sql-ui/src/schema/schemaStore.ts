@@ -348,6 +348,25 @@ export function useExecuteState(key: string | null): ExecuteState {
 }
 
 /**
+ * How many times the store has been cleared. A view that probes once per open
+ * probes again when this moves: a clear forgets what the probe learned.
+ *
+ * @returns The current generation.
+ */
+export function schemaGeneration(): number {
+	return generation;
+}
+
+/**
+ * Subscribe to {@link schemaGeneration}.
+ *
+ * @returns The current generation.
+ */
+export function useSchemaGeneration(): number {
+	return useSyncExternalStore(subscribe, schemaGeneration);
+}
+
+/**
  * Read one connection's schema snapshot outside React.
  *
  * @param key - The endpoint key (null returns the idle placeholder).

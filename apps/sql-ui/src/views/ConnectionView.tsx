@@ -30,7 +30,7 @@ import { Banner, Button, ContentHeader, StatusBadge, TabControl, TabPanel } from
 import type { ViewMenu } from 'shell';
 import { commonStyles } from 'shell';
 import type { SqlEndpoint } from '../connect';
-import { probeExecute, refreshSchema, useExecuteState, useSchema } from '../schema/schemaStore';
+import { probeExecute, refreshSchema, useExecuteState, useSchema, useSchemaGeneration } from '../schema/schemaStore';
 import { useSqlEnv } from '../sqlEnv';
 import { runSchemaChecks } from '../schema/quality';
 import { useTableRecordRequest } from '../navigation';
@@ -245,13 +245,16 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 
 	// Find out once per open whether the node runs statements (SELECT 1; see
 	// probeExecute). Until it answers, the state is unknown and nothing is
-	// disabled.
+	// disabled. A cleared store (an account switch) forgot the answer, so the
+	// guard is per store generation as well as per connection.
+	const epoch = useSchemaGeneration();
 	const probedRef = useRef<string | null>(null);
 	useEffect(() => {
-		if (!env.ready || probedRef.current === endpoint.key) return;
-		probedRef.current = endpoint.key;
+		const probeKey = `${endpoint.key}#${epoch}`;
+		if (!env.ready || probedRef.current === probeKey) return;
+		probedRef.current = probeKey;
 		void probeExecute(env.getSession(endpoint));
-	}, [env, endpoint]);
+	}, [env, endpoint, epoch]);
 
 	// The keyboard shortcut sheet: a header button, and `?` anywhere that is
 	// not a text field or the editor.
