@@ -5331,6 +5331,62 @@ def test_edit_file_whose_write_was_in_flight_when_the_session_was_paused_is_not_
     assert sum(1 for call in session.calls if call[0] == 'write_text') == 1
 
 
+def test_a_write_sent_with_an_edit_of_the_same_file_is_not_lost(monkeypatch, logs):
+    # Dylan's review of 67a0b2f6: write_file did not take edit_file's lock, so a write that landed between the edit's
+    # read and its write was overwritten by the old content plus the edit, and both calls reported success.
+    session = _FakeSession('sb-1', files={'/home/tenki/app.py': 'a = 1\n'})
+    inst, _ = _instance(monkeypatch, session)
+    reading, written = threading.Event(), threading.Event()
+    real_read = session.fs._read_bytes
+
+    def slow_read(path):
+        text = real_read(path)
+        reading.set()
+        written.wait(timeout=0.5)  # a write that is not held back lands here
+        return text
+
+    monkeypatch.setattr(session.fs, '_read_bytes', slow_read)
+    results = {}
+
+    def write():
+        reading.wait(timeout=5)
+        results['write'] = inst.write_file({'path': 'app.py', 'content': 'rewritten = True\n'})
+        written.set()
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    results['edit'] = inst.edit_file({'path': 'app.py', 'old_text': 'a = 1', 'new_text': 'a = 2'})
+    writer.join(timeout=10)
+    assert results['edit']['success'] and results['write']['success']
+    assert session.fs.files['/home/tenki/app.py'] == 'rewritten = True\n'
+
+
+def test_edits_of_different_files_do_not_wait_for_each_other(monkeypatch, logs):
+    session = _FakeSession('sb-1', files={'/home/tenki/a.py': 'x = 1\n', '/home/tenki/b.py': 'y = 1\n'})
+    inst, _ = _instance(monkeypatch, session)
+    both_reading = threading.Barrier(2, timeout=5)
+    real_read = session.fs._read_bytes
+
+    def read_together(path):
+        both_reading.wait()  # breaks, failing both edits, if one edit holds a lock the other needs
+        return real_read(path)
+
+    monkeypatch.setattr(session.fs, '_read_bytes', read_together)
+    results = {}
+    threads = [
+        threading.Thread(
+            target=lambda n=n: results.update({n: inst.edit_file({'path': n, 'old_text': '1', 'new_text': '2'})})
+        )
+        for n in ('a.py', 'b.py')
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert results['a.py']['success'] and results['b.py']['success']
+    assert session.fs.files == {'/home/tenki/a.py': 'x = 2\n', '/home/tenki/b.py': 'y = 2\n'}
+
+
 def test_two_edits_to_one_file_in_the_same_wave_keep_both_changes(monkeypatch, logs):
     # Measured 2026-10-12: a wave agent sent two edit_file calls for the same file in one wave. Each read the original,
     # the later write dropped the earlier edit, and both calls reported success. Edits to a session's files are a

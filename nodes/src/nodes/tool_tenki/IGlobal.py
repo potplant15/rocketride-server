@@ -506,9 +506,9 @@ class IGlobal(IGlobalBase):
     # deepagent's asyncio.gather fan-out), and an unsynchronized check-then-act would
     # create two billed sessions and orphan one, or resume one session several times.
     _session_lock: threading.Lock | None = None
-    # Serialises edit_file's read-modify-write per session: a wave agent may send two edits of one file in the same wave, and
-    # without this the later write dropped the earlier edit while both calls reported success (measured 2026-10-12).
-    _edit_lock: threading.Lock | None = None
+    # One lock per file path, taken by write_file and edit_file: a wave agent may send two changes of one file at once,
+    # and edit_file's read-modify-write would otherwise drop the other change while both report success.
+    path_locks: dict | None = None
     # How the most recent recovery went, 'resumed' or 'replaced'. A call that retries after a
     # concurrent call did the recovering reports this, since it did not see the recovery itself.
     last_recovery: str = ''
@@ -568,7 +568,7 @@ class IGlobal(IGlobalBase):
             return
 
         self._session_lock = threading.Lock()
-        self._edit_lock = threading.Lock()
+        self.path_locks = {}
         self._ending = False
         self._create_attempted = False
         self._resume_retry_until = None
@@ -645,6 +645,10 @@ class IGlobal(IGlobalBase):
                         on_event('created')
                 session = self.session
         return session
+
+    def path_lock(self, path: str) -> threading.Lock:
+        """The lock for one normalized file path (dict.setdefault is atomic, so two callers get the same one)."""
+        return self.path_locks.setdefault(path, threading.Lock())
 
     def _ensure_warm(self, session: Sandbox) -> None:
         """Run the no-op command on ``session`` if it has not run since the session was created or resumed."""

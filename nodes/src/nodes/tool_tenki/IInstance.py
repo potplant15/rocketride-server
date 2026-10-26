@@ -45,7 +45,6 @@ import threading
 import time
 import urllib.parse
 import uuid
-from contextlib import nullcontext
 from typing import Callable, NamedTuple
 
 from rocketlib import IInstanceBase, warning
@@ -1069,15 +1068,16 @@ class IInstance(IInstanceBase):
             raise ValueError('"content" is required and must be a string')
 
         def write(session, sent):
-            sent.append(True)
-            try:
-                session.fs.write_text(path, content)
-            except TenkiFileNotFoundError as e:
-                if about_the_vm_link(e):
-                    raise
-                # The parent directory is missing: create it, with its own parents, and write again.
-                session.fs.mkdir(posixpath.dirname(path))
-                session.fs.write_text(path, content)
+            with self.IGlobal.path_lock(path):
+                sent.append(True)
+                try:
+                    session.fs.write_text(path, content)
+                except TenkiFileNotFoundError as e:
+                    if about_the_vm_link(e):
+                        raise
+                    # The parent directory is missing: create it, with its own parents, and write again.
+                    session.fs.mkdir(posixpath.dirname(path))
+                    session.fs.write_text(path, content)
 
         events = []
         once = _ChangeOnce(write, events, 'file write')
@@ -1126,9 +1126,8 @@ class IInstance(IInstanceBase):
             raise ValueError('"new_text" is required and must be a string (it may be empty)')
 
         def edit(session, sent):
-            # One edit at a time per session: the read-modify-write below is not atomic, and two edits of the same file in
-            # one wave would otherwise read the same original and the later write would drop the earlier change.
-            with self.IGlobal._edit_lock or nullcontext():
+            # The read-modify-write below is not atomic: another write_file or edit_file of this path waits for it.
+            with self.IGlobal.path_lock(path):
                 return _edit_once(session, sent)
 
         def _edit_once(session, sent):
