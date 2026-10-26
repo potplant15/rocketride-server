@@ -86,7 +86,7 @@ import {
 } from '../sql/failure';
 import type { FailureNotice } from '../sql/failure';
 import { MERGED_COLUMNS_NOTE, inferColumnTypes, mayMergeColumns, precisionNoteApplies } from '../sql/resultTypes';
-import { browserCopy, browserDownload, deliverExport, exportFileName, exportResult } from '../sql/export';
+import { CSV_FORMULA_NOTE, browserCopy, browserDownload, deliverExport, exportFileName, exportResult } from '../sql/export';
 import type { ExportFormat } from '../sql/export';
 import { buildCompletionModel } from '../sql/completion';
 import { buildExplain } from '../sql/explain';
@@ -215,6 +215,7 @@ const styles = {
 		fontSize: 11,
 		color: 'var(--rr-text-secondary)',
 		padding: '4px 8px',
+		maxWidth: 260,
 	} as CSSProperties,
 };
 
@@ -794,7 +795,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		const payload = { ...exportResult(format, resultCols, rows), fileName: exportFileName(label, displayed.index, format) };
 		const what = `${rows.length.toLocaleString()} ${rows.length === 1 ? 'row' : 'rows'} as ${EXPORT_NAMES[format]}`;
 		void deliverExport(payload, { downloadsRefused: copiesExports, download: browserDownload, copy: browserCopy }).then((outcome) => {
-			if (outcome === 'downloaded') announce(`Downloaded ${what}`);
+			// A page that blocks downloads quietly cannot be told apart, so this
+			// says the download started, not that it finished.
+			if (outcome === 'downloaded') announce(`Download started: ${what}`);
 			else if (outcome === 'failed') announce(`Could not export ${what}`);
 			else announce(format === 'markdown' ? `Copied ${what}` : `Downloads are not available here, so ${what} was copied`);
 		});
@@ -977,6 +980,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 												<Button variant="ghost" small onClick={() => exportRows('csv')}>{copiesExports ? 'Copy as CSV' : 'Download CSV'}</Button>
 												<Button variant="ghost" small onClick={() => exportRows('json')}>{copiesExports ? 'Copy as JSON' : 'Download JSON'}</Button>
 												<Button variant="ghost" small onClick={() => exportRows('markdown')}>Copy as Markdown</Button>
+												<div style={styles.exportHeading}>{CSV_FORMULA_NOTE}</div>
 											</div>
 										</AnchoredPopup>
 									</span>

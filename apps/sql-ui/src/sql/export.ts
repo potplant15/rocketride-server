@@ -39,7 +39,22 @@
 // COPY ... CSV reads them back the same way). Objects and arrays are written
 // as JSON text. Values are exported as they reached the browser, so the
 // precision note under the grid applies to the file too.
+//
+// A spreadsheet runs a CSV cell that starts with `=`, `+`, `-` or `@` as a
+// formula, and query results can hold text anyone typed. So in CSV only, a
+// TEXT value that starts with one of those, or with a tab or a carriage
+// return, gets a leading `'` (OWASP's CSV injection rule). Numbers keep their
+// sign, and JSON and Markdown keep the text as it is.
 // =============================================================================
+
+/** The CSV guard, in the export menu's words. */
+export const CSV_FORMULA_NOTE = "CSV: text that starts with = + - or @ gets a leading ' so spreadsheets do not run it.";
+
+/** Text a spreadsheet would read as a formula (or as the start of one). */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+/** How long a download's object URL is kept before it is released. */
+const DOWNLOAD_URL_LIFETIME_MS = 1000;
 
 /** The formats the Export button offers. */
 export type ExportFormat = 'csv' | 'json' | 'markdown';
@@ -54,7 +69,10 @@ export interface ExportPayload {
 	extension: string;
 }
 
-/** How a delivery ended. */
+/**
+ * How a delivery ended. `downloaded` means the browser was handed the file:
+ * a page that blocks downloads without saying so cannot be detected.
+ */
 export type ExportDelivery = 'downloaded' | 'copied' | 'failed';
 
 /** What delivering needs from the page (injected, so the rule is testable). */
@@ -82,16 +100,18 @@ function valueText(value: unknown): string {
 }
 
 /**
- * One CSV field: NULL empty, an empty string `""`, and a field holding a
- * comma, a quote or a line break quoted with its quotes doubled.
+ * One CSV field: NULL empty, an empty string `""`, text a spreadsheet would
+ * run as a formula behind a `'`, and a field holding a comma, a quote or a
+ * line break quoted with its quotes doubled.
  *
  * @param value - The raw value.
  * @returns The field.
  */
 function csvField(value: unknown): string {
 	if (value === null || value === undefined) return '';
-	const text = valueText(value);
-	if (text === '') return '""';
+	const raw = valueText(value);
+	if (raw === '') return '""';
+	const text = typeof value === 'string' && FORMULA_START.test(raw) ? `'${raw}` : raw;
 	return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
@@ -207,7 +227,9 @@ export async function deliverExport(payload: ExportPayload & { fileName: string 
 }
 
 /**
- * Save text as a file through a transient object-URL link.
+ * Save text as a file through a transient object-URL link. The URL is
+ * released a moment later, not right after the click: some browsers start
+ * the download only after the click handler has returned.
  *
  * @param text - The file's text.
  * @param mime - Its media type.
@@ -223,7 +245,7 @@ export function browserDownload(text: string, mime: string, fileName: string): v
 		anchor.click();
 	} finally {
 		document.body.removeChild(anchor);
-		URL.revokeObjectURL(url);
+		setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
 	}
 }
 
