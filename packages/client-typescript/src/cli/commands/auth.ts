@@ -137,6 +137,54 @@ function openBrowser(url: string): void {
 	}
 }
 
+/** How long the callback page waits for `window.close()` before moving on. */
+const CALLBACK_CLOSE_GRACE_MS = 300;
+
+/**
+ * Escapes text for an HTML text node.
+ *
+ * @param text - Untrusted text.
+ * @returns The escaped text.
+ */
+function escapeHtml(text: string): string {
+	return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
+}
+
+/**
+ * Renders the page the browser lands on after the sign-in redirect.
+ *
+ * Success never asks the user to act: the page tries to close itself and,
+ * when the browser refuses (a tab the script did not open, with history
+ * from the identity provider's redirects, usually cannot be closed), it
+ * replaces itself with the RocketRide web app — already signed in through
+ * the identity provider's session. A failure shows the reason and stays put.
+ *
+ * @param result - The sign-in outcome; `webUrl` is the server's web app.
+ * @returns The HTML document.
+ */
+export function renderCallbackPage(result: { ok: true; webUrl?: string } | { ok: false; error: string }): string {
+	const head = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>RocketRide sign-in</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:32rem;padding:1.5rem;text-align:center}a{color:inherit}</style></head><body><main>';
+	if (!result.ok) {
+		return `${head}<p><strong>RocketRide sign-in failed.</strong></p><p>${escapeHtml(result.error)}</p><p>Return to the terminal for details.</p></main></body></html>`;
+	}
+
+	// step: only an http(s) web app is a redirect target
+	let webUrl = '';
+	try {
+		const parsed = new URL(result.webUrl ?? '');
+		if (parsed.protocol === 'http:' || parsed.protocol === 'https:') webUrl = parsed.toString();
+	} catch {
+		webUrl = '';
+	}
+
+	// step: close, else continue to the web app; the URL rides as a JSON
+	// string with '<' escaped so it can never end the script element
+	const target = JSON.stringify(webUrl).replace(/</g, '\\u003c');
+	const fallback = webUrl ? `setTimeout(function(){location.replace(${target});},${CALLBACK_CLOSE_GRACE_MS});` : '';
+	const link = webUrl ? `<p><a href="${escapeHtml(webUrl)}">Continue to RocketRide</a></p>` : '<p>You can return to the terminal.</p>';
+	return `${head}<p><strong>Signed in to RocketRide.</strong></p>${link}</main><script>window.close();${fallback}</script></body></html>`;
+}
+
 /**
  * Run the loopback-redirect PKCE authorization and return the code.
  *
@@ -147,10 +195,11 @@ function openBrowser(url: string): void {
  * @param zitadelUrl - Base URL of the Zitadel instance.
  * @param clientId - OAuth public client id.
  * @param challenge - The S256 code challenge.
+ * @param webUrl - The RocketRide web app the browser continues to after sign-in.
  * @param out - Output channel for progress lines.
  * @returns The authorization code and the exact redirect URI used.
  */
-function authorizeViaLoopback(zitadelUrl: string, clientId: string, challenge: string, out: Output): Promise<{ code: string; redirectUri: string }> {
+function authorizeViaLoopback(zitadelUrl: string, clientId: string, challenge: string, webUrl: string, out: Output): Promise<{ code: string; redirectUri: string }> {
 	return new Promise((resolve, reject) => {
 		const server = http.createServer();
 		const timer = setTimeout(() => {
@@ -166,8 +215,13 @@ function authorizeViaLoopback(zitadelUrl: string, clientId: string, challenge: s
 			}
 			const error = url.searchParams.get('error');
 			const code = url.searchParams.get('code') || '';
-			res.writeHead(200, { 'Content-Type': 'text/html' });
-			res.end('<html><body><p>RocketRide sign-in received. You can close this window and return to the terminal.</p></body></html>');
+			const page = error
+				? renderCallbackPage({ ok: false, error: url.searchParams.get('error_description') || error })
+				: code
+					? renderCallbackPage({ ok: true, webUrl })
+					: renderCallbackPage({ ok: false, error: 'The sign-in redirect carried no authorization code.' });
+			res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+			res.end(page);
 			clearTimeout(timer);
 			const address = server.address();
 			const port = typeof address === 'object' && address ? address.port : 0;
@@ -211,7 +265,8 @@ async function signInSaas(uri: string, out: Output): Promise<string> {
 	const { verifier, challenge } = generatePkce();
 
 	// step: browser authorization via the loopback redirect
-	const { code, redirectUri } = await authorizeViaLoopback(DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, out);
+	// The browser continues to this server's web app once signed in
+	const { code, redirectUri } = await authorizeViaLoopback(DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, `${toHttpBase(uri)}/`, out);
 
 	// step: exchange the code over a temporary DAP connection — the server
 	// consumes the Zitadel tokens and returns an rr_* session key

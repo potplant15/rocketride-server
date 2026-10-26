@@ -37,6 +37,7 @@ prompts, the loopback OAuth listener, and command wiring. Kept in exact
 parity with the TypeScript CLI's ``src/cli/commands/auth.ts``.
 """
 
+import html
 import json
 import os
 import socket
@@ -153,7 +154,59 @@ def _open_browser(url: str) -> None:
         pass
 
 
-def _authorize_via_loopback(zitadel_url: str, client_id: str, challenge: str, out: Output) -> Dict[str, str]:
+# How long the callback page waits for window.close() before moving on.
+_CALLBACK_CLOSE_GRACE_MS = 300
+
+
+def _render_callback_page(ok: bool, web_url: Optional[str] = None, error: Optional[str] = None) -> str:
+    """
+    Render the page the browser lands on after the sign-in redirect.
+
+    Success never asks the user to act: the page tries to close itself and,
+    when the browser refuses (a tab the script did not open, with history
+    from the identity provider's redirects, usually cannot be closed), it
+    replaces itself with the RocketRide web app — already signed in through
+    the identity provider's session. A failure shows the reason and stays
+    put. Mirrors the TypeScript CLI's renderCallbackPage.
+
+    Args:
+        ok: Whether sign-in produced an authorization code.
+        web_url: The server's web app to continue to (http(s) only).
+        error: The failure reason (when not ok).
+
+    Returns:
+        The HTML document.
+    """
+    head = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">'
+        '<title>RocketRide sign-in</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;'
+        'font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:32rem;padding:1.5rem;'
+        'text-align:center}a{color:inherit}</style></head><body><main>'
+    )
+    if not ok:
+        reason = html.escape(error or 'unknown error')
+        return f'{head}<p><strong>RocketRide sign-in failed.</strong></p><p>{reason}</p><p>Return to the terminal for details.</p></main></body></html>'
+
+    # step: only an http(s) web app is a redirect target
+    target_url = web_url if web_url and urllib.parse.urlparse(web_url).scheme in ('http', 'https') else ''
+
+    # step: close, else continue to the web app; the URL rides as a JSON
+    # string with '<' escaped so it can never end the script element
+    target = json.dumps(target_url).replace('<', '\\u003c')
+    fallback = (
+        f'setTimeout(function(){{location.replace({target});}},{_CALLBACK_CLOSE_GRACE_MS});' if target_url else ''
+    )
+    link = (
+        f'<p><a href="{html.escape(target_url)}">Continue to RocketRide</a></p>'
+        if target_url
+        else '<p>You can return to the terminal.</p>'
+    )
+    return f'{head}<p><strong>Signed in to RocketRide.</strong></p>{link}</main><script>window.close();{fallback}</script></body></html>'
+
+
+def _authorize_via_loopback(
+    zitadel_url: str, client_id: str, challenge: str, web_url: str, out: Output
+) -> Dict[str, str]:
     """
     Run the loopback-redirect PKCE authorization and return the code.
 
@@ -165,6 +218,7 @@ def _authorize_via_loopback(zitadel_url: str, client_id: str, challenge: str, ou
         zitadel_url: Base URL of the Zitadel instance.
         client_id: OAuth public client id.
         challenge: The S256 code challenge.
+        web_url: The RocketRide web app the browser continues to after sign-in.
         out: Output channel for progress lines.
 
     Returns:
@@ -186,16 +240,21 @@ def _authorize_via_loopback(zitadel_url: str, client_id: str, challenge: str, ou
                 self.end_headers()
                 return
             params = urllib.parse.parse_qs(parsed.query)
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.end_headers()
-            self.wfile.write(
-                b'<html><body><p>RocketRide sign-in received. You can close this window and return to the terminal.</p></body></html>'
-            )
             if 'error' in params:
                 result['error'] = (params.get('error_description') or params.get('error') or ['unknown'])[0]
+                page = _render_callback_page(False, error=result['error'])
             else:
                 result['code'] = (params.get('code') or [''])[0]
+                page = (
+                    _render_callback_page(True, web_url=web_url)
+                    if result['code']
+                    else _render_callback_page(False, error='The sign-in redirect carried no authorization code.')
+                )
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(page.encode('utf-8'))
             done.set()
 
         def log_message(self, format, *log_args):  # noqa: A002
@@ -249,7 +308,8 @@ async def _sign_in_saas(uri: str, out: Output) -> str:
     verifier, challenge = generate_pkce()
 
     # step: browser authorization via the loopback redirect
-    grant = _authorize_via_loopback(DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, out)
+    # The browser continues to this server's web app once signed in
+    grant = _authorize_via_loopback(DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, f'{to_http_base(uri)}/', out)
 
     # step: exchange the code over a temporary DAP connection — the
     # credential string is the cd_-encoded PKCE triple; the server
