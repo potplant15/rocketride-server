@@ -432,6 +432,13 @@ function inStatementLimitAt(sql: string, dialect: SqlDialect): number {
 }
 
 /**
+ * What the header's All option costs, said when it is chosen. The node
+ * refuses a result over its `max_execute_rows` cap (25,000 by default,
+ * db_global_base) rather than truncating it.
+ */
+export const ALL_ROWS_WARNING = 'All asks for every row. The node refuses results over its cap (25,000 unless the pipeline sets max_execute_rows) and may be slow.';
+
+/**
  * How a result's row limit came about.
  *
  * - `applied` — the app added the header's limit: appended at the end, or

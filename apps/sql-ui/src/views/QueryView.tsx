@@ -75,7 +75,7 @@ import type { RowEstimate } from '../sql/safety';
 import { safetyLevelOf } from '../connect/savedConnections';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { useConnectionRecord } from '../connectionRecord';
-import { applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, settleStatement } from '../sql/batch';
+import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
 import {
 	ALLOW_EXECUTE_OFF_TEXT,
@@ -808,7 +808,10 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 						<ToggleGroup
 							options={LIMIT_OPTIONS.map((option) => ({ id: option, label: option }))}
 							value={limit}
-							onChange={setLimit}
+							onChange={(next) => {
+								setLimit(next);
+								if (next === 'All') announce(ALL_ROWS_WARNING);
+							}}
 						/>
 						<Button
 							variant="ghost"
@@ -880,6 +883,14 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 					<span>{preview.text}</span>
 					<span title="Safety level for this connection. Change it in the connection's settings.">{SAFETY_LINE[safety]}</span>
 				</div>
+
+				{/* All has a cost the toggle cannot show. */}
+				{limit === 'All' && (
+					<div style={styles.meta}>
+						<StatusBadge variant="warning">No row limit</StatusBadge>
+						<span>{ALL_ROWS_WARNING}</span>
+					</div>
+				)}
 
 				{/* Transaction control was refused before anything was sent. */}
 				{txRefusal && <Banner variant="warning">{txRefusal}</Banner>}
