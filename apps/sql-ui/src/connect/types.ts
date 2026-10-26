@@ -98,6 +98,57 @@ export interface SqlExecuteResult {
 }
 
 /**
+ * One statement of an Apply (staged row edits, a designer plan). The app
+ * writes it, the user never types it: one statement, its values bound as
+ * `$1..$n`, never inlined.
+ */
+export interface SqlApplyStatement {
+	/** One statement (no terminator needed). */
+	sql: string;
+	/** Positional bind values for `$1..$n`. */
+	params?: unknown[];
+	/**
+	 * The exact number of rows the statement must change (1 for a row edit).
+	 * Any other count stops the apply: inside a transaction it is rolled back.
+	 */
+	expect?: number;
+}
+
+/** Why an Apply stopped. */
+export interface SqlApplyFailure {
+	/** The statement that failed (its index), or the statement count when the commit failed. */
+	index: number;
+	/** What failed: the statement, its row count (`expect`), or the commit. */
+	stage: 'statement' | 'expect' | 'commit';
+	/** The database's or node's message, verbatim (the app's own sentence for a row count). */
+	message: string;
+	/** The server's machine-readable code, when the failure carried one. */
+	code?: string;
+	/**
+	 * How many statements are saved for certain: none after a rollback; the
+	 * ones before the failure when each statement commits on its own (plus the
+	 * failing one when it ran but changed the wrong number of rows).
+	 */
+	committed: number;
+	/**
+	 * True when the failing step's answer never arrived (the client stopped
+	 * waiting), so it may have taken effect too: the statement, when each
+	 * statement commits on its own, or the commit itself.
+	 */
+	unknown: boolean;
+}
+
+/** What an Apply did. */
+export interface SqlApplyResult {
+	/** Whether the statements ran inside one database transaction (the node's `begin` … `commit`). */
+	transactional: boolean;
+	/** The rows each statement that ran changed, in order (on a rolled-back apply, undone again). */
+	results: Array<{ affected_rows: number }>;
+	/** Null when every statement ran and, in a transaction, the commit succeeded. */
+	failure: SqlApplyFailure | null;
+}
+
+/**
  * One column in a reflected table schema. Shape matches the node's
  * `get_schema` wire format (db_instance_base.get_schema): name + SQL type
  * only — nullability/defaults arrive later via INFORMATION_SCHEMA queries.
@@ -193,6 +244,33 @@ export interface SqlSession {
 	 * @returns Rows and affected-row count.
 	 */
 	execute(sql: string, opts?: { params?: unknown[]; idempotent?: boolean; generation?: IGenerationTicket }): Promise<SqlExecuteResult>;
+	/**
+	 * Apply app-written statements in order: staged row edits, or a designer
+	 * plan. Nothing is ever sent twice.
+	 *
+	 * With `atomic`, they run inside ONE transaction through the node's
+	 * `begin` / `execute{session_id}` / `commit` tools: any failure, or a
+	 * statement that changes another number of rows than its `expect`, rolls
+	 * everything back, and a refused commit is a failure too. Where there is
+	 * no transaction to have (a ClickHouse session undoes nothing; a node
+	 * without the transaction tools), each statement commits on its own, the
+	 * first failure stops the rest, and the result says `transactional: false`.
+	 *
+	 * Every caller a view can reach goes through the engine core
+	 * (sqlCore.ts `applyStatements`), which first checks the whole list with
+	 * the node's dialect (sql/gate.ts `gateApplyStatements`) and runs
+	 * ClickHouse without a transaction. The session id never leaves the realm
+	 * that holds the engine connection.
+	 *
+	 * @param statements - The statements, in the order they must run.
+	 * @param opts - Apply options.
+	 * @param opts.atomic - Run them as one transaction where the engine has one.
+	 * @returns What ran; a failure once statements are being sent is data
+	 *          (`failure`), never thrown.
+	 * @throws ExplorerToolError when nothing was applied: the list was
+	 *         refused, the connection is not running, or `begin` was refused.
+	 */
+	applyStatements(statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult>;
 	/**
 	 * Reflect the schema of the attached database (or a single table).
 	 *

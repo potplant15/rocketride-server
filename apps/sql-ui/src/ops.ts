@@ -57,7 +57,7 @@ import type { ToolOpMap, ToolOpSpec, ToolStateMap, ToolEventMap } from 'shell';
 import type { IDeadline } from 'shared/explorer/devtool/deadline';
 import type { JsonValue, Reply } from 'shared/explorer/devtool/reply';
 import type { IIdentityState } from 'shared/explorer/devtool/frameIdentity';
-import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SavedConnectionsStatus, SqlDialect } from './connect';
+import type { SqlApplyResult, SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SavedConnectionsStatus, SqlDialect } from './connect';
 import type { HistoryEdit, HistoryStorage } from './history/api';
 import type { HistoryEntry } from './history/types';
 
@@ -94,6 +94,15 @@ export interface SqlOps extends ToolOpMap {
 	'sql.refreshSchema': ToolOpSpec<IDeadline & { connId: string }, Reply<SqlSchemaResponse>>;
 	/** Report the connection's SQL dialect. */
 	'sql.dialect': ToolOpSpec<IDeadline & { connId: string }, Reply<SqlDialect>>;
+	/**
+	 * Apply app-written statements (staged row edits, a designer plan), as one
+	 * transaction when `atomic` and the engine has one. The whole sequence
+	 * (`begin`, each statement on the session, `commit` or `rollback`) runs in
+	 * the controller, so no session id ever reaches a frame. The list is
+	 * checked again with the node's dialect first, and nothing is ever sent
+	 * twice. A failure once statements are sent is data in the result.
+	 */
+	'sql.applyStatements': ToolOpSpec<IDeadline & { connId: string; statements: Array<{ sql: string; params?: JsonValue[]; expect?: number }>; atomic: boolean }, Reply<SqlApplyResult>>;
 	// ── Connection editor support ────────────────────────────────────────────
 	/** Fetch one service definition (the direct path's config schema). */
 	'sql.getService': ToolOpSpec<IDeadline & { provider: string }, Reply<JsonValue>>;

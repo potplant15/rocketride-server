@@ -57,6 +57,10 @@
 //   - a statement is classified again with the node's dialect
 //     (sql/gate.ts): transaction control is refused, and only a read is ever
 //     repeated (T10);
+//   - an apply's list is checked again as a whole (sql/gate.ts
+//     gateApplyStatements, inside the core): one statement per entry, no
+//     transaction control, and no transaction without the dialect; its
+//     transaction runs here, and nothing in it is ever repeated;
 //   - a saved-connection record must be a usable record naming a database
 //     node (sqlCore.ts checkSavedConnection);
 //   - a mutation (save, delete, a history record or edit) is refused unless
@@ -208,6 +212,31 @@ export function checkExecuteInput(input: { sql: unknown; params?: unknown; idemp
 	if (typeof input.sql !== 'string') throw invalidInput('execute', 'The statement must be text.');
 	if (input.params !== undefined && (!Array.isArray(input.params) || !input.params.every((value) => isJsonValue(value)))) throw invalidInput('execute', 'The statement parameters must be a list of JSON values.');
 	if (input.idempotent !== undefined && typeof input.idempotent !== 'boolean') throw invalidInput('execute', 'idempotent must be true or false.');
+}
+
+/** The most statements one apply may carry (a frame's list is refused beyond it). */
+export const MAX_APPLY_STATEMENTS = 1000;
+
+/**
+ * Check `sql.applyStatements`' input.
+ *
+ * @param input - The op params.
+ * @param input.statements - The statements.
+ * @param input.atomic - Whether they are to run as one transaction.
+ * @throws ExplorerToolError `invalid` naming what is wrong.
+ */
+export function checkApplyInput(input: { statements: unknown; atomic: unknown }): void {
+	if (typeof input.atomic !== 'boolean') throw invalidInput('apply', 'atomic must be true or false.');
+	if (!Array.isArray(input.statements) || input.statements.length === 0) throw invalidInput('apply', 'The statements must be a list with at least one statement.');
+	if (input.statements.length > MAX_APPLY_STATEMENTS) throw invalidInput('apply', `An apply may carry at most ${MAX_APPLY_STATEMENTS} statements.`);
+	input.statements.forEach((statement: unknown, index) => {
+		const which = `Statement ${index + 1}`;
+		if (statement === null || typeof statement !== 'object' || Array.isArray(statement)) throw invalidInput('apply', `${which} must be an object.`);
+		const { sql, params, expect } = statement as { sql?: unknown; params?: unknown; expect?: unknown };
+		if (typeof sql !== 'string') throw invalidInput('apply', `${which}'s text must be text.`);
+		if (params !== undefined && (!Array.isArray(params) || !params.every((value) => isJsonValue(value)))) throw invalidInput('apply', `${which}'s parameters must be a list of JSON values.`);
+		if (expect !== undefined && !(typeof expect === 'number' && Number.isSafeInteger(expect) && expect >= 0)) throw invalidInput('apply', `${which}'s expected row count must be a whole number.`);
+	});
 }
 
 /**
@@ -468,6 +497,12 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 		},
 		'sql.refreshSchema': ({ connId }) => core.withSession(connId, (session) => session.refreshSchema(), 'refresh_schema'),
 		'sql.dialect': ({ connId }) => core.withSession(connId, (session) => session.dialect(), 'dialect'),
+		'sql.applyStatements': ({ connId, statements, atomic }) => {
+			checkApplyInput({ statements, atomic });
+			// The core gates the list with the node's dialect and keeps the
+			// session id: the frame gets the outcome only. Never repeated (T10).
+			return core.applyStatements(connId, statements, atomic);
+		},
 		'sql.getService': async ({ provider }) => {
 			if (typeof provider !== 'string' || provider === '') throw invalidInput('get_service', 'The provider must be a name.');
 			return (await core.getService(provider)) as JsonValue;

@@ -54,7 +54,7 @@ import { SQL_APP_ID } from '../src/appId';
 import { applyReplicaConnections, deleteSavedConnection, endpointForConnection, endpointKeyForConnection, getSavedConnections, getSavedConnectionsPartial, getSavedConnectionsStatus, ownSavedConnections, resetSavedConnections } from '../src/connect';
 import type { PipelineBoundConnection, SavedSqlConnection } from '../src/connect';
 import { lookupConnection } from '../src/connectionRecord';
-import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
+import { MAX_APPLY_STATEMENTS, MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkApplyInput, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
 import type { ConnectionsState, HistoryState, SqlOps } from '../src/ops';
 import { attachSqlFrame, connectionDocState, directReleaseKey, frameGates, routeDocKey, sqlChannel } from '../src/sqlFrame';
 import { SESSION_GRIDS, createRemoteSqlEnv } from '../src/sqlEnv';
@@ -62,7 +62,7 @@ import { setActiveConnection } from '../src/navigation';
 import { SUMMON_EVENT, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
 import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS } from '../src/sqlTimeouts';
-import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
+import { APPLY_BUDGET_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, NODE_TX_IDLE_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
 import { taskRow } from './support';
 import { DIRECT, PIPELINE, manualTimers, postgres, rig, toolRequests } from './devtoolRig';
@@ -209,6 +209,7 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 				getSchema: await session.getSchema(),
 				refreshSchema: await session.refreshSchema(),
 				dialect: await session.dialect(),
+				apply: await session.applyStatements([{ sql: 'UPDATE "orders" SET "name" = $1 WHERE "id" = $2', params: ['b', 2] }, { sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true }),
 				discover: await r.env.discoverEndpoints(),
 				service: await r.env.getService('db_mysql'),
 				validate: await r.env.validate({ version: 1, component: { id: 'db_mysql_1', provider: 'db_mysql', config: {} } }),
@@ -240,6 +241,9 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			assert.deepEqual(released, [['c-direct', directKey]]);
 			assert.deepEqual(results.execute, { rows: [{ id: 1, name: 'a' }, { id: 2, name: null }], affected_rows: 0 });
 			assert.equal(results.dialect, 'postgres');
+			assert.deepEqual(results.apply, { transactional: true, results: [{ affected_rows: 0 }, { affected_rows: 0 }], failure: null });
+			assert.deepEqual(toolRequests(r.engine, 'begin').length, 1, 'the apply ran its transaction in the controller');
+			assert.deepEqual(toolRequests(r.engine, 'commit').length, 1);
 			assert.deepEqual(results.discover, [{ key: 'p1:s1:db_1', projectId: 'p1', pipelineName: 'Pipeline A', source: 's1', nodeId: 'db_1', nodeName: 'Orders DB', provider: 'db_postgres', running: true }]);
 			assert.deepEqual(results.envKeys, ['ROCKETRIDE_DB_PASSWORD']);
 			for (const [name, value] of Object.entries(results)) assertJsonSafe(value, name);
@@ -251,6 +255,9 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			const wire = JSON.stringify(r.h.wire);
 			assert.equal(wire.includes('tk_sentinel'), false);
 			assert.equal(wire.includes('k1|'), false);
+			// Nor a transaction session id: the apply's transaction lives in the controller.
+			assert.equal(wire.includes('tx_sentinel'), false);
+			assert.equal(wire.includes('session_id'), false);
 		} finally {
 			r.dispose();
 		}
@@ -283,7 +290,7 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 		try {
 			await assert.rejects(r.env.resolveEndpoint(PIPELINE), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'unavailable' && /not running/.test(error.message));
 			// A resolution failure inside an op names that op's tool (reviewer F6).
-			const fails = (op: 'sql.execute' | 'sql.getSchema' | 'sql.refreshSchema' | 'sql.dialect', tool: string, params: Record<string, unknown> = {}) => assert.rejects(
+			const fails = (op: 'sql.execute' | 'sql.getSchema' | 'sql.refreshSchema' | 'sql.dialect' | 'sql.applyStatements', tool: string, params: Record<string, unknown> = {}) => assert.rejects(
 				r.frame.caller.callReply(op, { connId: 'c-pipe', ...params } as never, { timeoutMs: SQL_OP_TIMEOUT_MS[op] }),
 				(error: unknown) => error instanceof ExplorerToolError && error.kind === 'unavailable' && error.tool === tool,
 			);
@@ -291,6 +298,7 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			await fails('sql.getSchema', 'get_schema');
 			await fails('sql.refreshSchema', 'refresh_schema');
 			await fails('sql.dialect', 'dialect');
+			await fails('sql.applyStatements', 'apply', { statements: [{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], atomic: true });
 		} finally {
 			r.dispose();
 		}
@@ -309,12 +317,22 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			await session.dialect();
 			await session.getSchema();
 			await session.refreshSchema();
+			// A row count that does not match, so the apply's rollback is sent too.
+			await session.applyStatements([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], { atomic: true });
+			await session.applyStatements([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
 			await session.execute('SELECT 1');
 			const bus = (tool: string): number | undefined => toolRequests(r.engine, tool).at(-1)?.timeoutMs;
 			assert.equal(bus('dialect'), DIALECT_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
 			assert.equal(bus('get_schema'), GET_SCHEMA_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
 			assert.equal(bus('refresh_schema'), REFRESH_SCHEMA_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
 			assert.equal(bus('execute'), UNBOUNDED_TOOL_TIMEOUT_MS);
+			// The apply's transaction tools, and its statements bounded by the node's idle-transaction timeout, never the 24 h cap.
+			assert.equal(bus('begin'), BEGIN_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
+			assert.equal(bus('commit'), END_TX_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
+			assert.equal(bus('rollback'), END_TX_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
+			const applied = toolRequests(r.engine, 'execute').filter((request) => (request.params as { input: { session_id?: string } }).input.session_id !== undefined);
+			assert.equal(applied.length, 2);
+			for (const request of applied) assert.ok((request.timeoutMs as number) <= APPLY_BUDGET_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS, `an apply's statement waits at most the apply's budget (${request.timeoutMs})`);
 			assert.equal(DIALECT_WAIT_MS, 15_000);
 			assert.equal(GET_SCHEMA_WAIT_MS, 60_000);
 			assert.equal(REFRESH_SCHEMA_WAIT_MS, 135_000);
@@ -335,6 +353,8 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			await session.getSchema();
 			await session.refreshSchema();
 			await session.execute('SELECT 1');
+			await session.applyStatements([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
+			assert.ok(r.frameCalls.some((call) => call.op === 'sql.applyStatements'));
 			for (const call of r.frameCalls) {
 				assert.equal(call.timeoutMs, SQL_OP_TIMEOUT_MS[call.op as keyof typeof SQL_OP_TIMEOUT_MS], `${call.op} frame timeout`);
 			}
@@ -355,6 +375,12 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			assert.ok(at('sql.execute') > controllerLongest, `frame ${at('sql.execute')} > controller ${controllerLongest}`);
 			assert.equal(at('sql.execute'), controllerLongest + FRAME_OP_MARGIN_MS);
 			assert.ok(at('sql.execute') <= MAX_TIMER_MS);
+			// An apply: resolve; the gate's dialect call; begin; its statements, the
+			// apply's budget in all; commit; and a rollback after a failure. Bounded
+			// by the node's 300 s idle-transaction timeout, so minutes, not a day.
+			assert.equal(at('sql.applyStatements'), RESOLVE_BUDGET_MS + busOf(DIALECT_WAIT_MS) + busOf(BEGIN_WAIT_MS) + busOf(APPLY_BUDGET_MS) + 2 * busOf(END_TX_WAIT_MS) + FRAME_OP_MARGIN_MS);
+			assert.equal(APPLY_BUDGET_MS, NODE_TX_IDLE_MS);
+			assert.ok(at('sql.applyStatements') < 15 * 60_000, `${at('sql.applyStatements')} ms`);
 			for (const op of Object.keys(SQL_OP_TIMEOUT_MS) as Array<keyof typeof SQL_OP_TIMEOUT_MS>) assert.notEqual(at(op), 120_000, op);
 		} finally {
 			r.dispose();
@@ -837,6 +863,40 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 		}
 	});
 
+	it('an apply\'s list is checked in the controller: transaction text in it is refused before anything is sent, and nothing in an apply is ever repeated', async () => {
+		let attempt = 0;
+		const r = await rig({ tool: (params) => {
+			if (params.tool === 'execute') {
+				attempt += 1;
+				// The one code a marked read is retried on: an apply's statement never is.
+				if (attempt === 1) throw Object.assign(new Error('Task was stopped'), { code: 'TASK_STOPPED' });
+				return { rows: [], affected_rows: 1 };
+			}
+			return postgres(params);
+		} });
+		try {
+			await r.env.resolveEndpoint(PIPELINE);
+			const apply = (sqls: string[], atomic = true) => r.frame.caller.callReply('sql.applyStatements', { connId: 'c-pipe', statements: sqls.map((sql) => ({ sql, expect: 1 })), atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyStatements'] });
+			const EDIT = 'UPDATE "orders" SET "name" = \'x\' WHERE "id" = 1';
+			for (const list of [[EDIT, 'COMMIT'], ['BEGIN', EDIT], [EDIT, 'SAVEPOINT s1'], [`${EDIT}; ROLLBACK`]]) {
+				for (const atomic of [true, false]) {
+					await assert.rejects(apply(list, atomic), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid' && /nothing was applied/.test(error.message), JSON.stringify(list));
+				}
+			}
+			assert.deepEqual(['begin', 'execute', 'commit', 'rollback'].map((tool) => toolRequests(r.engine, tool).length), [0, 0, 0, 0], 'nothing reached the node');
+			// Users' typed transaction text stays refused by `sql.execute` too.
+			await assert.rejects(r.frame.caller.callReply('sql.execute', { connId: 'c-pipe', sql: 'BEGIN' }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.execute'] }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid');
+			// A statement refused TASK_STOPPED inside the transaction is sent once, then rolled back.
+			const result = await apply([EDIT, EDIT]);
+			assert.equal(toolRequests(r.engine, 'execute').length, 1, 'never sent again');
+			assert.equal(toolRequests(r.engine, 'rollback').length, 1);
+			assert.equal(toolRequests(r.engine, 'commit').length, 0);
+			assert.deepEqual(result, { transactional: true, results: [], failure: { index: 0, stage: 'statement', message: 'Task was stopped', code: 'TASK_STOPPED', committed: 0, unknown: false } });
+		} finally {
+			r.dispose();
+		}
+	});
+
 	it('the gate asks the node for its dialect when no probe has it: a MySQL-only batch the first probe missed is sent once', async () => {
 		// DA CE-2: the first probe fails (the node is restarting), so the store
 		// has no dialect; the text is two statements on MySQL (`--1` is
@@ -897,7 +957,7 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 		try {
 			await r.env.resolveEndpoint(PIPELINE);
 			const before = r.engine.requests.length;
-			type Checked = 'sql.execute' | 'sql.getSchema' | 'sql.getService' | 'sql.validate' | 'sql.releaseEndpoint';
+			type Checked = 'sql.execute' | 'sql.getSchema' | 'sql.getService' | 'sql.validate' | 'sql.releaseEndpoint' | 'sql.applyStatements';
 			const call = (op: Checked, params: Record<string, unknown>) => r.frame.caller.callReply(op, { connId: 'c-pipe', ...params } as never, { timeoutMs: SQL_OP_TIMEOUT_MS[op] });
 			const bad: Array<[Checked, Record<string, unknown>]> = [
 				['sql.releaseEndpoint', { key: 42 }],
@@ -913,6 +973,16 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 				['sql.execute', { sql: 'SELECT ?', params: { 0: 1 } }],
 				['sql.execute', { sql: 'SELECT 1', idempotent: 'yes' }],
 				['sql.getSchema', { table: 7 }],
+				['sql.applyStatements', { statements: [{ sql: 'SELECT 1' }] }],
+				['sql.applyStatements', { statements: [{ sql: 'SELECT 1' }], atomic: 'yes' }],
+				['sql.applyStatements', { statements: [], atomic: true }],
+				['sql.applyStatements', { statements: 'SELECT 1', atomic: true }],
+				['sql.applyStatements', { statements: [null], atomic: true }],
+				['sql.applyStatements', { statements: [{ sql: 42 }], atomic: true }],
+				['sql.applyStatements', { statements: [{ sql: 'SELECT ?', params: 'x' }], atomic: true }],
+				['sql.applyStatements', { statements: [{ sql: 'DELETE FROM t', expect: 1.5 }], atomic: true }],
+				['sql.applyStatements', { statements: [{ sql: 'DELETE FROM t', expect: -1 }], atomic: true }],
+				['sql.applyStatements', { statements: Array.from({ length: MAX_APPLY_STATEMENTS + 1 }, () => ({ sql: 'SELECT 1' })), atomic: false }],
 			];
 			for (const [op, params] of bad) {
 				await assert.rejects(call(op, params), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid', JSON.stringify(params));
@@ -924,6 +994,9 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 				assert.throws(() => checkExecuteInput({ sql: 'SELECT ?', params }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid');
 			}
 			assert.throws(() => checkSchemaInput({ table: ['t'] }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid');
+			for (const params of [[Number.NaN], [() => 1], [new Date(0)]]) {
+				assert.throws(() => checkApplyInput({ statements: [{ sql: 'SELECT $1', params }], atomic: true }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid');
+			}
 		} finally {
 			r.dispose();
 		}

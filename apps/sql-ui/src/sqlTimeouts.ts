@@ -43,7 +43,7 @@
 
 import { DEFAULT_RETRY_WINDOW_MS } from 'shared/explorer/connect/session';
 import { GET_TASKS_TIMEOUT_MS, frameOpTimeoutMs, toolCallBudgetMs } from 'shared/explorer/devtool/timeouts';
-import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from './connect/tools';
+import { APPLY_BUDGET_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from './connect/tools';
 
 // =============================================================================
 // CONTROLLER (engine requests)
@@ -108,6 +108,12 @@ export const SQL_OP_TIMEOUT_MS = {
 	// refresh_schema, then (on any failure) get_schema.
 	'sql.refreshSchema': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(REFRESH_SCHEMA_WAIT_MS) + toolCallBudgetMs(GET_SCHEMA_WAIT_MS)),
 	'sql.dialect': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(DIALECT_WAIT_MS)),
+	// Resolve, the gate's one bounded `dialect` call, then the apply: `begin`;
+	// the statements, APPLY_BUDGET_MS in all (each waits for what is left of
+	// it, so the node's 300 s idle-transaction timeout bounds them, not the
+	// statement's 24 h cap); then `commit`, and a `rollback` after a failure
+	// (a refused commit is followed by one too). Never repeated (T10).
+	'sql.applyStatements': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(DIALECT_WAIT_MS) + toolCallBudgetMs(BEGIN_WAIT_MS) + toolCallBudgetMs(APPLY_BUDGET_MS) + 2 * toolCallBudgetMs(END_TX_WAIT_MS)),
 	'sql.getService': frameOpTimeoutMs(SERVICE_TIMEOUT_MS),
 	'sql.validate': frameOpTimeoutMs(VALIDATE_TIMEOUT_MS),
 	'sql.envKeys': frameOpTimeoutMs(ENV_KEYS_TIMEOUT_MS),

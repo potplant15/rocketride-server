@@ -40,6 +40,14 @@
 //                    app offers "Stop waiting" instead. On the bus that is
 //                    carried as the dev-tool library's 24 h cap
 //                    (UNBOUNDED_TOOL_TIMEOUT_MS), never as the 120 s default.
+//   begin            40 s     (a connection out of the node's pool: SQLAlchemy's
+//                             30 s pool timeout, plus the 10 s pad)
+//   commit/rollback  60 s     (each first waits for the session's lock, behind
+//                             a statement still running in it)
+//   an Apply's       300 s IN ALL, each statement waiting for what is left
+//   statements                (the node's idle-transaction timeout, so no
+//                             transaction of the app's is ever waited on
+//                             longer than the node would keep an abandoned one)
 //
 // The waits for the shared tools come from the library's documented table
 // (shared/explorer/connect/session DEFAULT_TOOL_TIMEOUTS), so SQL and the
@@ -65,6 +73,27 @@ export const REFRESH_SCHEMA_WAIT_MS = DEFAULT_TOOL_TIMEOUTS.refresh_schema as nu
 /** Added to a node's published statement deadline, so the node's own error arrives first. */
 export const STATEMENT_WAIT_PAD_MS = DEFAULT_TIMEOUT_PAD_MS;
 
+/**
+ * How long the node keeps an idle transaction session before it rolls it
+ * back (`tx_idle_timeout`, 300 s by default; packages/ai/.../tx_registry.py).
+ */
+export const NODE_TX_IDLE_MS = 300_000;
+
+/**
+ * The longest an Apply's statements may take in all. Each statement waits
+ * for what is left of it, so a stalled one ends the apply here, not after
+ * the 24 h statement cap: the transaction is rolled back (it is never
+ * committed), and the node's idle reaper is the backstop for a rollback that
+ * cannot get through.
+ */
+export const APPLY_BUDGET_MS = NODE_TX_IDLE_MS;
+
+/** Client wait of the `begin` tool: a connection out of the node's pool (SQLAlchemy's 30 s pool timeout) plus the pad. */
+export const BEGIN_WAIT_MS = 30_000 + DEFAULT_TIMEOUT_PAD_MS;
+
+/** Client wait of the `commit` and `rollback` tools: the session's lock (a statement still running in it), then the end of the transaction. */
+export const END_TX_WAIT_MS = 60_000;
+
 /** Per-tool specs for the SQL node tools. */
 export const SQL_TOOLS: IToolSessionOptions['tools'] = {
 	// A statement may write: never repeated unless the caller marks it a read.
@@ -73,6 +102,12 @@ export const SQL_TOOLS: IToolSessionOptions['tools'] = {
 	get_schema: { idempotent: true, timeoutMs: GET_SCHEMA_WAIT_MS, check: checkObject },
 	refresh_schema: { idempotent: true, timeoutMs: REFRESH_SCHEMA_WAIT_MS, check: checkObject },
 	dialect: { idempotent: true, timeoutMs: DIALECT_WAIT_MS, check: checkObject },
+	// The transaction tools an Apply runs (connect/session.ts). Never
+	// repeated: a second `begin` would open a second transaction, and a
+	// session does not outlive the task restart a retry would follow.
+	begin: { idempotent: false, timeoutMs: BEGIN_WAIT_MS, check: checkObject },
+	commit: { idempotent: false, timeoutMs: END_TX_WAIT_MS, check: checkObject },
+	rollback: { idempotent: false, timeoutMs: END_TX_WAIT_MS, check: checkObject },
 };
 
 /**

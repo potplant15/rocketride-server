@@ -29,6 +29,9 @@
 // =============================================================================
 
 export type {
+	SqlApplyFailure,
+	SqlApplyResult,
+	SqlApplyStatement,
 	SqlDialect,
 	SqlEndpoint,
 	SqlExecuteResult,

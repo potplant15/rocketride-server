@@ -39,14 +39,24 @@
 // It runs where the engine connection is: the full app's realm, or the dev
 // tool's CONTROLLER. A dev-tool frame never holds one (sqlEnv.ts REMOTE).
 //
+// APPLY is the one place the app opens a transaction: `begin`, every
+// statement on the session id it returned, each checked against the rows it
+// must change, then `commit`. Anything that goes wrong after `begin` sends
+// `rollback` (and never `commit`); none of these is ever sent twice. A node
+// that has no `begin` tool runs each statement on its own instead, and the
+// result says so. The session id lives only inside one apply call.
+//
 // Port of f63da6e22 (connect/session.ts).
 // =============================================================================
 
-import { isStaleError } from 'shared/explorer/errors';
+import { ExplorerToolError, isStaleError, readErrorMessage } from 'shared/explorer/errors';
 import type { IToolSession } from 'shared/explorer/connect/session';
 import type { IGenerationTicket } from 'shared/explorer/generation';
-import { statementWaitMs } from './tools';
+import { APPLY_BUDGET_MS, statementWaitMs } from './tools';
 import type {
+	SqlApplyFailure,
+	SqlApplyResult,
+	SqlApplyStatement,
 	SqlEndpoint,
 	SqlExecuteResult,
 	SqlSchemaResponse,
@@ -69,6 +79,100 @@ const KNOWN_DIALECTS: ReadonlySet<string> = new Set(['mysql', 'postgres', 'click
  */
 export function toDialect(value: unknown): SqlDialect {
 	return typeof value === 'string' && KNOWN_DIALECTS.has(value) ? (value as SqlDialect) : 'unknown';
+}
+
+// =============================================================================
+// APPLY HELPERS
+// =============================================================================
+
+/**
+ * The engine's answer for a tool the node does not have
+ * (`data_conn.py` `_tool`: `No handler found for tool "begin" on node "db_1"`).
+ */
+const UNKNOWN_TOOL = /\bno handler found for tool\b|\bunknown tool\b/i;
+
+/** Below this much of the apply's budget, the next statement is not sent at all. */
+const MIN_STATEMENT_WAIT_MS = 1_000;
+
+/**
+ * Whether a failed call says the node has no such tool.
+ *
+ * @param error - What the call threw.
+ * @returns True for the engine's no-handler answer (or a local `upgrade` refusal).
+ */
+function isUnknownTool(error: unknown): boolean {
+	return error instanceof ExplorerToolError && (error.kind === 'upgrade' || UNKNOWN_TOOL.test(error.message));
+}
+
+/**
+ * Whether a failed call is known not to have taken effect: the node (or the
+ * server) answered with an error, or nothing was sent. A call the client
+ * stopped waiting for, or whose answer was not understood, may have.
+ *
+ * @param error - What the call threw.
+ * @returns True when its outcome is known.
+ */
+function answeredNo(error: unknown): boolean {
+	if (!(error instanceof ExplorerToolError)) return true;
+	return error.kind !== 'timeout' && error.kind !== 'malformed' && error.kind !== 'stale';
+}
+
+/**
+ * A failure record for a call that threw.
+ *
+ * @param error - What the call threw.
+ * @param index - The statement (or, for the commit, the statement count).
+ * @param stage - What failed.
+ * @param committed - How many statements are saved for certain.
+ * @param unknown - Whether the failing call's own outcome is unknown.
+ * @returns The record (the message verbatim, the code when there is one).
+ */
+function failureOf(error: unknown, index: number, stage: SqlApplyFailure['stage'], committed: number, unknown: boolean): SqlApplyFailure {
+	const code = error instanceof ExplorerToolError ? error.code : undefined;
+	return { index, stage, message: readErrorMessage(error), ...(code !== undefined ? { code } : {}), committed, unknown };
+}
+
+/**
+ * The rows a statement reported changing.
+ *
+ * @param result - The `execute` answer.
+ * @returns The count, or null when the node reported none.
+ */
+function affectedOf(result: SqlExecuteResult | undefined): number | null {
+	const value = result?.affected_rows;
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Why a statement's row count does not match what it had to change.
+ *
+ * @param statement - The statement.
+ * @param affected - The rows it reported changing.
+ * @returns The sentence, or null when it matches (or nothing was expected).
+ */
+function expectMismatch(statement: SqlApplyStatement, affected: number | null): string | null {
+	if (statement.expect === undefined || affected === statement.expect) return null;
+	const want = `${statement.expect} row${statement.expect === 1 ? '' : 's'}`;
+	if (affected === null) return `The database did not say how many rows the statement changed; it must change exactly ${want}.`;
+	return `The statement changed ${affected} row${affected === 1 ? '' : 's'}; it must change exactly ${want}. The row may have changed or gone since it was read.`;
+}
+
+/**
+ * The failure for a statement the apply's time budget left no room for.
+ *
+ * @param index - The statement not sent.
+ * @param total - How many statements the apply holds.
+ * @param committed - How many are saved for certain.
+ * @returns The record.
+ */
+function outOfTime(index: number, total: number, committed: number): SqlApplyFailure {
+	return {
+		index,
+		stage: 'statement',
+		message: `Stopped before statement ${index + 1} of ${total}: an apply may take ${Math.round(APPLY_BUDGET_MS / 60_000)} minutes in all, and that time ran out.`,
+		committed,
+		unknown: false,
+	};
 }
 
 // =============================================================================
@@ -109,6 +213,165 @@ class SqlToolSession implements SqlSession {
 			timeoutMs: statementWaitMs(this.session.info()),
 			...(generation === undefined ? {} : { generation }),
 		});
+	}
+
+	/**
+	 * Apply app-written statements (see {@link SqlSession.applyStatements}).
+	 * Runs exactly what it is given: the list's gate and the dialect rule
+	 * (ClickHouse sessions undo nothing, so it is asked with `atomic: false`)
+	 * belong to the engine core, the only caller in this realm.
+	 *
+	 * @param statements - The statements, in order.
+	 * @param opts - Apply options.
+	 * @param opts.atomic - Open a transaction (falls back when the node has no `begin`).
+	 * @returns What ran.
+	 */
+	async applyStatements(statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult> {
+		if (!opts.atomic) return this.applyEach(statements);
+		let sessionId: string;
+		try {
+			sessionId = await this.begin();
+		} catch (error) {
+			// A node older than the transaction tools: nothing was opened, so
+			// each statement commits on its own (and the result says so). Any
+			// other refusal of `begin` applied nothing, and is the caller's.
+			if (!isUnknownTool(error)) throw error;
+			return this.applyEach(statements);
+		}
+		return this.applyInTransaction(sessionId, statements);
+	}
+
+	/**
+	 * Open a transaction session.
+	 *
+	 * @returns Its session id.
+	 * @throws ExplorerToolError when the node refused, or answered without an id.
+	 */
+	private async begin(): Promise<string> {
+		const result = await this.session.invoke<{ session_id?: unknown }>('begin', {});
+		const id = result?.session_id;
+		if (typeof id !== 'string' || id === '') {
+			throw new ExplorerToolError({ kind: 'malformed', tool: 'begin', message: 'begin answered without a session id, so nothing was applied.' });
+		}
+		return id;
+	}
+
+	/**
+	 * Send one statement of an apply, once.
+	 *
+	 * @param statement - The statement.
+	 * @param sessionId - The transaction session, or null to commit it on its own.
+	 * @param waitMs - How long to wait for it.
+	 * @returns The node's answer.
+	 */
+	private sendOne(statement: SqlApplyStatement, sessionId: string | null, waitMs: number): Promise<SqlExecuteResult> {
+		const params = statement.params;
+		const input = {
+			sql: statement.sql,
+			...(params && params.length > 0 ? { params } : {}),
+			...(sessionId !== null ? { session_id: sessionId } : {}),
+		};
+		return this.session.invoke<SqlExecuteResult>('execute', input, { idempotent: false, timeoutMs: waitMs });
+	}
+
+	/**
+	 * How long the next statement may wait: the node's published statement
+	 * deadline (plus pad) when there is one, never more than what is left of
+	 * the apply's budget.
+	 *
+	 * @param deadline - When the budget runs out (epoch ms).
+	 * @returns The wait, or null when the budget has (all but) run out.
+	 */
+	private waitWithin(deadline: number): number | null {
+		const left = deadline - Date.now();
+		if (left < MIN_STATEMENT_WAIT_MS) return null;
+		return Math.min(statementWaitMs(this.session.info()) ?? left, left);
+	}
+
+	/**
+	 * Roll a session back, best effort: a rollback that fails changes nothing
+	 * the caller can act on (the node already closed the session after a
+	 * refused commit; otherwise its idle reaper rolls it back).
+	 *
+	 * @param sessionId - The session.
+	 */
+	private async rollbackQuietly(sessionId: string): Promise<void> {
+		try {
+			await this.session.invoke('rollback', { session_id: sessionId });
+		} catch {
+			// See above: nothing to do, and never sent again.
+		}
+	}
+
+	/**
+	 * Every statement on one transaction session, then commit; roll back on
+	 * the first failure or row-count mismatch.
+	 *
+	 * @param sessionId - The session `begin` opened.
+	 * @param statements - The statements.
+	 * @returns What ran.
+	 */
+	private async applyInTransaction(sessionId: string, statements: SqlApplyStatement[]): Promise<SqlApplyResult> {
+		const results: SqlApplyResult['results'] = [];
+		const deadline = Date.now() + APPLY_BUDGET_MS;
+		// Nothing is committed on any of these paths: the rollback (or, when it
+		// cannot get through, the node's idle reaper) undoes what ran.
+		const stop = async (failure: SqlApplyFailure): Promise<SqlApplyResult> => {
+			await this.rollbackQuietly(sessionId);
+			return { transactional: true, results, failure };
+		};
+		for (const [index, statement] of statements.entries()) {
+			const waitMs = this.waitWithin(deadline);
+			if (waitMs === null) return stop(outOfTime(index, statements.length, 0));
+			let result: SqlExecuteResult;
+			try {
+				result = await this.sendOne(statement, sessionId, waitMs);
+			} catch (error) {
+				return stop(failureOf(error, index, 'statement', 0, false));
+			}
+			const affected = affectedOf(result);
+			results.push({ affected_rows: affected ?? 0 });
+			const mismatch = expectMismatch(statement, affected);
+			if (mismatch !== null) return stop({ index, stage: 'expect', message: mismatch, committed: 0, unknown: false });
+		}
+		try {
+			await this.session.invoke('commit', { session_id: sessionId });
+		} catch (error) {
+			// A refused commit rolled the transaction back (PostgreSQL refuses to
+			// commit an aborted one, and the node closes the session either way);
+			// a commit whose answer never arrived may have gone through.
+			return stop(failureOf(error, statements.length, 'commit', 0, !answeredNo(error)));
+		}
+		return { transactional: true, results, failure: null };
+	}
+
+	/**
+	 * Every statement on its own (each commits as it runs), stopping at the
+	 * first failure or row-count mismatch.
+	 *
+	 * @param statements - The statements.
+	 * @returns What ran.
+	 */
+	private async applyEach(statements: SqlApplyStatement[]): Promise<SqlApplyResult> {
+		const results: SqlApplyResult['results'] = [];
+		const deadline = Date.now() + APPLY_BUDGET_MS;
+		for (const [index, statement] of statements.entries()) {
+			const waitMs = this.waitWithin(deadline);
+			if (waitMs === null) return { transactional: false, results, failure: outOfTime(index, statements.length, index) };
+			let result: SqlExecuteResult;
+			try {
+				result = await this.sendOne(statement, null, waitMs);
+			} catch (error) {
+				// The ones before it committed; it did not, unless its answer never arrived.
+				return { transactional: false, results, failure: failureOf(error, index, 'statement', index, !answeredNo(error)) };
+			}
+			const affected = affectedOf(result);
+			results.push({ affected_rows: affected ?? 0 });
+			// It ran and committed: counted, and nothing after it is sent.
+			const mismatch = expectMismatch(statement, affected);
+			if (mismatch !== null) return { transactional: false, results, failure: { index, stage: 'expect', message: mismatch, committed: index + 1, unknown: false } };
+		}
+		return { transactional: false, results, failure: null };
 	}
 
 	/** @inheritdoc */

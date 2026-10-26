@@ -65,6 +65,10 @@ export function postgres(params: { tool: string }): unknown {
 		case 'execute': return { rows: [{ id: 1, name: 'a' }, { id: 2, name: null }], affected_rows: 0 };
 		case 'get_schema': return { database: 'shop', tables: { orders: { columns: [{ column: 'id', type: 'INT' }] } } };
 		case 'refresh_schema': return { database: 'shop', tables: {} };
+		// The transaction tools an apply runs; the session id must never reach a frame.
+		case 'begin': return { session_id: 'tx_sentinel_1' };
+		case 'commit':
+		case 'rollback': return { ok: true };
 		default: return { dialect: 'postgres' };
 	}
 }
