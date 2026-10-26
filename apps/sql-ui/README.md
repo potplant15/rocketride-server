@@ -687,8 +687,9 @@ these differences:
   with the same name shows one: the node hands back each row as an object
   keyed by column name, and the grid takes its headers from the first row.
   Alias one of them to see both.
-- **The editor loads Monaco from a CDN.** An air-gapped browser gets the
-  rest of the app without a working SQL editor.
+- **Tables from the connection's default schema only.** The reflection reads
+  one schema, so tables in other schemas, and views, do not appear in the
+  Overview, the Diagram or the editor's autocomplete.
 
 ## Next steps
 
