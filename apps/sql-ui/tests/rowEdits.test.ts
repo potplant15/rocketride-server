@@ -1,0 +1,354 @@
+// =============================================================================
+// MIT License
+// Copyright (c) 2026 Aparavi Software AG
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// =============================================================================
+// ROW EDITS — staged grid changes -> bound UPDATE / INSERT / DELETE
+// =============================================================================
+//
+// The pending-changes model the data browser stages into (sql/rowEdits.ts):
+// keyed by primary key, typed by the reflected column types, and turned into
+// one bound statement per change, each expected to change exactly one row.
+// =============================================================================
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import type { SqlSchemaTable } from '../src/connect';
+import {
+	RowEditError,
+	buildRowStatements,
+	coerceValue,
+	describeRowEdit,
+	emptyRowEdits,
+	pendingOf,
+	rowEditCounts,
+	rowEditability,
+	rowKey,
+	stageDelete,
+	stageInsert,
+	stageUpdate,
+	unstage,
+	updateInsert,
+} from '../src/sql/rowEdits';
+import type { RowEditTarget } from '../src/sql/rowEdits';
+
+// =============================================================================
+// FIXTURES
+// =============================================================================
+
+const ORDERS: SqlSchemaTable = {
+	columns: [
+		{ column: 'order_id', type: 'INTEGER' },
+		{ column: 'customer_id', type: 'INTEGER' },
+		{ column: 'quantity', type: 'INTEGER' },
+		{ column: 'total', type: 'NUMERIC(10, 2)' },
+		{ column: 'status', type: 'VARCHAR(20)' },
+		{ column: 'paid', type: 'BOOLEAN' },
+		{ column: 'ordered_at', type: 'TIMESTAMP' },
+	],
+	primary_key: ['order_id'],
+};
+
+/** A composite key, one part a 64-bit integer. */
+const LINES: SqlSchemaTable = {
+	columns: [
+		{ column: 'order_id', type: 'BIGINT' },
+		{ column: 'line', type: 'INTEGER' },
+		{ column: 'note', type: 'TEXT' },
+	],
+	primary_key: ['order_id', 'line'],
+};
+
+const pg = (def: SqlSchemaTable = ORDERS, table = 'orders'): RowEditTarget => ({ dialect: 'postgres', table, def });
+const my = (def: SqlSchemaTable = ORDERS, table = 'orders'): RowEditTarget => ({ dialect: 'mysql', table, def });
+
+const ROW = { order_id: 5, customer_id: 3, quantity: 1, total: 96.5, status: 'pending', paid: false, ordered_at: '2026-02-02T14:02:00' };
+
+/**
+ * Whether a call throws a RowEditError whose reason matches.
+ *
+ * @param fn - The call.
+ * @param reason - What the reason must say.
+ */
+function refuses(fn: () => unknown, reason: RegExp): void {
+	assert.throws(fn, (error: unknown) => error instanceof RowEditError && reason.test(error.message));
+}
+
+// =============================================================================
+// EDITABILITY
+// =============================================================================
+
+describe('which tables can be edited', () => {
+	it('a table with a primary key on PostgreSQL or MySQL', () => {
+		assert.deepEqual(rowEditability('postgres', ORDERS), { editable: true, pk: ['order_id'] });
+		assert.deepEqual(rowEditability('mysql', LINES), { editable: true, pk: ['order_id', 'line'] });
+	});
+
+	it('refuses a table without a primary key, and says why', () => {
+		const result = rowEditability('postgres', { columns: ORDERS.columns });
+		assert.equal(result.editable, false);
+		assert.match(result.editable ? '' : result.reason, /has no primary key/);
+		assert.equal(rowEditability('postgres', { columns: ORDERS.columns, primary_key: [] }).editable, false);
+		assert.equal(rowEditability('postgres', null).editable, false);
+	});
+
+	it('refuses ClickHouse (no unique key; updates are background mutations) and an unknown engine, with reasons', () => {
+		const ch = rowEditability('clickhouse', ORDERS);
+		assert.match(ch.editable ? '' : ch.reason, /ClickHouse/);
+		const unknown = rowEditability('unknown', ORDERS);
+		assert.match(unknown.editable ? '' : unknown.reason, /did not report its type/);
+	});
+
+	it('every staging call refuses a table that cannot be edited', () => {
+		refuses(() => stageUpdate(emptyRowEdits(), { dialect: 'postgres', table: 'logs', def: { columns: ORDERS.columns } }, ROW, { status: 'paid' }), /has no primary key/);
+		refuses(() => stageInsert(emptyRowEdits(), { dialect: 'clickhouse', table: 'orders', def: ORDERS }, { status: 'x' }), /ClickHouse/);
+	});
+});
+
+// =============================================================================
+// STATEMENTS PER DIALECT
+// =============================================================================
+
+describe('statements: quoted identifiers, bound values, one row each', () => {
+	it('postgres: UPDATE, INSERT and DELETE with double-quoted names and $n binds', () => {
+		let edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: 'paid' });
+		edits = stageInsert(edits, pg(), { customer_id: '3', status: 'pending' });
+		edits = stageDelete(edits, pg(), { ...ROW, order_id: 14 });
+		assert.deepEqual(buildRowStatements(edits, pg()), [
+			{ sql: 'UPDATE "orders" SET "status" = $1 WHERE "order_id" = $2', params: ['paid', 5], expect: 1 },
+			{ sql: 'INSERT INTO "orders" ("customer_id", "status") VALUES ($1, $2)', params: [3, 'pending'], expect: 1 },
+			{ sql: 'DELETE FROM "orders" WHERE "order_id" = $1', params: [14], expect: 1 },
+		]);
+	});
+
+	it('mysql: the same, with backticks', () => {
+		let edits = stageUpdate(emptyRowEdits(), my(), ROW, { status: 'paid' });
+		edits = stageInsert(edits, my(), { customer_id: '3' });
+		edits = stageDelete(edits, my(), { ...ROW, order_id: 14 });
+		assert.deepEqual(buildRowStatements(edits, my()).map((statement) => statement.sql), [
+			'UPDATE `orders` SET `status` = $1 WHERE `order_id` = $2',
+			'INSERT INTO `orders` (`customer_id`) VALUES ($1)',
+			'DELETE FROM `orders` WHERE `order_id` = $1',
+		]);
+	});
+
+	it('a name that holds the quote character is escaped by doubling it, never left to end the identifier', () => {
+		const def: SqlSchemaTable = { columns: [{ column: 'id', type: 'INT' }, { column: 'we"ird`', type: 'TEXT' }], primary_key: ['id'] };
+		const pgEdits = stageUpdate(emptyRowEdits(), pg(def, 'my"table'), { id: 1, 'we"ird`': 'a' }, { 'we"ird`': 'b' });
+		assert.equal(buildRowStatements(pgEdits, pg(def, 'my"table'))[0]!.sql, 'UPDATE "my""table" SET "we""ird`" = $1 WHERE "id" = $2');
+		const myEdits = stageUpdate(emptyRowEdits(), my(def, 'my`table'), { id: 1, 'we"ird`': 'a' }, { 'we"ird`': 'b' });
+		assert.equal(buildRowStatements(myEdits, my(def, 'my`table'))[0]!.sql, 'UPDATE `my``table` SET `we"ird``` = $1 WHERE `id` = $2');
+	});
+
+	it('values never reach the statement text, however they look', () => {
+		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: "x'; DROP TABLE orders; --" });
+		const [statement] = buildRowStatements(edits, pg());
+		assert.equal(statement!.sql, 'UPDATE "orders" SET "status" = $1 WHERE "order_id" = $2');
+		assert.deepEqual(statement!.params, ["x'; DROP TABLE orders; --", 5]);
+	});
+
+	it('a composite key matches on every part, in key order', () => {
+		const edits = stageUpdate(emptyRowEdits(), pg(LINES, 'order_lines'), { order_id: 7, line: 2, note: 'a' }, { note: 'b' });
+		assert.deepEqual(buildRowStatements(edits, pg(LINES, 'order_lines')), [
+			{ sql: 'UPDATE "order_lines" SET "note" = $1 WHERE "order_id" = $2 AND "line" = $3', params: ['b', '7', 2], expect: 1 },
+		]);
+		const deleted = stageDelete(emptyRowEdits(), my(LINES, 'order_lines'), { order_id: '9007199254740993', line: 1, note: null });
+		assert.deepEqual(buildRowStatements(deleted, my(LINES, 'order_lines')), [
+			{ sql: 'DELETE FROM `order_lines` WHERE `order_id` = $1 AND `line` = $2', params: ['9007199254740993', 1], expect: 1 },
+		]);
+	});
+
+	it('NULL: an edit can set it (bound), an insert can send it, and an empty insert field is left to the default', () => {
+		let edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: null, quantity: null });
+		edits = stageInsert(edits, pg(), { customer_id: null, status: '', quantity: undefined });
+		assert.deepEqual(buildRowStatements(edits, pg()), [
+			{ sql: 'UPDATE "orders" SET "quantity" = $1, "status" = $2 WHERE "order_id" = $3', params: [null, null, 5], expect: 1 },
+			{ sql: 'INSERT INTO "orders" ("customer_id") VALUES ($1)', params: [null], expect: 1 },
+		]);
+	});
+
+	it('an insert with every field empty takes every default', () => {
+		assert.deepEqual(buildRowStatements(stageInsert(emptyRowEdits(), pg(), {}), pg()), [{ sql: 'INSERT INTO "orders" DEFAULT VALUES', params: [], expect: 1 }]);
+		assert.deepEqual(buildRowStatements(stageInsert(emptyRowEdits(), my(), { status: '' }), my()), [{ sql: 'INSERT INTO `orders` () VALUES ()', params: [], expect: 1 }]);
+	});
+
+	it('columns are written in the table\'s order, whatever order the form sent them in', () => {
+		const edits = stageInsert(emptyRowEdits(), pg(), { status: 'new', customer_id: 4 });
+		assert.equal(buildRowStatements(edits, pg())[0]!.sql, 'INSERT INTO "orders" ("customer_id", "status") VALUES ($1, $2)');
+	});
+});
+
+// =============================================================================
+// KEYS
+// =============================================================================
+
+describe('keys: exact, or the row is not touched', () => {
+	it('a 64-bit key is sent as a string, so it is never rounded on the way', () => {
+		const target = pg(LINES, 'order_lines');
+		const edits = stageDelete(emptyRowEdits(), target, { order_id: '9223372036854775807', line: 1 });
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, ['9223372036854775807', 1]);
+		// A safe one too, so a 64-bit key always travels the same way.
+		assert.deepEqual(buildRowStatements(stageDelete(emptyRowEdits(), target, { order_id: 42, line: 1 }), target)[0]!.params, ['42', 1]);
+	});
+
+	it('refuses a key that already lost precision as a JavaScript number (it could name another row)', () => {
+		refuses(() => stageDelete(emptyRowEdits(), pg(LINES, 'order_lines'), { order_id: Number.MAX_SAFE_INTEGER + 2, line: 1 }), /larger than this app can hold exactly/);
+		refuses(() => rowKey(pg(), { ...ROW, order_id: 2 ** 60 }), /larger than this app can hold exactly/);
+	});
+
+	it('refuses a row without a value in a key column', () => {
+		refuses(() => stageDelete(emptyRowEdits(), pg(), { ...ROW, order_id: null }), /no value in its key column order_id/);
+		refuses(() => stageUpdate(emptyRowEdits(), pg(), { status: 'x' }, { status: 'y' }), /no value in its key column order_id/);
+	});
+
+	it('key columns are read-only: an edit to one is refused', () => {
+		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { order_id: 6 }), /order_id is part of the key/);
+	});
+
+	it('the same row is the same key, whether its key arrived as a number or as text', () => {
+		assert.equal(rowKey(pg(), ROW), rowKey(pg(), { ...ROW, order_id: '5' }));
+		assert.notEqual(rowKey(pg(), ROW), rowKey(pg(), { ...ROW, order_id: 6 }));
+	});
+});
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+describe('values are typed by the reflected column type', () => {
+	it('numbers: text becomes a number; a 64-bit integer or a long decimal stays exact text', () => {
+		assert.deepEqual(coerceValue('INTEGER', ' 42 '), { ok: true, value: 42 });
+		assert.deepEqual(coerceValue('NUMERIC(10,2)', '96.50'), { ok: true, value: 96.5 });
+		assert.deepEqual(coerceValue('BIGINT', '9007199254740993'), { ok: true, value: '9007199254740993' });
+		assert.deepEqual(coerceValue('NUMERIC(30,10)', '12345678901234567890.0123456789'), { ok: true, value: '12345678901234567890.0123456789' });
+		assert.deepEqual(coerceValue('DOUBLE', '-1.5e3'), { ok: true, value: -1500 });
+		assert.deepEqual(coerceValue('INTEGER', 7), { ok: true, value: 7 });
+	});
+
+	it('numbers: anything else is refused with the column\'s need', () => {
+		for (const raw of ['', 'abc', '1,000', '12abc', true]) {
+			const result = coerceValue('INTEGER', raw);
+			assert.equal(result.ok, false, String(raw));
+			assert.match(result.ok ? '' : result.reason, /needs a number/);
+		}
+	});
+
+	it('booleans: true/false in the usual spellings, as real booleans', () => {
+		for (const raw of ['true', 'T', 'yes', '1', 'on', 1, true]) assert.deepEqual(coerceValue('BOOLEAN', raw), { ok: true, value: true }, String(raw));
+		for (const raw of ['false', 'f', 'NO', '0', 'off', 0, false]) assert.deepEqual(coerceValue('bool', raw), { ok: true, value: false }, String(raw));
+		const bad = coerceValue('BOOLEAN', 'maybe');
+		assert.match(bad.ok ? '' : bad.reason, /needs true or false/);
+	});
+
+	it('text, dates and JSON pass through as typed; NULL is NULL everywhere', () => {
+		assert.deepEqual(coerceValue('VARCHAR(20)', ' padded '), { ok: true, value: ' padded ' });
+		assert.deepEqual(coerceValue('VARCHAR(20)', ''), { ok: true, value: '' });
+		assert.deepEqual(coerceValue('TIMESTAMP', '2026-02-02 14:02:00'), { ok: true, value: '2026-02-02 14:02:00' });
+		assert.deepEqual(coerceValue('JSONB', { a: [1] }), { ok: true, value: '{"a":[1]}' });
+		for (const type of ['INTEGER', 'BOOLEAN', 'TEXT']) assert.deepEqual(coerceValue(type, null), { ok: true, value: null });
+	});
+
+	it('staging coerces: a typed number goes out as a number, and a bad value is refused with its reason', () => {
+		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { quantity: '3', paid: 'true' });
+		assert.deepEqual(buildRowStatements(edits, pg())[0]!.params, [3, true, 5]);
+		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { quantity: 'three' }), /quantity needs a number/);
+		refuses(() => stageInsert(emptyRowEdits(), pg(), { paid: 'maybe' }), /paid needs true or false/);
+		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { nope: 1 }), /orders has no column nope/);
+	});
+});
+
+// =============================================================================
+// THE MODEL
+// =============================================================================
+
+describe('the pending model: keyed by primary key, in staging order', () => {
+	it('two edits to one row merge; an edit back to the original value drops out; a row with no change left is unstaged', () => {
+		const target = pg();
+		let edits = stageUpdate(emptyRowEdits(), target, ROW, { status: 'paid' });
+		edits = stageUpdate(edits, target, ROW, { quantity: '2' });
+		assert.equal(rowEditCounts(edits).edited, 1);
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.sql, 'UPDATE "orders" SET "quantity" = $1, "status" = $2 WHERE "order_id" = $3');
+		edits = stageUpdate(edits, target, ROW, { quantity: '1' });
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, ['paid', 5]);
+		edits = stageUpdate(edits, target, ROW, { status: 'pending' });
+		assert.deepEqual(edits.entries, []);
+	});
+
+	it('remembers what each changed field was, for "Edited, was paid"', () => {
+		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: 'paid' });
+		const pending = pendingOf(edits, rowKey(pg(), ROW));
+		assert.equal(pending?.kind, 'update');
+		assert.deepEqual(pending?.kind === 'update' ? pending.was : null, { status: 'pending' });
+	});
+
+	it('deleting an edited row replaces the edit; an edit to a row marked deleted is refused', () => {
+		const target = pg();
+		let edits = stageUpdate(emptyRowEdits(), target, ROW, { status: 'paid' });
+		edits = stageDelete(edits, target, ROW);
+		assert.deepEqual(rowEditCounts(edits), { edited: 0, inserted: 0, deleted: 1, total: 1 });
+		refuses(() => stageUpdate(edits, target, ROW, { status: 'x' }), /marked for deletion/);
+	});
+
+	it('a new row can be edited before Apply, and deleting it just drops it', () => {
+		const target = pg();
+		let edits = stageInsert(emptyRowEdits(), target, { status: 'new' });
+		const key = edits.entries[0]!.key;
+		edits = updateInsert(edits, target, key, { status: 'newer', customer_id: '2' });
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, [2, 'newer']);
+		assert.deepEqual(stageDelete(edits, target, key).entries, []);
+	});
+
+	it('two inserts get distinct keys; unstage removes one change; counts add up', () => {
+		const target = pg();
+		let edits = stageInsert(emptyRowEdits(), target, { status: 'a' });
+		edits = stageInsert(edits, target, { status: 'b' });
+		edits = stageUpdate(edits, target, ROW, { status: 'paid' });
+		assert.notEqual(edits.entries[0]!.key, edits.entries[1]!.key);
+		assert.deepEqual(rowEditCounts(edits), { edited: 1, inserted: 2, deleted: 0, total: 3 });
+		edits = unstage(edits, edits.entries[0]!.key);
+		assert.deepEqual(rowEditCounts(edits), { edited: 1, inserted: 1, deleted: 0, total: 2 });
+	});
+
+	it('every function returns a new value and leaves its input alone', () => {
+		const before = emptyRowEdits();
+		const after = stageUpdate(before, pg(), ROW, { status: 'paid' });
+		assert.deepEqual(before.entries, []);
+		assert.notEqual(before, after);
+		const row = { ...ROW };
+		stageUpdate(after, pg(), row, { quantity: '9' });
+		assert.deepEqual(row, ROW, 'the row object is never written to');
+	});
+
+	it('describes each change in one line for the confirmation', () => {
+		const target = pg();
+		let edits = stageUpdate(emptyRowEdits(), target, ROW, { status: 'paid', quantity: '2' });
+		edits = stageInsert(edits, target, { status: 'pending' });
+		edits = stageDelete(edits, target, { ...ROW, order_id: 14 });
+		assert.deepEqual(edits.entries.map((edit) => describeRowEdit(edit, target)), [
+			'Edit row 5: quantity 1 → 2, status pending → paid',
+			'New row: status pending',
+			'Delete row 14',
+		]);
+		const lines = pg(LINES, 'order_lines');
+		assert.equal(describeRowEdit(stageDelete(emptyRowEdits(), lines, { order_id: 7, line: 2 }).entries[0]!, lines), 'Delete row (7, 2)');
+		assert.equal(describeRowEdit(stageUpdate(emptyRowEdits(), target, ROW, { status: null }).entries[0]!, target), 'Edit row 5: status pending → NULL');
+	});
+});
