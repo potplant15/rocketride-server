@@ -82,7 +82,7 @@ const SAFETY_OPTIONS: { id: SafetyLevel; label: string; detail: string }[] = [
 	{
 		id: 'every',
 		label: 'Ask before every write',
-		detail: 'Any statement that writes rows or changes the schema. DROP and TRUNCATE ask you to type the name.',
+		detail: 'Anything that is not SELECT, EXPLAIN, SHOW or DESCRIBE (a WITH … SELECT counts as SELECT). DROP and TRUNCATE ask you to type the name.',
 	},
 ];
 

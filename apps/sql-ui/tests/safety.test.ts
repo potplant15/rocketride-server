@@ -26,7 +26,8 @@
 //
 // The connection's safety level decides which statements ask before they are
 // sent: `off` never, `risky` the shapes the pattern check flags, `every` any
-// statement that writes rows or changes the schema. At `risky` and `every`,
+// statement the classifier does not call a read (CALL, GRANT, SET and DO
+// included: a procedure can change rows). At `risky` and `every`,
 // DROP and TRUNCATE also ask for the target's name to be typed, exactly as
 // the statement spells it. Everything here reads the statement TEXT; it
 // prevents nothing the database would do on its own.
@@ -46,6 +47,9 @@ import {
 import type { WriteConfirmation } from '../src/sql/safety';
 
 const LEVELS: SafetyLevel[] = ['off', 'risky', 'every'];
+
+/** The kind `every` reports for a statement that is neither a write nor DDL, nor a read. */
+const NOT_A_READ = 'a statement that is not a read';
 
 /**
  * What each level does with one statement: null when it runs at once, the
@@ -80,7 +84,14 @@ describe('needsConfirmation: the level × kind matrix', () => {
 		['ALTER', 'ALTER TABLE orders ADD COLUMN note text', { off: null, risky: 'ALTER', every: 'ALTER' }],
 		['DROP', 'DROP TABLE orders', { off: null, risky: 'DROP +name', every: 'DROP +name' }],
 		['TRUNCATE', 'TRUNCATE orders', { off: null, risky: 'TRUNCATE +name', every: 'TRUNCATE +name' }],
-		['other (SET)', 'SET search_path TO archive', { off: null, risky: null, every: null }],
+		['other: CALL', 'CALL purge_orders()', { off: null, risky: null, every: NOT_A_READ }],
+		['other: GRANT', 'GRANT SELECT ON orders TO reporting', { off: null, risky: null, every: NOT_A_READ }],
+		['other: SET', 'SET search_path TO archive', { off: null, risky: null, every: NOT_A_READ }],
+		['other: DO', "DO $$ BEGIN DELETE FROM orders; END $$", { off: null, risky: null, every: NOT_A_READ }],
+		['other: VALUES (not a read to the classifier)', 'VALUES (1), (2)', { off: null, risky: null, every: NOT_A_READ }],
+		['read: WITH … SELECT', 'WITH recent AS (SELECT * FROM orders) SELECT * FROM recent', { off: null, risky: null, every: null }],
+		['read: SHOW', 'SHOW TABLES', { off: null, risky: null, every: null }],
+		['read: DESCRIBE', 'DESCRIBE orders', { off: null, risky: null, every: null }],
 		['transaction control (refused before this is asked)', 'BEGIN', { off: null, risky: null, every: null }],
 		['empty', '  -- nothing\n', { off: null, risky: null, every: null }],
 	];
@@ -234,6 +245,13 @@ describe('writeConfirmCopy', () => {
 	it('says why it asked: the connection\'s level, and that it is a text check', () => {
 		assert.equal(copyFor('DELETE FROM orders').why, 'Shop Postgres is set to ask before risky writes. This is a check on the statement text, not a database permission.');
 		assert.equal(copyFor('DELETE FROM orders WHERE id = 1', 'every').why, 'Shop Postgres is set to ask before every write. This is a check on the statement text, not a database permission.');
+	});
+
+	it('a statement that is not a read says it may change data, and the button names its verb', () => {
+		const copy = copyFor('CALL purge_orders()', 'every');
+		assert.equal(copy.title, 'Run this CALL?');
+		assert.equal(copy.consequence, 'It is not a read, so it may change data.');
+		assert.equal(copy.confirmLabel, 'Run CALL');
 	});
 
 	it('never offers to stop asking', () => {

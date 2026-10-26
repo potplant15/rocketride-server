@@ -31,8 +31,11 @@
 //   - `risky` — the shapes the pattern check flags (classify.ts): UPDATE or
 //               DELETE without WHERE or inside a WITH clause, TRUNCATE, DROP,
 //               ALTER.
-//   - `every` — any statement that writes rows or changes the schema (the
-//               `write` and `ddl` kinds), and everything `risky` flags.
+//   - `every` — every statement the classifier does not call a read: the
+//               `write`, `ddl` and `other` kinds (CALL, GRANT, SET, DO,
+//               VALUES…, since a procedure can change rows), and everything
+//               `risky` flags. Transaction control is refused before anything
+//               asks.
 //
 // At `risky` and `every`, DROP and TRUNCATE also ask for the target's name to
 // be typed, exactly as the statement spells it (GitHub's pattern for deleting
@@ -78,7 +81,8 @@ export interface DestructiveTarget {
 export interface WriteConfirmation extends IPatternFinding {
 	/**
 	 * What was seen: the pattern check's shape (`UPDATE without WHERE`,
-	 * `DROP`…), or at `every` the statement's kind (`a write`, `a schema change`).
+	 * `DROP`…), or at `every` the statement's kind (`a write`, `a schema
+	 * change`, `a statement that is not a read`).
 	 */
 	kind: string;
 	/** The connection's level that asked. */
@@ -108,6 +112,9 @@ export interface WriteConfirmCopy {
 // THE RULE
 // =============================================================================
 
+/** The kind `every` reports for a statement that is neither a read, a write nor DDL. */
+const NOT_A_READ = 'a statement that is not a read';
+
 /**
  * Whether a statement asks before it is sent at a connection's level, and why.
  *
@@ -117,7 +124,7 @@ export interface WriteConfirmCopy {
  * @returns The confirmation to show, or null when the statement runs at once.
  */
 export function needsConfirmation(sql: string, dialect: SqlDialect, level: SafetyLevel): WriteConfirmation | null {
-	if (level === 'off') return null;
+	if (level === 'off' || stripSqlComments(sql, dialect).trim() === '') return null;
 	const target = destructiveTarget(sql, dialect);
 	const finding = patternCheck(sql, dialect);
 	if (finding) return { kind: finding.kind, level, target };
@@ -125,6 +132,7 @@ export function needsConfirmation(sql: string, dialect: SqlDialect, level: Safet
 		const kind = classifyStatement(sql, dialect);
 		if (kind === 'write') return { kind: 'a write', level, target };
 		if (kind === 'ddl') return { kind: 'a schema change', level, target };
+		if (kind === 'other') return { kind: NOT_A_READ, level, target };
 	}
 	return null;
 }
@@ -496,6 +504,7 @@ function plainConsequence(kind: string): string {
 	const inWith = /^(UPDATE|DELETE) inside a WITH clause$/.exec(kind);
 	if (inWith) return `A WITH clause in it runs ${inWith[1]}; this check cannot tell which rows that reaches.`;
 	if (kind === 'ALTER' || kind === 'a schema change') return 'It changes the schema.';
+	if (kind === NOT_A_READ) return 'It is not a read, so it may change data.';
 	return 'It changes data.';
 }
 

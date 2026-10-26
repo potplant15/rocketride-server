@@ -76,7 +76,8 @@ export interface SavedConnectionsFs {
  * - `off` — never asks.
  * - `risky` — asks before the shapes the pattern check flags (UPDATE or
  *   DELETE without WHERE or inside a WITH clause, TRUNCATE, DROP, ALTER).
- * - `every` — asks before every statement that changes rows or the schema.
+ * - `every` — asks before every statement that is not a read (SELECT,
+ *   EXPLAIN, SHOW, DESCRIBE, a read-only WITH chain).
  *
  * At `risky` and `every`, DROP and TRUNCATE also ask for the target's name to
  * be typed (sql/safety.ts). It is a check on the statement text that only adds

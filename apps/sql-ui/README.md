@@ -340,10 +340,12 @@ under **Safety level for this connection**:
 - **Ask before risky writes** (the default): asks before `UPDATE` or
   `DELETE` with no `WHERE`, an `UPDATE` or `DELETE` inside a `WITH` clause,
   `TRUNCATE`, `DROP` and `ALTER`.
-- **Ask before every write**: also asks before every other statement that
-  writes rows or changes the schema: `INSERT`, a bounded `UPDATE` or
-  `DELETE`, `MERGE`, `REPLACE`, `SELECT … INTO`, `CREATE` and `RENAME`.
-  Other statements (`SET`, `CALL`, `GRANT` and the like) run without asking.
+- **Ask before every write**: asks before anything that is not a read.
+  Reads are `SELECT` (a `WITH … SELECT` included), `EXPLAIN`, `SHOW` and
+  `DESCRIBE`. Everything else asks: `INSERT`, a bounded `UPDATE` or
+  `DELETE`, `MERGE`, `SELECT … INTO`, `CREATE`, and also `CALL`, `GRANT`,
+  `SET`, `DO` and `VALUES`, because a procedure can change rows and the app
+  cannot tell. `EXPLAIN ANALYZE` counts as the statement it runs.
 
 The level is stored on the saved connection, in the same per-user file on
 the server as the connection itself, so it is the same in the app and as a

@@ -142,4 +142,8 @@ describe('the connection editor carries the level', () => {
 		assert.doesNotMatch(editor, /safe mode/i);
 		assert.match(editor, /this setting only adds questions/);
 	});
+
+	it('says what "every write" covers the way the classifier reads statements', () => {
+		assert.ok(editor.includes('Anything that is not SELECT, EXPLAIN, SHOW or DESCRIBE (a WITH … SELECT counts as SELECT).'));
+	});
 });
