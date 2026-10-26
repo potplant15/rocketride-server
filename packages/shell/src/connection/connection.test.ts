@@ -108,6 +108,7 @@ const authenticatedResult: ConnectResult = {
 	capabilities: [],
 };
 
+/** A ConnectionManager without its constructor: emitted events and saved tokens are recorded, telemetry is held in memory. */
 function createTestManager(lastFailure?: ConnectionStatus['lastFailure']) {
 	const emitted: EmittedEvent[] = [];
 	const savedTokens: string[] = [];
@@ -455,6 +456,7 @@ type TelemetryInternals = {
 	startOAuth(register?: boolean, context?: { appId?: string; auto?: boolean }): Promise<void>;
 };
 
+/** The channel a real ConnectionManager creates for the staged environment. */
 const newTelemetryChannel = (): TelemetryChannel =>
 	(ConnectionManager as unknown as { newTelemetryChannel(): TelemetryChannel }).newTelemetryChannel();
 

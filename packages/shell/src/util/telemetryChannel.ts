@@ -58,6 +58,7 @@ export interface FactStorage {
 	removeItem(key: string): void;
 }
 
+/** The tab's sessionStorage, or null where there is none or its accessor throws (storage disabled). */
 function defaultStorage(): FactStorage | null {
 	try {
 		const s = (globalThis as { sessionStorage?: FactStorage }).sessionStorage;
@@ -67,6 +68,7 @@ function defaultStorage(): FactStorage | null {
 	}
 }
 
+/** The bounded hold of telemetry facts no app has drained yet, optionally mirrored to storage. */
 export class TelemetryChannel {
 	/** Facts this page load observed and nobody has drained. */
 	private facts: TelemetryFact[] = [];
@@ -76,6 +78,10 @@ export class TelemetryChannel {
 	private readonly storage: FactStorage | null;
 	private readonly now: () => number;
 
+	/**
+	 * @param options - `storage`: where to mirror the hold (default: the tab's sessionStorage;
+	 *                  null keeps it in memory only); `now`: the clock (tests inject one).
+	 */
 	constructor(options?: { storage?: FactStorage | null; now?: () => number }) {
 		this.storage = options && 'storage' in options ? (options.storage ?? null) : defaultStorage();
 		this.now = options?.now ?? (() => Date.now());
@@ -121,6 +127,7 @@ export class TelemetryChannel {
 		return this.facts.length;
 	}
 
+	/** Mirror the held facts (inherited first, bounded) to storage. Never throws. */
 	private persist(): void {
 		if (!this.storage) return;
 		try {
@@ -130,6 +137,7 @@ export class TelemetryChannel {
 		}
 	}
 
+	/** Read what an earlier page load of the tab mirrored: valid facts within the TTL only; a corrupt mirror reads as empty. */
 	private readMirror(): TelemetryFact[] {
 		if (!this.storage) return [];
 		try {
@@ -152,6 +160,7 @@ export class TelemetryChannel {
 		}
 	}
 
+	/** Remove the mirror from storage. Never throws. */
 	private clearMirror(): void {
 		if (!this.storage) return;
 		try {

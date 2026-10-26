@@ -118,10 +118,12 @@ const loadedModules = new Set<string>();
 // and the load that finishes first must not clear the mark of the other.
 const pendingModules = new Map<string, number>();
 
+/** Count one more load of an MF container as in flight. */
 function markPending(moduleId: string): void {
 	pendingModules.set(moduleId, (pendingModules.get(moduleId) ?? 0) + 1);
 }
 
+/** Release one in-flight load of an MF container; its mark goes when the last one settles. */
 function releasePending(moduleId: string): void {
 	const left = (pendingModules.get(moduleId) ?? 0) - 1;
 	if (left > 0) pendingModules.set(moduleId, left);
@@ -704,6 +706,16 @@ export function resolveServerEntry(a: ServerAppEntry): string | null {
 	return typeof a.registryVersion === 'number' ? versionedEntryUrl(a.id, a.registryVersion) : null;
 }
 
+/**
+ * Register the server's app manifest with Module Federation and map it to the
+ * shell's manifest entries. Entries without a load URL are dropped; dev-owned
+ * containers and a dev preview's session-locked app are not re-registered.
+ * Each entry's `load()` fetches its descriptor lazily (a local override, when
+ * one is registered, wins) and marks the container pending for the whole load.
+ *
+ * @param serverApps - The apps listed in the server's manifest.
+ * @returns One manifest entry per app that resolved to a load URL.
+ */
 export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEntry[] {
 	const overrides = getAppVersionOverrides();
 	const nonce = sessionNonce();

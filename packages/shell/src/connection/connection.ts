@@ -574,8 +574,8 @@ export class ConnectionManager implements IConnectionManager {
 		try {
 			const ts = Date.now();
 			// A delivered fact is not held: the listener forwards it at once and a later drain
-			// must not replay it. With nobody listening the fact waits in the channel (mirrored to
-			// sessionStorage, so it survives a page load that never mounts the forwarding app).
+			// must not replay it. With nobody listening the fact waits in the channel (in a tab, mirrored
+			// to sessionStorage, so it survives a page load that never mounts the forwarding app).
 			if ((this.listeners.get('shell:telemetry')?.size ?? 0) > 0) this.emit('shell:telemetry', { event, props: { ...(props ?? {}) }, ts, id: `${ts.toString(36)}-l${(this.telemetrySeq++).toString(36)}` });
 			else this.telemetry.report(event, props, ts);
 		} catch { /* telemetry must never break the shell */ }
@@ -1381,7 +1381,10 @@ export class ConnectionManager implements IConnectionManager {
 		this.dropHeldTelemetry();
 	}
 
-	/** Drop the held telemetry facts, their sessionStorage mirror and the round-trip stamp. Never throws. */
+	/**
+	 * Drop the held telemetry facts and, in a tab, their sessionStorage mirror and the round-trip
+	 * stamp (an embedded dev preview holds neither there; see newTelemetryChannel). Never throws.
+	 */
 	private dropHeldTelemetry(): void {
 		try { this.telemetry?.clear(); } catch { /* telemetry must never break the shell */ }
 		if (!isEmbeddedDevShell()) {
@@ -1392,9 +1395,10 @@ export class ConnectionManager implements IConnectionManager {
 	/**
 	 * The telemetry hold for this shell. A tab mirrors it to sessionStorage, so held facts
 	 * survive a page load that never mounts the forwarding app. An embedded dev preview
-	 * keeps it in memory only, and never writes or removes the round-trip stamp: same-origin
-	 * frames share sessionStorage, so a mirror there would inherit, or clear, the host tab's
-	 * facts (the frame-local rule tokenStore follows for the token).
+	 * keeps it in memory only: same-origin frames share sessionStorage, so a mirror there
+	 * would inherit, or clear, the host tab's facts (the frame-local rule tokenStore follows
+	 * for the token). For the same reason startOAuth and dropHeldTelemetry leave the
+	 * round-trip stamp alone in a preview.
 	 */
 	private static newTelemetryChannel(): TelemetryChannel {
 		return new TelemetryChannel(isEmbeddedDevShell() ? { storage: null } : undefined);
