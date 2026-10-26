@@ -101,7 +101,7 @@ export interface SqlEnv {
 	serviceTitle(provider: string): string | undefined;
 	/** Statement history: read, record and edit (where it lives depends on the mount). */
 	history: SqlHistoryApi;
-	/** Small per-user switches (`sql.patternChecks`): workspace preferences in the full app, this session only in a dev-tool frame. */
+	/** Small per-user switches: workspace preferences in the full app, this session only in a dev-tool frame. */
 	prefs: IPrefsAccessor;
 	/**
 	 * Grid layouts (sort, columns, page), always as plain-JSON copies

@@ -64,9 +64,9 @@ describe('QueryView on the shared runner', () => {
 		}
 	});
 
-	it('shows failures and confirmations with the shared banner and dialog', () => {
+	it('shows failures with the shared banner, and confirmations with SQL\'s own dialog (no "stop asking")', () => {
 		assert.match(view, /<FailureBanner\s+failure=\{failure\}/);
-		assert.match(view, /<PatternConfirmDialog\s+kind=\{patternPrompt\.finding\.kind\}/);
+		assert.match(view, /<WriteConfirmDialog\s+key=\{patternPrompt\.run\.index\}\s+confirmation=\{toWriteConfirmation\(patternPrompt\.finding\)\}/);
 	});
 
 	it('binds the strip and the inspector to the shared components, and the wording to the shared format', () => {
