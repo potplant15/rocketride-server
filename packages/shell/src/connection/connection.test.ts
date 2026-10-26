@@ -504,6 +504,27 @@ test('startOAuth raises auth:start once per page load, past its one-shot guard, 
 	});
 });
 
+test('a start that does not redirect releases the guard, so the retry raises auth:start again', async () => {
+	const session = recordingSession();
+	await withGlobals({ window: topLevelWindow({ location: { search: '', pathname: '/' } }), sessionStorage: session.storage }, async () => {
+		const { manager, emitted } = createTestManager();
+		const internals = manager as unknown as TelemetryInternals;
+		internals.listeners = new Map();
+		// no auth provider and no Zitadel configuration: the start reports an error and does not navigate
+		internals.authProvider = null;
+		const originalError = console.error;
+		console.error = () => {};
+		try {
+			await internals.startOAuth(false);
+			await internals.startOAuth(false);
+		} finally {
+			console.error = originalError;
+		}
+		assert.equal(emitted.filter((e) => e.event === 'shell:error').length, 2, 'each attempt failed without a redirect');
+		assert.deepEqual(internals.drainTelemetry().map((f) => f.event), ['auth:start', 'auth:start'], 'each attempt is reported');
+	});
+});
+
 test('a callback that completes the sign-in raises auth:complete once, with is_new null when the provider does not know', async () => {
 	for (const [isNewUser, expected] of [[undefined, null], [true, true]] as const) {
 		const session = recordingSession([['rr:pkce_verifier', 'verifier-1']]);
