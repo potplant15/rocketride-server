@@ -105,11 +105,30 @@ history or settings.
 ## The connection workbench
 
 **Overview** counts the tables, columns and foreign keys, names the dialect,
-and lists the tables. Selecting a table opens its record drawer; the header
-carries **Refresh Schema**, **Diagram** and **New Query**.
+and lists the tables in the connection's default schema. Clicking a table
+row opens that table's Data page; the **Details** button on the row opens its
+record drawer instead. The header of Overview, Insights and Diagram carries
+**Refresh Schema**, **Shortcuts** and **New Query**. Query, Data and Design
+show their own header and no other, so each page has one.
 
 **Insights** reads the same snapshot and says what shape it is in. See
-[Insights](#insights).
+[Insights](#insights). **Diagram** draws the tables and their declared
+relations; clicking a table in it opens that table's Data page. See
+[Relationships](#relationships).
+
+Press **?** anywhere outside a text field or the SQL editor, or use the
+**Shortcuts** button, to list the keyboard shortcuts.
+
+When a connection opens, the app sends `SELECT 1` once to find out whether
+the node runs statements. It goes straight to the node, so it is not in your
+query history. If the node has `allow_execute` off, the connection is
+**schema only**: the header says so, and Run, Run all, Explain, New Query,
+**Select top 100**, **Count rows** and **Open data** are off with the reason
+shown, and the Data page says it cannot read rows. Tables, columns, keys,
+Diagram and Insights keep working. After you turn `allow_execute` on and
+restart the pipeline, **Check again** on the Overview page (or **Refresh
+Schema**) looks again. While the answer is not known yet, nothing is
+disabled.
 
 Both pages read one schema snapshot. The node reflects the database when the
 pipeline task starts and serves that reflection to every caller, so the
@@ -466,7 +485,9 @@ time; the rerun is a fresh run with its own entry.
 ## Relationships
 
 The table record drawer shows the table's columns, primary key and declared
-foreign keys, and adds:
+foreign keys, and adds a marker such as `→ customers.customer_id` beside each
+column that is part of one. It offers **Open data**, **Design**, **Copy
+name** and **Copy SELECT**, and adds:
 
 - **Referenced by (n)** — the tables whose foreign keys point at this one,
   each opening its own drawer.
@@ -483,6 +504,11 @@ generation and in the review rules. Two columns that look related because of
 their names are not treated as related. ClickHouse declares no foreign keys
 at all, so these sections say `ClickHouse declares no foreign keys; join
 paths are unavailable.`
+
+The **Diagram** page shows the same declared relations as a graph. Clicking a
+table node opens that table's Data page, and the minimap follows the theme.
+While the schema is being read the page says `Reading the schema…`; if the
+read fails it says `Could not read the schema` and offers Retry.
 
 **Open as query** writes the join into a new query document. Generated SQL
 is never run for you: the document opens under the banner `Generated preview:

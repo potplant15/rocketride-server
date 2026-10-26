@@ -32,7 +32,8 @@ import { Banner, Card, ContentHeader, DataGrid, EmptyState, monoEl, mutedEl } fr
 import type { GridColumnDefinition, IDataGridPage, IDataGridPageRequest } from 'shell';
 import { commonStyles } from 'shell';
 import type { SqlEndpoint } from '../connect';
-import { useSchema } from '../schema/schemaStore';
+import { noteExecuteFailure, useExecuteState, useSchema } from '../schema/schemaStore';
+import { executeGateReason, schemaOnlyExplanation } from '../executeGate';
 import { useSqlEnv } from '../sqlEnv';
 import { buildPageStatements } from '../sql/paging';
 import { DatabaseIcon } from '../icons';
@@ -109,6 +110,7 @@ function dataCellEl(value: unknown): HTMLElement {
 export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
+	const executeState = useExecuteState(endpoint.key);
 
 	// Last page-load failure, surfaced as a banner. The grid keeps showing the
 	// previous rows on failure, so without this the error is invisible.
@@ -216,7 +218,8 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 	 */
 	const handleLoadError = useCallback((error: Error): void => {
 		setLoadError(error.message || String(error));
-	}, []);
+		noteExecuteFailure(endpoint.key, error.message || String(error));
+	}, [endpoint.key]);
 
 	// ── Framing states ───────────────────────────────────────────────────────
 
@@ -239,6 +242,23 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table })
 					<Banner variant="warning">
 						Table {table} is not in the current schema snapshot. Refresh the schema from the connection overview.
 					</Banner>
+				</div>
+			</div>
+		);
+	}
+
+	// A node with execute off cannot read a single row, and neither can this
+	// page: say so up front instead of showing an empty grid and a load error.
+	if (executeGateReason(executeState)) {
+		return (
+			<div style={styles.root}>
+				<ContentHeader title={table} subtitle="data" />
+				<div style={styles.body}>
+					<EmptyState
+						icon={<DatabaseIcon />}
+						title="Schema only"
+						description={`${schemaOnlyExplanation(endpoint.nodeName)} Columns and keys are on the Overview; once the node is fixed, use Check again there.`}
+					/>
 				</div>
 			</div>
 		);

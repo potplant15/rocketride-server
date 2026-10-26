@@ -26,16 +26,15 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Banner, Button, Card, CardDataGrid, EmptyState, MiniCard, MiniContainer, monoEl, mutedEl } from 'shell';
+import { Banner, Button, Card, CardDataGrid, EmptyState, MiniCard, MiniContainer, createActionsColumn, monoEl, mutedEl } from 'shell';
 import type { GridCellComponent } from 'shell';
 import type { GridColumnDefinition } from 'shell';
 import type { SqlEndpoint, SqlSchemaTable } from '../connect';
 import type { SchemaState } from '../schema/schemaStore';
-import { refreshSchema } from '../schema/schemaStore';
+import { refreshSchema, useExecuteState } from '../schema/schemaStore';
+import { executeGateReason } from '../executeGate';
 import { useSqlEnv } from '../sqlEnv';
 import { useTableRecordRequest } from '../navigation';
-import { designUri, getDocs, nextQueryDoc, tableDataUri } from '../docs';
-import type { QueryDocPayload } from '../docs';
 import { useSqlPageNav } from '../pageNav';
 import TableRecordPanel from '../components/TableRecordPanel';
 import { buildRelationGraph } from '../schema/relations';
@@ -98,12 +97,15 @@ const styles = {
 
 /**
  * The connection workbench's Overview page: schema metrics as MiniCards and
- * the tables list as a LOCAL CardDataGrid. A row click (or a sidebar tree
- * click routed through the table-record request store) opens the table's
- * record drawer.
+ * the tables list as a LOCAL CardDataGrid. A row click opens the table's
+ * Data page (its drawer, when the node is schema only); the Details button,
+ * or a sidebar tree click routed through the table-record request store,
+ * opens the record drawer.
  */
 export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot }) => {
 	const env = useSqlEnv();
+	// Null while statements may run; the reason once the node is schema only.
+	const gateReason = executeGateReason(useExecuteState(endpoint.key));
 	// In-workbench page navigation.
 	const pageNav = useSqlPageNav();
 
@@ -190,6 +192,12 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 					headerSort: true,
 					sorter: 'number',
 				},
+				// A row click opens the table's data; this opens its details.
+				createActionsColumn<TableRow>({
+					actions: [{ key: 'details', label: 'Details' }],
+					onAction: (_key, row) => setStack([row.name]),
+					width: 110,
+				}),
 			] satisfies GridColumnDefinition[],
 		[],
 	);
@@ -242,7 +250,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 			<div style={styles.gridFill}>
 				<Card noBodyPadding fill>
 					<CardDataGrid<TableRow>
-						title="Tables"
+						title="Tables in the connection's default schema"
 						actions={
 							<Button
 								variant="ghost"
@@ -261,7 +269,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 						persistence={env.gridPersistence}
 						paginate={false}
 						height="100%"
-						onRowClick={(row) => setStack([row.name])}
+						onRowClick={(row) => (gateReason ? setStack([row.name]) : pageNav.openTableData(row.name))}
 						emptyTitle="No tables"
 						emptyDescription="The attached database reports no tables."
 					/>
@@ -289,7 +297,8 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 						pageNav.openQuery({ sql, label, origin: 'generated' });
 						setStack([]);
 					}}
-					onBrowseData={() => {
+					gateReason={gateReason}
+					onOpenData={() => {
 						// The table's data browser — the DATA page.
 						pageNav.openTableData(name);
 						setStack([]);

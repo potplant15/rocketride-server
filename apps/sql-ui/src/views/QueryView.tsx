@@ -46,12 +46,14 @@
 // words; it prevents nothing and is not called a safe mode anywhere.
 // =============================================================================
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { GridCellComponent, GridColumnDefinition } from 'shell';
 import { Banner, Button, Card, CardDataGrid, ConfirmDialog, ContentHeader, EmptyState, StatusBadge, ToggleGroup, commonStyles, monoEl, mutedEl } from 'shell';
 import type { SqlEndpoint, SqlExecuteResult, SqlDialect } from '../connect';
-import { useSchema } from '../schema/schemaStore';
+import { noteExecuteFailure, noteExecuteSuccess, probeExecute, useExecuteState, useSchema } from '../schema/schemaStore';
+import { SCHEMA_ONLY_REASON } from '../executeGate';
+import GatedButton from '../components/GatedButton';
 import { useSqlEnv } from '../sqlEnv';
 import SqlEditor from '../components/SqlEditor';
 import type { DecorationRange, EditorCursorState, SqlEditorHandle } from '../components/SqlEditor';
@@ -144,9 +146,10 @@ const styles = {
 		padding: '16px 24px 24px',
 	} as CSSProperties,
 
+	// About 13 lines of editor at least; the results take the rest.
 	editorRegion: {
-		flex: '0 0 38%',
-		minHeight: 120,
+		flex: '0 0 46%',
+		minHeight: 270,
 		display: 'flex',
 		flexDirection: 'column',
 	} as CSSProperties,
@@ -193,10 +196,12 @@ const styles = {
  * @param dialect - The engine dialect.
  * @param sql - The statement exactly as it would be sent.
  * @param connected - Whether the shell connection is live.
+ * @param executeOff - Whether the node is schema only (its execute is off).
  * @returns The reason, or null when the statement can be explained.
  */
-function explainRefusal(dialect: SqlDialect, sql: string, connected: boolean): string | null {
+function explainRefusal(dialect: SqlDialect, sql: string, connected: boolean, executeOff: boolean): string | null {
 	if (!connected) return 'Not connected.';
+	if (executeOff) return SCHEMA_ONLY_REASON;
 	if (!sql.trim()) return 'Write a statement to explain.';
 	if (buildExplain(dialect, sql) === null) return `EXPLAIN is not available for this engine (${dialect}).`;
 	return null;
@@ -271,7 +276,12 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	const [lastRun, setLastRun] = useState<{ index: number; at: number; start?: number; end?: number } | null>(null);
 
 	// ── Notices ──────────────────────────────────────────────────────────────
-	const [allowExecuteOff, setAllowExecuteOff] = useState(false);
+	// Whether the node refuses to execute: learned by the workbench's probe and
+	// by what runs here (see schemaStore).
+	const allowExecuteOff = useExecuteState(endpoint.key) === 'off';
+	const gateReason = allowExecuteOff ? SCHEMA_ONLY_REASON : null;
+	// One id per mounted query: several instances stay mounted at once.
+	const gateNoteId = useId();
 	const [untouchedGenerated, setUntouchedGenerated] = useState(origin === 'generated');
 
 	// ── Drawers + dialogs ────────────────────────────────────────────────────
@@ -399,7 +409,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		formatPrior: (list, failedIndex) => formatPriorStatements(list, failedIndex),
 		// The runner records only while this document is mounted.
 		record: (run) => env.history.record(endpoint, toHistoryEntry(run)),
-		onFailure: (notice) => { if (notice.allowExecuteOff) setAllowExecuteOff(true); },
+		onFailure: (notice) => noteExecuteFailure(endpoint.key, notice.verbatim),
 		onStart: () => {
 			startedRunTextRef.current = editorRunTextRef.current;
 			setUntouchedGenerated(false);
@@ -414,7 +424,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			if (opts.fromEditor && startedRunTextRef.current !== null) committedTextRef.current = startedRunTextRef.current;
 			// A statement that actually ran is the only proof the node's execute
 			// gate is open again, so a successful run retires the warning.
-			if (info.resolved) setAllowExecuteOff(false);
+			if (info.resolved) noteExecuteSuccess(endpoint.key);
 		},
 		// Only outcomes that have NO live region of their own are announced. A
 		// failure is not one: the error Banner is an assertive alert already
@@ -573,14 +583,14 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		// nothing can be explained, say why: Ctrl/Cmd+Shift+E has no tooltip,
 		// and a keybinding that does nothing at all reads as a broken app.
 		const sent = targetSqlAsSent();
-		const refusal = explainRefusal(dialect, sent, env.ready);
+		const refusal = explainRefusal(dialect, sent, env.ready, allowExecuteOff);
 		if (refusal) {
 			announce(refusal);
 			return;
 		}
 		setExplainSql(sent);
 		setExplainOpen(true);
-	}, [targetSqlAsSent, dialect, env.ready]);
+	}, [targetSqlAsSent, dialect, env.ready, allowExecuteOff]);
 
 	/**
 	 * Whether Explain can run right now, and why not when it cannot. Derived
@@ -593,12 +603,12 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			: '';
 		const statement = selected || statementAtOffset(sql, cursor.offset, dialect)?.sql || '';
 		const candidate = statement ? applyRowLimit(statement, limit, dialect).sql : '';
-		const refusal = explainRefusal(dialect, candidate, env.ready);
+		const refusal = explainRefusal(dialect, candidate, env.ready, allowExecuteOff);
 		return {
 			disabled: refusal !== null,
 			title: refusal ?? "Show the database's plan for the statement Run would send (Ctrl+Shift+E)",
 		};
-	}, [env.ready, cursor, sql, dialect, limit]);
+	}, [env.ready, cursor, sql, dialect, limit, allowExecuteOff]);
 
 	/**
 	 * Put a statement into the editor, asking first when doing so would throw
@@ -712,7 +722,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 				: 'Statement executed';
 
 	const batchLine = runs.length > 1 ? formatBatchOutcome(runs) : '';
-	const canRun = env.ready && !running && sql.trim().length > 0;
+	const canRun = env.ready && !running && sql.trim().length > 0 && !allowExecuteOff;
 
 	// ── Render ───────────────────────────────────────────────────────────────
 
@@ -737,43 +747,56 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 						>
 							History
 						</Button>
-						<Button
+						<GatedButton
 							variant="secondary"
 							onClick={openExplain}
 							disabled={explainState.disabled}
 							ariaExpanded={explainOpen}
 							title={explainState.title}
+							gateReason={gateReason}
+							reasonId={gateNoteId}
 						>
 							Explain
-						</Button>
+						</GatedButton>
 						{inFlight && canStop && (
 							<Button variant="ghost" title="Stop waiting for the answer. This does not cancel the statement." onClick={stopWaiting}>
 								Stop waiting
 							</Button>
 						)}
-						<Button
+						<GatedButton
 							variant="secondary"
 							onClick={runAll}
 							disabled={!canRun}
 							title="Run every statement in order, stop at the first error (Ctrl+Shift+Enter)"
+							gateReason={gateReason}
+							reasonId={gateNoteId}
 						>
 							Run all
-						</Button>
-						<Button
+						</GatedButton>
+						<GatedButton
 							variant="primary"
 							onClick={runOne}
 							disabled={!canRun}
 							title="Run selection, or the statement at the cursor (Ctrl+Enter)"
+							gateReason={gateReason}
+							reasonId={gateNoteId}
 						>
 							{running ? 'Running…' : 'Run'}
-						</Button>
+						</GatedButton>
 					</>
 				}
 			/>
 
 			<div style={styles.body}>
 				{/* The node refuses to execute anything — schema browsing still works. */}
-				{allowExecuteOff && <Banner variant="warning">{ALLOW_EXECUTE_OFF_TEXT}</Banner>}
+				{allowExecuteOff && (
+					<div id={gateNoteId}>
+						<Banner variant="warning">
+							{ALLOW_EXECUTE_OFF_TEXT}{' '}
+							<Button variant="ghost" small onClick={() => { if (env.ready) void probeExecute(env.getSession(endpoint)); }}>Check again</Button>
+						</Banner>
+					</div>
+				)}
 
 				{/* SQL the app wrote, shown before it runs. */}
 				{untouchedGenerated && <Banner variant="info">Generated preview: review, then Run</Banner>}

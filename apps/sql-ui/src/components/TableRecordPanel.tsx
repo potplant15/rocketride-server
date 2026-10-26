@@ -37,6 +37,9 @@ import type { SqlSchemaTable, SqlDialect } from '../connect';
 import type { JoinPath, RelationGraph } from '../schema/relations';
 import { MAX_JOIN_PATHS, describeHop, findJoinPaths, generateJoinSql, inboundReferences } from '../schema/relations';
 import { quoteIdent } from '../sql/paging';
+import { fkLabelsByColumn } from '../schema/fkLabel';
+import { SCHEMA_ONLY_REASON } from '../executeGate';
+import GatedButton from './GatedButton';
 import { announce } from '../a11y/announce';
 import { TableIcon } from '../icons';
 
@@ -62,8 +65,10 @@ export interface TableRecordPanelProps {
 	graph: RelationGraph;
 	/** Unix ms the snapshot was read (0 = never). */
 	refreshedAt: number;
-	/** Fired when the user opens the table's data browser. */
-	onBrowseData: () => void;
+	/** Why statements are off for this connection (null = they may run). */
+	gateReason: string | null;
+	/** Fired when the user opens the table's data page. */
+	onOpenData: () => void;
 	/** Fired when the user opens the table's designer. */
 	onDesign: () => void;
 	/** Fired with another table to inspect (opens a stacked drawer). */
@@ -86,6 +91,9 @@ interface PathResult {
 
 /** First line of every generated preview statement. */
 const PREVIEW_HEADER = '-- Generated preview: review, then Run.';
+
+/** Id of the visible note the gated controls point at. */
+const GATE_NOTE_ID = 'sql-drawer-gate-note';
 
 /** Said when the schema declares no foreign keys at all. */
 const NO_KEYS_GENERIC = 'This schema declares no foreign keys; join paths are unavailable.';
@@ -124,6 +132,13 @@ const styles = {
 	columnName: {
 		fontFamily: 'var(--rr-font-mono, monospace)',
 		color: 'var(--rr-text-primary)',
+	} as CSSProperties,
+
+	// Foreign-key marker after the name: where the column points.
+	fkMarker: {
+		fontFamily: 'var(--rr-font-mono, monospace)',
+		fontSize: 11,
+		color: 'var(--rr-text-secondary)',
 	} as CSSProperties,
 
 	columnType: {
@@ -256,11 +271,13 @@ function clock(at: number): string {
 export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 	const {
 		open, onClose, database, table, def, dialect, graph, refreshedAt,
-		onBrowseData, onDesign, onOpenTable, onOpenQuery,
+		gateReason, onOpenData, onDesign, onOpenTable, onOpenQuery,
 	} = props;
 
 	// Primary key membership for the per-column PK badge.
 	const pkColumns = new Set(def?.primary_key ?? []);
+	// Where each foreign-key column points ("→ customers.customer_id").
+	const fkLabels = useMemo(() => fkLabelsByColumn(def), [def]);
 
 	// Tables this one can be joined to (itself excluded — a self join is not
 	// what "find a path" means here).
@@ -281,11 +298,25 @@ export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 
 	// ── Generated statements ─────────────────────────────────────────────────
 
+	/** The statement behind Select top 100 and Copy SELECT. */
+	const topRowsSql = `SELECT * FROM ${quoteIdent(dialect, table)} LIMIT 100`;
+
 	/** Open a `SELECT *` preview for this table in a new query document. */
 	const openTopRows = (): void => {
-		onOpenQuery(
-			`${PREVIEW_HEADER}\nSELECT * FROM ${quoteIdent(dialect, table)} LIMIT 100`,
-			`${table}: top 100`,
+		onOpenQuery(`${PREVIEW_HEADER}\n${topRowsSql}`, `${table}: top 100`);
+	};
+
+	/**
+	 * Copy text to the clipboard and say so. A host without clipboard access
+	 * (some webviews) is told so instead of failing silently.
+	 *
+	 * @param text - The text to copy.
+	 * @param what - What was copied, for the announcement.
+	 */
+	const copy = (text: string, what: string): void => {
+		navigator.clipboard.writeText(text).then(
+			() => announce(`Copied ${what}`),
+			() => announce(`Could not copy ${what}: the clipboard is not available here`),
 		);
 	};
 
@@ -386,7 +417,7 @@ export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 				<>
 					<Button variant="ghost" onClick={onClose}>Close</Button>
 					<Button variant="secondary" onClick={onDesign}>Design</Button>
-					<Button variant="primary" onClick={onBrowseData}>Browse Data</Button>
+					<GatedButton variant="primary" onClick={onOpenData} gateReason={gateReason} reasonId={GATE_NOTE_ID}>Open data</GatedButton>
 				</>
 			}
 		>
@@ -396,6 +427,9 @@ export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 					<div key={col.column} style={styles.columnRow}>
 						<span style={styles.columnName}>{col.column}</span>
 						{pkColumns.has(col.column) && <StatusBadge variant="info">PK</StatusBadge>}
+						{fkLabels.has(col.column) && (
+							<span style={styles.fkMarker} title="Foreign key">{fkLabels.get(col.column)}</span>
+						)}
 						<span style={styles.columnType}>{col.type}</span>
 					</div>
 				))}
@@ -443,10 +477,15 @@ export const TableRecordPanel: React.FC<TableRecordPanelProps> = (props) => {
 			{/* ── Query ──────────────────────────────────────────────────────── */}
 			<Section label="Query">
 				<div style={styles.actionRow}>
-					<Button variant="secondary" small onClick={openTopRows}>Select top 100</Button>
-					<Button variant="secondary" small onClick={openCount}>Count rows</Button>
+					<GatedButton variant="secondary" small onClick={openTopRows} gateReason={gateReason} reasonId={GATE_NOTE_ID}>Select top 100</GatedButton>
+					<GatedButton variant="secondary" small onClick={openCount} gateReason={gateReason} reasonId={GATE_NOTE_ID}>Count rows</GatedButton>
+					<Button variant="ghost" small onClick={() => copy(table, 'the table name')}>Copy name</Button>
+					<Button variant="ghost" small onClick={() => copy(topRowsSql, 'the SELECT statement')}>Copy SELECT</Button>
 				</div>
-				<div style={styles.snapshotNote}>Opens a new query document. Nothing runs until you run it.</div>
+				<div style={styles.snapshotNote}>Opens a new query. Nothing runs until you run it.</div>
+				{gateReason && (
+					<div id={GATE_NOTE_ID} style={styles.snapshotNote}>{`Schema only: ${SCHEMA_ONLY_REASON} Open data, Select top 100 and Count rows are off.`}</div>
+				)}
 			</Section>
 
 			{/* ── Join path ──────────────────────────────────────────────────── */}
