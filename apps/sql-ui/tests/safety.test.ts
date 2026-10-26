@@ -44,7 +44,7 @@ import {
 	needsConfirmation,
 	writeConfirmCopy,
 } from '../src/sql/safety';
-import type { WriteConfirmation } from '../src/sql/safety';
+import type { RowEstimate, WriteConfirmation } from '../src/sql/safety';
 
 const LEVELS: SafetyLevel[] = ['off', 'risky', 'every'];
 
@@ -121,6 +121,49 @@ describe('needsConfirmation: the level × kind matrix', () => {
 	});
 });
 
+describe('needsConfirmation on a dialect not known yet', () => {
+	// The schema read decides the dialect, and a statement can run before it
+	// lands. `#` is a comment on MySQL and ClickHouse, `--` needs a space after
+	// it on MySQL, and `/*! … */` is code on MySQL: until the dialect is known,
+	// a statement asks when ANY of those readings says it should.
+	it('asks for a write hidden behind a `#` line, as MySQL and ClickHouse read it', () => {
+		assert.equal(needsConfirmation('# c\nDELETE FROM t', 'unknown', 'risky')?.kind, 'DELETE without WHERE');
+		assert.equal(needsConfirmation('# c\nUPDATE t SET a = 1', 'unknown', 'risky')?.kind, 'UPDATE without WHERE');
+	});
+
+	it('asks for the typed name of a DROP or TRUNCATE hidden behind `#` or `#!`', () => {
+		for (const sql of ['# c\nDROP TABLE t', '#!x\nDROP TABLE t', '# old\nTRUNCATE t']) {
+			for (const level of ['risky', 'every'] as SafetyLevel[]) {
+				const found = needsConfirmation(sql, 'unknown', level);
+				assert.equal(found?.target?.confirmText, 't', `${level}: ${sql}`);
+			}
+			assert.equal(destructiveTarget(sql, 'unknown')?.confirmText, 't', sql);
+		}
+	});
+
+	it('asks for statements in MySQL executable comments and after `--` comments', () => {
+		assert.equal(needsConfirmation('/*! DELETE FROM t */', 'unknown', 'risky')?.kind, 'DELETE without WHERE');
+		assert.equal(needsConfirmation('/*!50000 DROP TABLE t */', 'unknown', 'risky')?.target?.confirmText, 't');
+		assert.equal(needsConfirmation('-- c\nDELETE FROM t', 'unknown', 'risky')?.kind, 'DELETE without WHERE');
+		assert.equal(needsConfirmation('--c\nDROP TABLE t', 'unknown', 'risky')?.target?.confirmText, 't');
+	});
+
+	it('does not ask for a read whatever the reading', () => {
+		for (const sql of ['SELECT a # b FROM t', '# note\nSELECT 1', 'SELECT 1 -- DELETE FROM t']) {
+			assert.equal(needsConfirmation(sql, 'unknown', 'risky'), null, sql);
+		}
+		assert.equal(needsConfirmation('SELECT 1 -- DELETE FROM t', 'unknown', 'every'), null);
+	});
+
+	it('when readings name different targets, the verb is typed', () => {
+		// MySQL reads the `#` line as a comment and the name as `a`; the default
+		// reading finds no name there.
+		assert.equal(destructiveTarget('DROP TABLE # x\na', 'unknown')?.confirmText, 'DROP');
+		// ClickHouse reads `/*! , b */` as a comment (one table), MySQL as code (two).
+		assert.equal(destructiveTarget('DROP TABLE a /*! , b */', 'unknown')?.confirmText, 'DROP');
+	});
+});
+
 describe('destructiveTarget', () => {
 	/**
 	 * The parts of a target a test pins.
@@ -180,6 +223,7 @@ describe('destructiveTarget', () => {
 		assert.deepEqual(target('DROP FUNCTION refresh_totals(int)'), { verb: 'DROP', object: 'function', names: [], confirmText: 'DROP' });
 		assert.deepEqual(target('TRUNCATE ALL TABLES FROM shop', 'clickhouse'), { verb: 'TRUNCATE', object: 'table', names: [], confirmText: 'TRUNCATE' });
 		assert.deepEqual(target('DROP TABLE'), { verb: 'DROP', object: 'table', names: [], confirmText: 'DROP' });
+		assert.equal(target('DROP TABLE ""')?.confirmText, 'DROP', 'an empty name would enable the button with nothing typed');
 	});
 
 	it('comments around the statement are read past with the dialect\'s rules', () => {
@@ -216,10 +260,43 @@ describe('writeConfirmCopy', () => {
 	 * @param level - The level.
 	 * @returns The copy.
 	 */
-	const copyFor = (sql: string, level: SafetyLevel = 'risky') => {
+	const copyFor = (sql: string, level: SafetyLevel = 'risky', estimate?: RowEstimate) => {
 		const found = needsConfirmation(sql, 'postgres', level) as WriteConfirmation;
-		return writeConfirmCopy(found, sql, 'postgres', 'Shop Postgres');
+		return writeConfirmCopy(found, sql, 'Shop Postgres', estimate);
 	};
+
+	it('with an estimate, an UPDATE or DELETE names the rows and the table in the title and the button', () => {
+		const update = copyFor("UPDATE orders SET status = 'cancelled'", 'risky', { state: 'rows', rows: 20 });
+		assert.equal(update.title, 'Update about 20 rows in orders?');
+		assert.equal(update.confirmLabel, 'Update 20 rows');
+		const del = copyFor('DELETE FROM public.orders WHERE id < 3', 'every', { state: 'rows', rows: 1 });
+		assert.equal(del.title, 'Delete about 1 row from public.orders?');
+		assert.equal(del.confirmLabel, 'Delete 1 row');
+		const big = copyFor('UPDATE orders SET a = 1', 'risky', { state: 'rows', rows: 12345 });
+		assert.equal(big.confirmLabel, `Update ${(12345).toLocaleString()} rows`);
+	});
+
+	it('without an estimate, keeps the plain title and button', () => {
+		for (const estimate of [undefined, { state: 'estimating' }, { state: 'none' }] as Array<RowEstimate | undefined>) {
+			const copy = copyFor("UPDATE orders SET status = 'cancelled'", 'risky', estimate);
+			assert.equal(copy.title, 'Run this UPDATE?');
+			assert.equal(copy.confirmLabel, 'Run UPDATE');
+		}
+	});
+
+	it('names a SELECT … INTO and a write inside a WITH clause by what they do', () => {
+		assert.equal(copyFor('SELECT * INTO archive FROM orders', 'every').title, 'Run this SELECT INTO?');
+		assert.equal(copyFor('SELECT * INTO archive FROM orders', 'every').confirmLabel, 'Run SELECT INTO');
+		assert.equal(copyFor('WITH gone AS (DELETE FROM orders WHERE id = 1 RETURNING *) SELECT * FROM gone').title, 'Run this DELETE?');
+		assert.equal(copyFor('WITH n AS (SELECT 1 AS id) INSERT INTO t SELECT id FROM n', 'every').title, 'Run this INSERT?');
+	});
+
+	it('reads the verb with the comment rules that found the statement', () => {
+		const sql = '# c\nDELETE FROM t';
+		const found = needsConfirmation(sql, 'unknown', 'risky') as WriteConfirmation;
+		assert.equal(found.reading, 'mysql');
+		assert.equal(writeConfirmCopy(found, sql, 'Scratch').title, 'Run this DELETE?');
+	});
 
 	it('DROP names the object and the action, and asks for the name', () => {
 		const copy = copyFor('DROP TABLE orders');

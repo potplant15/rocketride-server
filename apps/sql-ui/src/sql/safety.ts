@@ -46,6 +46,12 @@
 // PostgreSQL's `Plan Rows` and MySQL's `rows`. ClickHouse, and anything else
 // those two cannot explain, gets no estimate.
 //
+// A dialect that is not known yet (the schema read has not landed) is read
+// every way it could be: the default comment rules, MySQL's (`#` comments,
+// `--` needs a space, `/*! … */` is code) and ClickHouse's. A statement asks
+// when ANY reading says it should, so a `#` line cannot hide a DELETE from a
+// connection that turns out to be MySQL.
+//
 // Everything here reads the statement TEXT. It prevents nothing the database
 // would do on its own, and the dialog says so.
 // =============================================================================
@@ -54,9 +60,9 @@ import type { IPatternFinding } from 'shared/explorer/runner/types';
 import type { SqlDialect } from '../connect';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { leadingVerb } from './batch';
-import { classifyStatement, patternCheck } from './classify';
+import { CTE_WRITE_WORDS, classifyStatement, patternCheck } from './classify';
 import { buildExplain } from './explain';
-import { stripSqlComments } from './split';
+import { keywordSites, stripSqlComments } from './split';
 
 // =============================================================================
 // TYPES
@@ -89,6 +95,8 @@ export interface WriteConfirmation extends IPatternFinding {
 	level: Exclude<SafetyLevel, 'off'>;
 	/** For DROP and TRUNCATE: the target whose name must be typed. */
 	target: DestructiveTarget | null;
+	/** The comment rules the statement was read with when it asked (one of an unknown dialect's readings). */
+	reading: SqlDialect;
 }
 
 /** The affected-row estimate, as the dialog shows it. */
@@ -115,8 +123,48 @@ export interface WriteConfirmCopy {
 /** The kind `every` reports for a statement that is neither a read, a write nor DDL. */
 const NOT_A_READ = 'a statement that is not a read';
 
+/** The kinds `every` reports by statement kind rather than by a pattern finding. */
+const EVERY_KINDS = new Set(['a write', 'a schema change', NOT_A_READ]);
+
+/**
+ * The comment rules to read a statement with: the dialect's own, or, for a
+ * dialect not known yet, every set it could turn out to be.
+ *
+ * @param dialect - The engine dialect.
+ * @returns The readings.
+ */
+function readingsOf(dialect: SqlDialect): SqlDialect[] {
+	return dialect === 'unknown' ? ['unknown', 'mysql', 'clickhouse'] : [dialect];
+}
+
+/**
+ * The confirmation one reading of a statement asks for.
+ *
+ * @param sql - The statement.
+ * @param reading - The comment rules to read it with.
+ * @param level - The connection's level (not `off`).
+ * @returns The confirmation, or null.
+ */
+function confirmationUnder(sql: string, reading: SqlDialect, level: Exclude<SafetyLevel, 'off'>): WriteConfirmation | null {
+	if (stripSqlComments(sql, reading).trim() === '') return null;
+	const target = targetUnder(sql, reading);
+	const finding = patternCheck(sql, reading);
+	if (finding) return { kind: finding.kind, level, target, reading };
+	if (level === 'every') {
+		const kind = classifyStatement(sql, reading);
+		if (kind === 'write') return { kind: 'a write', level, target, reading };
+		if (kind === 'ddl') return { kind: 'a schema change', level, target, reading };
+		if (kind === 'other') return { kind: NOT_A_READ, level, target, reading };
+	}
+	return null;
+}
+
 /**
  * Whether a statement asks before it is sent at a connection's level, and why.
+ *
+ * A dialect not known yet is read every way it could be, and the statement
+ * asks when any reading says so. The strictest reading is the one reported:
+ * one that needs a typed name, then a pattern finding, then a statement kind.
  *
  * @param sql - The statement as it would be sent.
  * @param dialect - The engine dialect.
@@ -124,17 +172,12 @@ const NOT_A_READ = 'a statement that is not a read';
  * @returns The confirmation to show, or null when the statement runs at once.
  */
 export function needsConfirmation(sql: string, dialect: SqlDialect, level: SafetyLevel): WriteConfirmation | null {
-	if (level === 'off' || stripSqlComments(sql, dialect).trim() === '') return null;
-	const target = destructiveTarget(sql, dialect);
-	const finding = patternCheck(sql, dialect);
-	if (finding) return { kind: finding.kind, level, target };
-	if (level === 'every') {
-		const kind = classifyStatement(sql, dialect);
-		if (kind === 'write') return { kind: 'a write', level, target };
-		if (kind === 'ddl') return { kind: 'a schema change', level, target };
-		if (kind === 'other') return { kind: NOT_A_READ, level, target };
-	}
-	return null;
+	if (level === 'off') return null;
+	const found = readingsOf(dialect)
+		.map((reading) => confirmationUnder(sql, reading, level))
+		.filter((confirmation): confirmation is WriteConfirmation => confirmation !== null);
+	const chosen = found.find((c) => c.target !== null) ?? found.find((c) => !EVERY_KINDS.has(c.kind)) ?? found[0];
+	return chosen ? { ...chosen, target: destructiveTarget(sql, dialect) } : null;
 }
 
 /**
@@ -157,7 +200,7 @@ export function isWriteConfirmation(finding: IPatternFinding): finding is WriteC
  * @returns The confirmation.
  */
 export function toWriteConfirmation(finding: IPatternFinding): WriteConfirmation {
-	return isWriteConfirmation(finding) ? finding : { kind: finding.kind, level: 'risky', target: null };
+	return isWriteConfirmation(finding) ? finding : { kind: finding.kind, level: 'risky', target: null, reading: 'unknown' };
 }
 
 /**
@@ -320,20 +363,13 @@ function nameList(cursor: Cursor, dialect: SqlDialect, star: boolean): string[][
 }
 
 /**
- * What a DROP or a TRUNCATE removes, read from the statement text.
- *
- * Reads past comments (with the dialect's rules), `TEMPORARY`, `IF EXISTS`,
- * `CONCURRENTLY` and `ONLY`; strips quotes from quoted names and keeps the
- * schema of a qualified one. A DROP of something other than a table, view,
- * materialized view, foreign table, index, schema, database, sequence or
- * dictionary (a function with its argument list, a role…) is reported with no
- * names, and is confirmed by typing the verb.
+ * What a DROP or a TRUNCATE removes, under one reading's comment rules.
  *
  * @param sql - The statement.
- * @param dialect - The engine dialect.
+ * @param dialect - The comment rules to read it with.
  * @returns The target, or null when the statement is not a DROP or a TRUNCATE.
  */
-export function destructiveTarget(sql: string, dialect: SqlDialect = 'unknown'): DestructiveTarget | null {
+function targetUnder(sql: string, dialect: SqlDialect): DestructiveTarget | null {
 	const cursor: Cursor = { text: stripSqlComments(sql, dialect).trim(), at: 0 };
 	let verb: DestructiveTarget['verb'];
 	let object = 'table';
@@ -366,13 +402,42 @@ export function destructiveTarget(sql: string, dialect: SqlDialect = 'unknown'):
 	}
 
 	const read = names ?? [];
-	const only = read.length === 1 ? read[0] : undefined;
+	// One target is confirmed by its own name; several, none, or an empty
+	// quoted name (which would match an empty field) by the verb.
+	const parts = read.length === 1 ? read[0] : undefined;
+	const only = parts?.[parts.length - 1];
 	return {
 		verb,
 		object,
 		names: read.map((parts) => parts.join('.')),
-		confirmText: only ? only[only.length - 1] as string : verb,
+		confirmText: only || verb,
 	};
+}
+
+/**
+ * What a DROP or a TRUNCATE removes, read from the statement text.
+ *
+ * Reads past comments (with the dialect's rules), `TEMPORARY`, `IF EXISTS`,
+ * `CONCURRENTLY` and `ONLY`; strips quotes from quoted names and keeps the
+ * schema of a qualified one. A DROP of something other than a table, view,
+ * materialized view, foreign table, index, schema, database, sequence or
+ * dictionary (a function with its argument list, a role…) is reported with no
+ * names, and is confirmed by typing the verb. A dialect not known yet is read
+ * every way it could be; when the readings disagree on the name, the verb is
+ * typed.
+ *
+ * @param sql - The statement.
+ * @param dialect - The engine dialect.
+ * @returns The target, or null when the statement is not a DROP or a TRUNCATE.
+ */
+export function destructiveTarget(sql: string, dialect: SqlDialect = 'unknown'): DestructiveTarget | null {
+	const targets = readingsOf(dialect)
+		.map((reading) => targetUnder(sql, reading))
+		.filter((target): target is DestructiveTarget => target !== null);
+	const first = targets[0];
+	if (!first) return null;
+	// Readings that disagree on the name are confirmed by the verb.
+	return targets.every((target) => target.confirmText === first.confirmText) ? first : { ...first, confirmText: first.verb };
 }
 
 // =============================================================================
@@ -476,13 +541,12 @@ export function parseRowEstimate(dialect: SqlDialect, rows: Record<string, unkno
  *
  * @param confirmation - Why the statement asks.
  * @param sql - The statement.
- * @param dialect - The engine dialect.
  * @param estimate - Where the estimate is.
  * @returns The text, or null.
  */
-export function rowsChangeText(confirmation: WriteConfirmation, sql: string, dialect: SqlDialect, estimate: RowEstimate): string | null {
+export function rowsChangeText(confirmation: WriteConfirmation, sql: string, estimate: RowEstimate): string | null {
 	if (confirmation.target?.verb === 'TRUNCATE') return 'Every row';
-	if (classifyStatement(sql, dialect) !== 'write') return null;
+	if (classifyStatement(sql, confirmation.reading) !== 'write') return null;
 	if (estimate.state === 'estimating') return 'Estimating…';
 	if (estimate.state === 'none') return 'No estimate';
 	return `about ${estimate.rows.toLocaleString()} ${estimate.rows === 1 ? 'row' : 'rows'} (planner estimate)`;
@@ -509,15 +573,68 @@ function plainConsequence(kind: string): string {
 }
 
 /**
- * The dialog's sentences for one confirmation.
+ * The verb a confirmation names: the mutation a pattern finding saw, `SELECT
+ * INTO` for a SELECT that writes, the write a WITH chain carries, and the
+ * statement's leading keyword otherwise.
  *
  * @param confirmation - Why the statement asks.
  * @param sql - The statement.
- * @param dialect - The engine dialect.
+ * @returns The verb, in upper case.
+ */
+function statementVerb(confirmation: WriteConfirmation, sql: string): string {
+	const named = /^(UPDATE|DELETE) (?:without WHERE|inside a WITH clause)$/.exec(confirmation.kind);
+	if (named) return named[1] as string;
+	const verb = leadingVerb(sql, confirmation.reading);
+	if (verb === 'SELECT' && classifyStatement(sql, confirmation.reading) === 'write') return 'SELECT INTO';
+	if (verb === 'WITH') return keywordSites(sql, CTE_WRITE_WORDS, confirmation.reading)[0]?.keyword.toUpperCase() ?? verb;
+	return verb;
+}
+
+/**
+ * The table an UPDATE or a DELETE writes to, as written (quotes removed), or
+ * null when it is not one plain table (a multi-table form, a join).
+ *
+ * @param sql - The statement.
+ * @param reading - The comment rules to read it with.
+ * @returns The table, or null.
+ */
+function writeTable(sql: string, reading: SqlDialect): string | null {
+	const cursor: Cursor = { text: stripSqlComments(sql, reading).trim(), at: 0 };
+	let names: string[][] | null = null;
+	if (takeWords(cursor, 'update')) {
+		for (const modifier of ['only', 'low_priority', 'ignore']) takeWords(cursor, modifier);
+		names = nameList(cursor, reading, true);
+		// Then `SET`, optionally after an alias: anything else (a join, a
+		// second table) is not one plain table.
+		if (!takeWords(cursor, 'set')) {
+			takeWords(cursor, 'as');
+			const alias = peekWord(cursor);
+			if (alias !== null) {
+				skipSpace(cursor);
+				cursor.at += alias.length;
+			}
+			if (!takeWords(cursor, 'set')) return null;
+		}
+	} else if (takeWords(cursor, 'delete')) {
+		for (const modifier of ['low_priority', 'quick', 'ignore']) takeWords(cursor, modifier);
+		if (!takeWords(cursor, 'from')) return null;
+		takeWords(cursor, 'only');
+		names = nameList(cursor, reading, true);
+	}
+	return names?.length === 1 ? (names[0] as string[]).join('.') : null;
+}
+
+/**
+ * The dialog's sentences for one confirmation. With an estimate, an UPDATE or
+ * a DELETE names the rows and the table: "Update about 20 rows in orders?".
+ *
+ * @param confirmation - Why the statement asks.
+ * @param sql - The statement.
  * @param connection - The connection's name.
+ * @param estimate - The affected-row estimate, when there is one.
  * @returns The sentences.
  */
-export function writeConfirmCopy(confirmation: WriteConfirmation, sql: string, dialect: SqlDialect, connection: string): WriteConfirmCopy {
+export function writeConfirmCopy(confirmation: WriteConfirmation, sql: string, connection: string, estimate?: RowEstimate): WriteConfirmCopy {
 	const why = `${connection} is set to ask before ${confirmation.level === 'every' ? 'every write' : 'risky writes'}. This is a check on the statement text, not a database permission.`;
 	const runsAs = 'It runs at once and commits on its own. It cannot be undone here.';
 	const { target } = confirmation;
@@ -545,7 +662,20 @@ export function writeConfirmCopy(confirmation: WriteConfirmation, sql: string, d
 			confirmLabel: `Empty ${target.object}${several ? 's' : ''}`,
 		};
 	}
-	const verb = leadingVerb(sql, dialect);
+	const verb = statementVerb(confirmation, sql);
+	if (estimate?.state === 'rows' && (verb === 'UPDATE' || verb === 'DELETE')) {
+		const action = verb === 'UPDATE' ? 'Update' : 'Delete';
+		const count = `${estimate.rows.toLocaleString()} ${estimate.rows === 1 ? 'row' : 'rows'}`;
+		const table = writeTable(sql, confirmation.reading);
+		const where = table === null ? '' : `${verb === 'UPDATE' ? ' in' : ' from'} ${table}`;
+		return {
+			title: `${action} about ${count}${where}?`,
+			consequence: plainConsequence(confirmation.kind),
+			runsAs,
+			why,
+			confirmLabel: `${action} ${count}`,
+		};
+	}
 	return {
 		title: `Run this ${verb}?`,
 		consequence: plainConsequence(confirmation.kind),

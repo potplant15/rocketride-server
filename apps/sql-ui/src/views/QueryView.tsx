@@ -1061,7 +1061,6 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 					key={patternPrompt.run.index}
 					confirmation={toWriteConfirmation(patternPrompt.finding)}
 					sql={patternPrompt.run.sql}
-					dialect={dialect}
 					connection={connectionRecord?.name ?? endpoint.nodeName}
 					estimate={promptEstimate}
 					onAnswer={answerPattern}

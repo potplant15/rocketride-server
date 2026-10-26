@@ -43,7 +43,6 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ConfirmDialog } from 'shell';
 import { PATTERN_CANCEL_LABEL, focusCancelIn } from 'shared/explorer/components/PatternConfirmDialog';
-import type { SqlDialect } from '../connect';
 import { confirmTextMatches, rowsChangeText, writeConfirmCopy } from '../sql/safety';
 import type { RowEstimate, WriteConfirmation } from '../sql/safety';
 
@@ -56,8 +55,6 @@ export interface WriteConfirmDialogProps {
 	confirmation: WriteConfirmation;
 	/** The statement. */
 	sql: string;
-	/** The engine dialect. */
-	dialect: SqlDialect;
 	/** The connection's name, for "why you were asked". */
 	connection: string;
 	/** The affected-row estimate, as far as it has got. */
@@ -137,9 +134,10 @@ const styles = {
  * @param props - {@link WriteConfirmDialogProps}.
  * @returns The dialog element.
  */
-export function WriteConfirmDialog({ confirmation, sql, dialect, connection, estimate, onAnswer }: WriteConfirmDialogProps): React.ReactElement {
-	const copy = writeConfirmCopy(confirmation, sql, dialect, connection);
-	const rows = rowsChangeText(confirmation, sql, dialect, estimate);
+export function WriteConfirmDialog({ confirmation, sql, connection, estimate, onAnswer }: WriteConfirmDialogProps): React.ReactElement {
+	// The title and the button name the rows once the estimate arrives.
+	const copy = writeConfirmCopy(confirmation, sql, connection, estimate);
+	const rows = rowsChangeText(confirmation, sql, estimate);
 	const { target } = confirmation;
 	const [typed, setTyped] = useState('');
 	const matches = target === null || confirmTextMatches(typed, target);

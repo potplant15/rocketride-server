@@ -128,15 +128,15 @@ describe('rowsChangeText', () => {
 
 	it('says "about N rows" for an estimate, "Estimating…" while it runs and "No estimate" otherwise', () => {
 		const sql = 'UPDATE orders SET a = 1 WHERE id < 10';
-		assert.equal(rowsChangeText(ask(sql), sql, 'postgres', { state: 'rows', rows: 1234 }), `about ${(1234).toLocaleString()} rows (planner estimate)`);
-		assert.equal(rowsChangeText(ask(sql), sql, 'postgres', { state: 'rows', rows: 1 }), 'about 1 row (planner estimate)');
-		assert.equal(rowsChangeText(ask(sql), sql, 'postgres', { state: 'estimating' }), 'Estimating…');
-		assert.equal(rowsChangeText(ask(sql), sql, 'postgres', { state: 'none' }), 'No estimate');
+		assert.equal(rowsChangeText(ask(sql), sql, { state: 'rows', rows: 1234 }), `about ${(1234).toLocaleString()} rows (planner estimate)`);
+		assert.equal(rowsChangeText(ask(sql), sql, { state: 'rows', rows: 1 }), 'about 1 row (planner estimate)');
+		assert.equal(rowsChangeText(ask(sql), sql, { state: 'estimating' }), 'Estimating…');
+		assert.equal(rowsChangeText(ask(sql), sql, { state: 'none' }), 'No estimate');
 	});
 
 	it('says every row for TRUNCATE, and has no line for other schema changes', () => {
-		assert.equal(rowsChangeText(ask('TRUNCATE orders'), 'TRUNCATE orders', 'postgres', { state: 'none' }), 'Every row');
-		assert.equal(rowsChangeText(ask('DROP TABLE orders'), 'DROP TABLE orders', 'postgres', { state: 'none' }), null);
-		assert.equal(rowsChangeText(ask('ALTER TABLE t ADD c int'), 'ALTER TABLE t ADD c int', 'postgres', { state: 'none' }), null);
+		assert.equal(rowsChangeText(ask('TRUNCATE orders'), 'TRUNCATE orders', { state: 'none' }), 'Every row');
+		assert.equal(rowsChangeText(ask('DROP TABLE orders'), 'DROP TABLE orders', { state: 'none' }), null);
+		assert.equal(rowsChangeText(ask('ALTER TABLE t ADD c int'), 'ALTER TABLE t ADD c int', { state: 'none' }), null);
 	});
 });
