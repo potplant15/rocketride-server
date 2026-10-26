@@ -62,6 +62,7 @@ import { PatternConfirmDialog } from 'shared/explorer/components/PatternConfirmD
 import { lineRange, clock } from 'shared/explorer/runner/format';
 import { useStatementRunner } from 'shared/explorer/runner/useStatementRunner';
 import HistoryPanel from '../components/HistoryPanel';
+import { SaveQueryButton, SavedQueriesButton } from '../components/SavedQueriesPanel';
 import ExplainPanel from '../components/ExplainPanel';
 import { announce } from '../a11y/announce';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
@@ -728,6 +729,8 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 							value={limit}
 							onChange={setLimit}
 						/>
+						<SaveQueryButton endpoint={endpoint} sql={sql} />
+						<SavedQueriesButton endpoint={endpoint} />
 						<Button
 							variant="ghost"
 							pressed={historyOpen}
