@@ -70,12 +70,59 @@ export interface SavedConnectionsFs {
 // TYPES
 // =============================================================================
 
+/**
+ * How much a connection asks before a statement that changes something runs:
+ *
+ * - `off` — never asks.
+ * - `risky` — asks before the shapes the pattern check flags (UPDATE or
+ *   DELETE without WHERE or inside a WITH clause, TRUNCATE, DROP, ALTER).
+ * - `every` — asks before every statement that changes rows or the schema.
+ *
+ * At `risky` and `every`, DROP and TRUNCATE also ask for the target's name to
+ * be typed (sql/safety.ts). It is a check on the statement text that only adds
+ * questions; the node's `allow_execute` switch is the real gate.
+ */
+export type SafetyLevel = 'off' | 'risky' | 'every';
+
+/** Every level, in the order the connection editor offers them. */
+export const SAFETY_LEVELS: readonly SafetyLevel[] = ['off', 'risky', 'every'];
+
+/** The level of a record that names none (new records, and older ones). */
+export const DEFAULT_SAFETY_LEVEL: SafetyLevel = 'risky';
+
+/**
+ * Whether a value is a safety level.
+ *
+ * @param value - The value.
+ * @returns True for `off`, `risky` and `every`.
+ */
+export function isSafetyLevel(value: unknown): value is SafetyLevel {
+	return typeof value === 'string' && (SAFETY_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * A connection's safety level. A record with none, or with a value that is
+ * not a level, reads as the default: never as `off`.
+ *
+ * @param record - The saved connection, or null when it is not known.
+ * @returns The level.
+ */
+export function safetyLevelOf(record: SavedSqlConnection | null | undefined): SafetyLevel {
+	return isSafetyLevel(record?.safety) ? record.safety : DEFAULT_SAFETY_LEVEL;
+}
+
 /** Fields shared by both connection modes. */
 interface SavedConnectionBase {
 	/** Stable id (list identity, temp-pipeline naming). */
 	id: string;
 	/** User-visible name (sidebar row, workbench tab). */
 	name: string;
+	/**
+	 * How much this connection asks before a write ({@link SafetyLevel}).
+	 * Optional: records saved before it existed, or by an older build, have
+	 * none and read as {@link DEFAULT_SAFETY_LEVEL}.
+	 */
+	safety?: SafetyLevel;
 }
 
 /** A connection bound to a database node inside a user pipeline. */

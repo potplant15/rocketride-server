@@ -33,9 +33,14 @@
 // references). The full Pipe schema is fetched on demand (the cached
 // services summary may not carry it); the form mounts once it resolves.
 // Save validates the single component server-side before persisting.
+//
+// Both paths also set the connection's SAFETY LEVEL: how much it asks before
+// a statement that changes something. It is a field of the saved record, so
+// every save carries it over; a save that rebuilt the record without it
+// would quietly reset the connection to the default.
 // =============================================================================
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Banner, Button, ContentHeader, Modal } from 'shell';
 import type { IFormData, IService, IServiceSchema } from 'shell';
@@ -49,6 +54,8 @@ import {
 } from '../connect';
 import { useSqlEnv } from '../sqlEnv';
 import type { SqlEndpoint, SavedSqlConnection } from '../connect';
+import { safetyLevelOf } from '../connect/savedConnections';
+import type { SafetyLevel } from '../connect/savedConnections';
 import { DatabaseIcon } from '../icons';
 
 // =============================================================================
@@ -63,6 +70,21 @@ const PROVIDER_TITLES: Record<string, string> = {
 	db_supabase: 'Supabase',
 	rocketride_sql: 'RocketRide SQL',
 };
+
+/** The safety levels as the editor offers them, in plain words. */
+const SAFETY_OPTIONS: { id: SafetyLevel; label: string; detail: string }[] = [
+	{ id: 'off', label: "Don't ask", detail: 'Every statement runs as typed.' },
+	{
+		id: 'risky',
+		label: 'Ask before risky writes',
+		detail: 'UPDATE or DELETE without WHERE, TRUNCATE, DROP and ALTER. DROP and TRUNCATE ask you to type the name.',
+	},
+	{
+		id: 'every',
+		label: 'Ask before every write',
+		detail: 'Any statement that writes rows or changes the schema. DROP and TRUNCATE ask you to type the name.',
+	},
+];
 
 // =============================================================================
 // STYLES
@@ -168,6 +190,38 @@ const styles = {
 		marginBottom: 12,
 	} as CSSProperties,
 
+	/** The safety level group (a fieldset without the browser's frame). */
+	safety: {
+		border: 'none',
+		margin: '4px 0 12px',
+		padding: 0,
+		display: 'flex',
+		flexDirection: 'column',
+		gap: 6,
+	} as CSSProperties,
+
+	/** One level: radio, then its name over its description. */
+	safetyOption: {
+		display: 'flex',
+		alignItems: 'flex-start',
+		gap: 8,
+		fontSize: 13,
+		color: 'var(--rr-text-primary)',
+		cursor: 'pointer',
+	} as CSSProperties,
+
+	safetyText: {
+		display: 'flex',
+		flexDirection: 'column',
+		gap: 2,
+	} as CSSProperties,
+
+	/** Muted secondary line (a level's description, the group's note). */
+	safetyDetail: {
+		fontSize: 11.5,
+		color: 'var(--rr-text-secondary)',
+	} as CSSProperties,
+
 	// ── Page chrome (the top-level-tab flow) ─────────────────────────────────
 
 	/** Document root: header + scrolling body column. */
@@ -228,6 +282,9 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 	const [name, setName] = useState(editing?.name ?? '');
 	const [error, setError] = useState('');
 	const [saving, setSaving] = useState(false);
+	// Carried onto the record by both save paths, which rebuild it.
+	const [safety, setSafety] = useState<SafetyLevel>(safetyLevelOf(editing));
+	const safetyGroup = useId();
 
 	// ── Pipeline path: discovery ─────────────────────────────────────────────
 	const { status, endpoints, error: discoveryError } = useSqlEndpoints();
@@ -293,6 +350,7 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 			source: endpoint.source,
 			nodeId: endpoint.nodeId,
 			provider: endpoint.provider,
+			safety,
 		};
 		setSaving(true);
 		try {
@@ -306,7 +364,7 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 		} finally {
 			setSaving(false);
 		}
-	}, [endpoints, selectedKey, name, editing, env, onClose, onSaved]);
+	}, [endpoints, selectedKey, name, safety, editing, env, onClose, onSaved]);
 
 	/** Validates the configured component server-side, then persists. */
 	const saveDirect = useCallback(async (formData: IFormData) => {
@@ -337,6 +395,7 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 				name: name.trim() || providerTitle(provider),
 				provider,
 				config: formData,
+				safety,
 			};
 			await env.saveConnection(record);
 			onSaved?.(record);
@@ -346,7 +405,7 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 		} finally {
 			setSaving(false);
 		}
-	}, [provider, env, name, editing, onClose, onSaved, providerTitle]);
+	}, [provider, env, name, safety, editing, onClose, onSaved, providerTitle]);
 
 	/** Footer Save — routes to the active path. */
 	const handleSave = useCallback(() => {
@@ -473,6 +532,30 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 					)}
 				</>
 			)}
+
+			{/* How much this connection asks before a write (both paths). */}
+			<fieldset style={styles.safety}>
+				<legend style={styles.fieldLabel}>Safety level for this connection</legend>
+				{SAFETY_OPTIONS.map((option) => (
+					<label key={option.id} style={styles.safetyOption}>
+						<input
+							type="radio"
+							name={safetyGroup}
+							value={option.id}
+							checked={safety === option.id}
+							disabled={saving}
+							onChange={() => setSafety(option.id)}
+						/>
+						<span style={styles.safetyText}>
+							<span>{option.label}</span>
+							<span style={styles.safetyDetail}>{option.detail}</span>
+						</span>
+					</label>
+				))}
+				<span style={styles.safetyDetail}>
+					Saved with this connection, for your account. The real gate is the node&apos;s allow_execute switch; this setting only adds questions.
+				</span>
+			</fieldset>
 		</>
 	);
 
