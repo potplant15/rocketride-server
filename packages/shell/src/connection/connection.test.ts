@@ -409,6 +409,167 @@ test('logout drops held telemetry facts and the round-trip stamp, so the next ac
 	}
 });
 
+/** Stage browser globals for one test and restore them afterwards; the dev gate recomputes from the staged window. */
+async function withGlobals(globals: Record<string, unknown>, run: () => void | Promise<void>): Promise<void> {
+	const originals = Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+	for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, value });
+	resetDevGateForTests();
+	try {
+		await run();
+	} finally {
+		resetDevGateForTests();
+		for (const [key, original] of originals) {
+			if (original) Object.defineProperty(globalThis, key, original);
+			else delete (globalThis as Record<string, unknown>)[key];
+		}
+	}
+}
+
+/** A sessionStorage double over a Map that records every write and removal. */
+function recordingSession(initial: Array<[string, string]> = []) {
+	const data = new Map<string, string>(initial);
+	const writes: string[] = [];
+	const storage = {
+		getItem: (k: string) => data.get(k) ?? null,
+		setItem: (k: string, v: string) => { writes.push(`set:${k}`); data.set(k, v); },
+		removeItem: (k: string) => { writes.push(`remove:${k}`); data.delete(k); },
+	};
+	return { data, writes, storage };
+}
+
+/** A top-level tab: self and top are the same window. */
+function topLevelWindow(extra: Record<string, unknown>): Record<string, unknown> {
+	const win: Record<string, unknown> = { ...extra };
+	win.self = win;
+	win.top = win;
+	return win;
+}
+
+type TelemetryInternals = {
+	telemetry: TelemetryChannel;
+	listeners: Map<string, Set<unknown>>;
+	authProvider: { signIn(appId?: string, register?: boolean): Promise<void> } | null;
+	reportTelemetry(event: string, props: Record<string, unknown>): void;
+	drainTelemetry(): Array<{ event: string; props: Record<string, unknown>; ts: number; id: string }>;
+	dropRejectedCredential(): void;
+	startOAuth(register?: boolean, context?: { appId?: string; auto?: boolean }): Promise<void>;
+};
+
+const newTelemetryChannel = (): TelemetryChannel =>
+	(ConnectionManager as unknown as { newTelemetryChannel(): TelemetryChannel }).newTelemetryChannel();
+
+test('reportTelemetry delivers a fact live to a shell:telemetry listener and holds it when nobody listens', () => {
+	const { manager, emitted } = createTestManager();
+	const internals = manager as unknown as TelemetryInternals;
+	internals.listeners = new Map([['shell:telemetry', new Set<unknown>([() => {}])]]);
+	internals.reportTelemetry('auth:start', { register: true });
+	const live = emitted.filter((e) => e.event === 'shell:telemetry');
+	assert.equal(live.length, 1, 'delivered once, live');
+	const fact = live[0].payload as { event: string; props: Record<string, unknown>; ts: number; id: string };
+	assert.equal(fact.event, 'auth:start');
+	assert.deepEqual(fact.props, { register: true });
+	assert.ok(fact.ts > 0 && fact.id.length > 0, 'carries its time and a once-per-fact id');
+	assert.deepEqual(internals.drainTelemetry(), [], 'a delivered fact is not held for a later drain');
+
+	internals.listeners = new Map();
+	internals.reportTelemetry('auth:complete', { is_new: null, waitlisted: false, source: 'shell' });
+	assert.equal(emitted.filter((e) => e.event === 'shell:telemetry').length, 1, 'nobody listens: nothing more is emitted');
+	assert.deepEqual(
+		internals.drainTelemetry().map((f) => [f.event, f.props]),
+		[['auth:complete', { is_new: null, waitlisted: false, source: 'shell' }]],
+		'held, then handed over',
+	);
+	assert.deepEqual(internals.drainTelemetry(), [], 'a drain hands each fact over only once');
+});
+
+test('startOAuth raises auth:start once per page load, past its one-shot guard, and stamps the round trip', async () => {
+	const session = recordingSession();
+	await withGlobals({ window: topLevelWindow({ location: { search: '', pathname: '/pricing' } }), sessionStorage: session.storage }, async () => {
+		const { manager } = createTestManager();
+		const internals = manager as unknown as TelemetryInternals;
+		internals.listeners = new Map();
+		let signIns = 0;
+		internals.authProvider = { signIn: async () => { signIns++; } };
+		await internals.startOAuth(true, { appId: 'rocketride.home' });
+		await internals.startOAuth(true, { appId: 'rocketride.home' });
+		assert.equal(signIns, 1, 'the guard lets one redirect start per page load');
+		assert.deepEqual(
+			internals.drainTelemetry().map((f) => [f.event, f.props]),
+			[['auth:start', { register: true, app_id: 'rocketride.home', from_path: '/pricing', auto: false }]],
+			'one auth:start, raised past the guard',
+		);
+		assert.ok(Number(session.data.get('rr:auth:start_ts')) > 0, 'the round-trip stamp is set');
+	});
+});
+
+test('a callback that completes the sign-in raises auth:complete once, with is_new null when the provider does not know', async () => {
+	for (const [isNewUser, expected] of [[undefined, null], [true, true]] as const) {
+		const session = recordingSession([['rr:pkce_verifier', 'verifier-1']]);
+		const win = topLevelWindow({
+			location: { search: '?code=abc', pathname: '/', origin: 'https://shell.example.test' },
+			history: { state: null, replaceState: () => {} },
+		});
+		await withGlobals({ window: win, sessionStorage: session.storage }, async () => {
+			const { manager } = createTestManager();
+			const internals = manager as unknown as TelemetryInternals;
+			internals.listeners = new Map();
+			manager.client = testClient();
+			manager._attachPromise = Promise.resolve();
+			const result: ConnectResult = isNewUser === undefined ? authenticatedResult : { ...authenticatedResult, isNewUser };
+			let exchanged: TestCredential | undefined;
+			manager.connectForBootstrap = async (credential) => {
+				exchanged = credential;
+				return { result, appId: '' };
+			};
+
+			const completed = await manager.bootstrap();
+
+			assert.equal(completed?.result, result);
+			assert.deepEqual(exchanged, { code: 'abc', verifier: 'verifier-1', redirectUri: 'https://shell.example.test' });
+			assert.deepEqual(
+				internals.drainTelemetry().map((f) => [f.event, f.props]),
+				[['auth:complete', { is_new: expected, waitlisted: false, source: 'shell' }]],
+				isNewUser === undefined ? 'unknown is reported as null, never as an existing user' : 'a known new account is reported as new',
+			);
+		});
+	}
+});
+
+test("an embedded dev preview holds telemetry in memory only and never touches the host tab's mirror or stamp", async () => {
+	const hostFact = { event: 'auth:complete', props: { is_new: true, waitlisted: false, source: 'shell' }, ts: Date.now(), id: 'host-1' };
+	const hostEntries: Array<[string, string]> = [[TELEMETRY_STORAGE_KEY, JSON.stringify([hostFact])], ['rr:auth:start_ts', '123']];
+
+	// Control: a tab's channel reads the mirror its earlier page load left.
+	const tab = recordingSession(hostEntries);
+	await withGlobals({ window: topLevelWindow({ location: { search: '', pathname: '/' } }), sessionStorage: tab.storage }, () => {
+		assert.deepEqual(newTelemetryChannel().drain().map((f) => f.id), ['host-1'], "a tab inherits its own tab's held facts");
+	});
+
+	// A framed window carrying rrdev=1 is an embedded dev preview (see the token tests below).
+	const session = recordingSession(hostEntries);
+	await withGlobals({ window: { self: {}, top: {}, location: { search: '?rrdev=1', pathname: '/' } }, sessionStorage: session.storage }, async () => {
+		const { manager } = createTestManager();
+		const internals = manager as unknown as TelemetryInternals;
+		internals.telemetry = newTelemetryChannel();
+		internals.listeners = new Map();
+		internals.authProvider = { signIn: async () => {} };
+
+		await internals.startOAuth(false);
+		internals.reportTelemetry('auth:complete', { is_new: null, waitlisted: false, source: 'shell' });
+		assert.deepEqual(
+			internals.drainTelemetry().map((f) => f.event),
+			['auth:start', 'auth:complete'],
+			"the preview hands over its own facts, never the host tab's",
+		);
+		internals.reportTelemetry('auth:start', { register: false, auto: true });
+		internals.dropRejectedCredential();
+		assert.deepEqual(internals.drainTelemetry(), [], "the preview's own held facts are dropped");
+		assert.deepEqual(session.writes, [], 'nothing was written to or removed from the shared sessionStorage');
+		assert.equal(session.data.get(TELEMETRY_STORAGE_KEY), JSON.stringify([hostFact]), "the host tab's mirror is intact");
+		assert.equal(session.data.get('rr:auth:start_ts'), '123', "the host tab's round-trip stamp is intact");
+	});
+});
+
 test('clearToken removes the stored token from localStorage only', () => {
 	const removedLocalKeys: string[] = [];
 	const removedSessionKeys: string[] = [];

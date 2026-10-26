@@ -556,7 +556,7 @@ export class ConnectionManager implements IConnectionManager {
 	 *  first code → PKCE 400 → re-auth loop). */
 	private oauthStarted = false;
 	/** Telemetry facts raised before the active app subscribed (see reportTelemetry). */
-	private telemetry = new TelemetryChannel();
+	private telemetry = ConnectionManager.newTelemetryChannel();
 	/** Ids of the facts delivered live (the channel numbers the held ones). */
 	private telemetrySeq = 0;
 
@@ -620,7 +620,9 @@ export class ConnectionManager implements IConnectionManager {
 		// popup's own sessionStorage and are discarded when it closes: embedded sign-ins are
 		// not reported. CloudAuthProvider.signIn(), also on the shell API, does not raise it.
 		// The stamp lets the forwarding app time the round trip.
-		try { sessionStorage.setItem(SS_AUTH_START_TS, String(Date.now())); } catch { /* storage unavailable */ }
+		if (!isEmbeddedDevShell()) {
+			try { sessionStorage.setItem(SS_AUTH_START_TS, String(Date.now())); } catch { /* storage unavailable */ }
+		}
 		const appId = context?.appId || this.getPendingAppId();
 		this.reportTelemetry('auth:start', { register: !!register, ...(appId ? { app_id: appId } : {}), from_path: window.location.pathname, auto: context?.auto === true });
 		try {
@@ -1382,7 +1384,20 @@ export class ConnectionManager implements IConnectionManager {
 	/** Drop the held telemetry facts, their sessionStorage mirror and the round-trip stamp. Never throws. */
 	private dropHeldTelemetry(): void {
 		try { this.telemetry?.clear(); } catch { /* telemetry must never break the shell */ }
-		try { sessionStorage.removeItem(SS_AUTH_START_TS); } catch { /* storage unavailable */ }
+		if (!isEmbeddedDevShell()) {
+			try { sessionStorage.removeItem(SS_AUTH_START_TS); } catch { /* storage unavailable */ }
+		}
+	}
+
+	/**
+	 * The telemetry hold for this shell. A tab mirrors it to sessionStorage, so held facts
+	 * survive a page load that never mounts the forwarding app. An embedded dev preview
+	 * keeps it in memory only, and never writes or removes the round-trip stamp: same-origin
+	 * frames share sessionStorage, so a mirror there would inherit, or clear, the host tab's
+	 * facts (the frame-local rule tokenStore follows for the token).
+	 */
+	private static newTelemetryChannel(): TelemetryChannel {
+		return new TelemetryChannel(isEmbeddedDevShell() ? { storage: null } : undefined);
 	}
 
 	/** Update the hasCredentials flag based on token availability. */
