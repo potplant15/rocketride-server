@@ -26,21 +26,27 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Button, ContentHeader, TabControl, TabPanel } from 'shell';
+import { Banner, Button, ContentHeader, StatusBadge, TabControl, TabPanel } from 'shell';
 import type { ViewMenu } from 'shell';
 import { commonStyles } from 'shell';
 import type { SqlEndpoint } from '../connect';
-import { refreshSchema, useSchema } from '../schema/schemaStore';
+import { probeExecute, refreshSchema, useExecuteState, useSchema, useSchemaGeneration } from '../schema/schemaStore';
 import { useSqlEnv } from '../sqlEnv';
 import { runSchemaChecks } from '../schema/quality';
 import { useTableRecordRequest } from '../navigation';
 import { SqlPageNavProvider } from '../pageNav';
+import { pageHasOwnHeader, showsWorkbenchHeader } from '../pageFrame';
+import { executeGateReason, schemaOnlyExplanation } from '../executeGate';
+import { opensShortcutSheet } from '../components/shortcuts';
+import GatedButton from '../components/GatedButton';
+import ShortcutSheet from '../components/ShortcutSheet';
 import type { SqlPageNav, SqlQuerySeed } from '../pageNav';
 import OverviewPanel from '../panels/OverviewPanel';
 import InsightsPanel from './InsightsPanel';
 import { DiagramView } from './DiagramView';
 import { QueryView } from './QueryView';
 import { TableDataView } from './TableDataView';
+import type { FilterChip } from '../sql/filters';
 import { TableDesignView } from './TableDesignView';
 
 // =============================================================================
@@ -70,6 +76,20 @@ const styles = {
 		display: 'flex',
 		flexDirection: 'column',
 		padding: '20px 24px 24px',
+	} as CSSProperties,
+
+	// The same region for pages that draw their own header and padding
+	// (Query, Data, Design), so the padding is not added twice.
+	panelsBare: {
+		flex: 1,
+		minHeight: 0,
+		display: 'flex',
+		flexDirection: 'column',
+	} as CSSProperties,
+
+	// Why statements are off, between the header and the page.
+	schemaOnlyNote: {
+		padding: '0 24px 4px',
 	} as CSSProperties,
 
 	// ── Query page (instance strip over the active instance) ─────────────────
@@ -133,6 +153,13 @@ const styles = {
 };
 
 // =============================================================================
+// CONSTANTS
+// =============================================================================
+
+/** Id of the visible schema-only note the gated controls point at. */
+const SCHEMA_ONLY_ID = 'sql-schema-only';
+
+// =============================================================================
 // COMPONENT
 // =============================================================================
 
@@ -144,6 +171,8 @@ const styles = {
 export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
+	const executeState = useExecuteState(endpoint.key);
+	const gateReason = executeGateReason(executeState);
 
 	// The active page of this document's TabControl.
 	const [activePage, setActivePage] = useState('overview');
@@ -190,7 +219,7 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 	// On-demand page seeds. Data / design are PAGES of this document (one
 	// surface each, no inner documents); a new seed remounts the page's
 	// content via the seq key, replacing what it showed.
-	const [dataSeed, setDataSeed] = useState<{ table: string; seq: number } | null>(null);
+	const [dataSeed, setDataSeed] = useState<{ table: string; chips: FilterChip[]; seq: number } | null>(null);
 	const [designSeed, setDesignSeed] = useState<{ table: string | null; seq: number } | null>(null);
 	const seedSeqRef = useRef(0);
 
@@ -198,8 +227,8 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 	// (in place of opening inner documents).
 	const pageNav = useMemo<SqlPageNav>(() => ({
 		openQuery: addQuery,
-		openTableData: (table: string) => {
-			setDataSeed({ table, seq: ++seedSeqRef.current });
+		openTableData: (table: string, chips?: FilterChip[]) => {
+			setDataSeed({ table, chips: chips ?? [], seq: ++seedSeqRef.current });
 			selectPage('data');
 		},
 		openDesign: (table: string | null) => {
@@ -214,6 +243,36 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 			void refreshSchema(env.getSession(endpoint));
 		}
 	}, [env, snapshot.status, endpoint]);
+
+	// Find out once per open whether the node runs statements (SELECT 1; see
+	// probeExecute). Until it answers, the state is unknown and nothing is
+	// disabled. A cleared store (an account switch) forgot the answer, so the
+	// guard is per store generation as well as per connection.
+	const epoch = useSchemaGeneration();
+	const probedRef = useRef<string | null>(null);
+	useEffect(() => {
+		const probeKey = `${endpoint.key}#${epoch}`;
+		if (!env.ready || probedRef.current === probeKey) return;
+		probedRef.current = probeKey;
+		void probeExecute(env.getSession(endpoint));
+	}, [env, endpoint, epoch]);
+
+	// The keyboard shortcut sheet: a header button, and `?` anywhere that is
+	// not a text field or the editor.
+	// Another connection's document can be mounted but hidden; only the one
+	// on screen answers.
+	const rootRef = useRef<HTMLDivElement>(null);
+	const [shortcutsOpen, setShortcutsOpen] = useState(false);
+	useEffect(() => {
+		const onKeyDown = (event: KeyboardEvent): void => {
+			if (rootRef.current && rootRef.current.getClientRects().length > 0 && opensShortcutSheet(event)) {
+				event.preventDefault();
+				setShortcutsOpen(true);
+			}
+		};
+		window.addEventListener('keydown', onKeyDown);
+		return () => window.removeEventListener('keydown', onKeyDown);
+	}, []);
 
 	// The record drawer belongs to OverviewPanel, and TabPanel hides the
 	// inactive panel with `display: none` — so a table opened from Insights,
@@ -274,42 +333,66 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 		: '';
 
 	return (
-		<div style={styles.root}>
+		<div ref={rootRef} style={styles.root}>
 
 			{/* Page strip at the very top of the document's content. */}
 			<TabControl menu={menu} activeId={activePage} onSelect={selectPage} />
 
-			<ContentHeader
-				title={snapshot.schema?.database ?? endpoint.nodeName}
-				subtitle={`${dialectLabel} via ${endpoint.pipelineName} / ${endpoint.nodeId}${refreshed}`}
-				actions={
-					<>
-						<Button
-							variant="ghost"
-							onClick={() => { if (env.ready) void refreshSchema(env.getSession(endpoint), { fresh: true }); }}
-							disabled={!env.ready || snapshot.status === 'loading'}
-						>
-							{snapshot.status === 'loading' ? 'Reading...' : 'Refresh Schema'}
+			{showsWorkbenchHeader(activePage) && (
+				<ContentHeader
+					title={snapshot.schema?.database ?? endpoint.nodeName}
+					subtitle={`${dialectLabel} via ${endpoint.pipelineName} / ${endpoint.nodeId}${refreshed}`}
+					actions={
+						<>
+							{gateReason && <span title="allow_execute is off for this node"><StatusBadge variant="warning">Schema only</StatusBadge></span>}
+							<Button variant="ghost" onClick={() => setShortcutsOpen(true)} title="Show the keyboard shortcuts (?)">
+								Shortcuts
+							</Button>
+							<Button
+								variant="ghost"
+								onClick={() => {
+									if (!env.ready) return;
+									void refreshSchema(env.getSession(endpoint), { fresh: true });
+									// A node restarted with allow_execute on is noticed here.
+									if (executeState === 'off') void probeExecute(env.getSession(endpoint));
+								}}
+								disabled={!env.ready || snapshot.status === 'loading'}
+							>
+								{snapshot.status === 'loading' ? 'Reading...' : 'Refresh Schema'}
+							</Button>
+							<GatedButton variant="primary" onClick={() => pageNav.openQuery({})} gateReason={gateReason} reasonId={SCHEMA_ONLY_ID}>
+								New Query
+							</GatedButton>
+						</>
+					}
+				/>
+			)}
+
+			{/* Why statements are off, in words, and a way to look again. */}
+			{gateReason && showsWorkbenchHeader(activePage) && (
+				<div id={SCHEMA_ONLY_ID} style={styles.schemaOnlyNote}>
+					<Banner variant="warning">
+						<strong>Schema only. </strong>
+						{schemaOnlyExplanation(endpoint.nodeName)}{' '}
+						<Button variant="ghost" small onClick={() => { if (env.ready) void probeExecute(env.getSession(endpoint)); }}>
+							Check again
 						</Button>
-						<Button variant="primary" onClick={() => pageNav.openQuery({})}>
-							New Query
-						</Button>
-					</>
-				}
-			/>
+					</Banner>
+				</div>
+			)}
 
 			{/* Panel stack — a page mounts on first visit (the diagram only
 			    reverse-engineers when actually selected), then every mounted
 			    panel stays mounted across switches. Seeded pages remount on a
 			    new seed via the seq key. */}
-			<div style={styles.panels}>
+			<div style={pageHasOwnHeader(activePage) ? styles.panelsBare : styles.panels}>
 				<SqlPageNavProvider value={pageNav}>
 					<TabPanel
 						activeId={activePage}
 						panels={{
 							overview: { content: <OverviewPanel endpoint={endpoint} snapshot={snapshot} /> },
 							insights: { content: <InsightsPanel endpoint={endpoint} snapshot={snapshot} /> },
-							...(visited.has('diagram') ? { diagram: { content: <DiagramView endpoint={endpoint} /> } } : {}),
+							...(visited.has('diagram') ? { diagram: { content: <DiagramView endpoint={endpoint} onOpenTable={pageNav.openTableData} /> } } : {}),
 							...(visited.has('query') ? {
 								query: {
 									content: (
@@ -356,12 +439,14 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 									),
 								},
 							} : {}),
-							...(dataSeed ? { data: { content: <TableDataView key={dataSeed.seq} endpoint={endpoint} table={dataSeed.table} /> } } : {}),
+							...(dataSeed ? { data: { content: <TableDataView key={dataSeed.seq} endpoint={endpoint} table={dataSeed.table} presetFilters={dataSeed.chips} onOpenTable={pageNav.openTableData} /> } } : {}),
 							...(designSeed ? { design: { content: <TableDesignView key={designSeed.seq} endpoint={endpoint} table={designSeed.table} /> } } : {}),
 						}}
 					/>
 				</SqlPageNavProvider>
 			</div>
+
+			{shortcutsOpen && <ShortcutSheet onClose={() => setShortcutsOpen(false)} />}
 		</div>
 	);
 };

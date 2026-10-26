@@ -47,6 +47,12 @@ import { DatabaseIcon } from '../icons';
 export interface DiagramViewProps {
 	/** The connection whose schema the diagram shows. */
 	endpoint: SqlEndpoint;
+	/**
+	 * Fired with a table's name when its node is clicked. The workbench passes
+	 * its own navigation in: this view does not reach for the page context.
+	 * Without it (the standalone diagram document) a node click does nothing.
+	 */
+	onOpenTable?: (table: string) => void;
 }
 
 // =============================================================================
@@ -54,8 +60,11 @@ export interface DiagramViewProps {
 // =============================================================================
 
 const styles = {
+	// The TabPanel body is a BLOCK scroll container, so `flex: 1` has no effect
+	// here: React Flow needs a definite height, and without this one the canvas
+	// is 0px tall and the page is blank.
 	root: {
-		flex: 1,
+		height: '100%',
 		minHeight: 0,
 		minWidth: 0,
 		position: 'relative',
@@ -95,6 +104,8 @@ const styles = {
 
 	emptyWrap: {
 		flex: 1,
+		height: '100%',
+		minHeight: 0,
 		display: 'flex',
 		alignItems: 'center',
 		justifyContent: 'center',
@@ -113,7 +124,7 @@ const NODE_TYPES = { table: TableNode };
  * schema snapshot, runs the elk layout, and renders the flow with the stock
  * Background / MiniMap / Controls plus the floating toolbar.
  */
-const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
+const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint, onOpenTable }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 	const { fitView } = useReactFlow();
@@ -178,8 +189,8 @@ const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
 			<div style={styles.emptyWrap}>
 				<EmptyState
 					icon={<DatabaseIcon />}
-					title="Reverse engineering failed"
-					description={snapshot.error ?? 'Schema reflection failed.'}
+					title="Could not read the schema"
+					description={snapshot.error ?? 'The database did not return its tables.'}
 					action={<Button variant="primary" onClick={() => { if (env.ready) void refreshSchema(env.getSession(endpoint), { fresh: true }); }}>Retry</Button>}
 				/>
 			</div>
@@ -191,8 +202,8 @@ const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
 			<div style={styles.emptyWrap}>
 				<EmptyState
 					icon={<DatabaseIcon />}
-					title="Reverse engineering"
-					description={`Reading tables, keys, and relations from ${endpoint.nodeName} and computing the layout...`}
+					title="Reading the schema…"
+					description={`Reading tables, keys and relations from ${endpoint.nodeName}, then laying them out.`}
 				/>
 			</div>
 		);
@@ -207,7 +218,7 @@ const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
 				</Button>
 				<Button variant="ghost" small onClick={() => fitView({ padding: 0.15 })}>Fit</Button>
 				<span style={styles.toolbarInfo}>
-					{nodes.length} tables - {edges.length} relations
+					{nodes.length} tables - {edges.length} relations - click a table to open its data
 				</span>
 			</div>
 
@@ -220,6 +231,7 @@ const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
 				edges={edges}
 				onNodesChange={onNodesChange}
 				onEdgesChange={onEdgesChange}
+				onNodeClick={onOpenTable ? (_event, node) => onOpenTable(node.id) : undefined}
 				nodeTypes={NODE_TYPES}
 				fitView
 				minZoom={0.15}
@@ -228,7 +240,14 @@ const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
 				deleteKeyCode={null}
 			>
 				<Background gap={18} size={1} />
-				<MiniMap pannable zoomable />
+				<MiniMap
+					pannable
+					zoomable
+					nodeColor="var(--rr-bg-widget)"
+					nodeStrokeColor="var(--rr-border)"
+					maskColor="var(--rr-bg-list-active)"
+					bgColor="var(--rr-bg-paper)"
+				/>
 				<Controls showInteractive={false} />
 			</ReactFlow>
 		</>
@@ -244,7 +263,7 @@ const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
  * as table nodes with per-column FK edges, elk auto-layout, and the stock
  * xyflow minimap/controls.
  */
-export const DiagramView: React.FC<DiagramViewProps> = ({ endpoint }) => {
+export const DiagramView: React.FC<DiagramViewProps> = ({ endpoint, onOpenTable }) => {
 	const env = useSqlEnv();
 
 	// First open reverse-engineers automatically: one fresh re-read of the
@@ -261,7 +280,7 @@ export const DiagramView: React.FC<DiagramViewProps> = ({ endpoint }) => {
 	return (
 		<div style={styles.root}>
 			<ReactFlowProvider>
-				<DiagramCanvas endpoint={endpoint} />
+				<DiagramCanvas endpoint={endpoint} onOpenTable={onOpenTable} />
 			</ReactFlowProvider>
 		</div>
 	);

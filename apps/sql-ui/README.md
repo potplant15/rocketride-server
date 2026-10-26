@@ -105,11 +105,30 @@ history or settings.
 ## The connection workbench
 
 **Overview** counts the tables, columns and foreign keys, names the dialect,
-and lists the tables. Selecting a table opens its record drawer; the header
-carries **Refresh Schema**, **Diagram** and **New Query**.
+and lists the tables in the connection's default schema. Clicking a table
+row opens that table's Data page; the **Details** button on the row opens its
+record drawer instead. The header of Overview, Insights and Diagram carries
+**Refresh Schema**, **Shortcuts** and **New Query**. Query, Data and Design
+show their own header and no other, so each page has one.
 
 **Insights** reads the same snapshot and says what shape it is in. See
-[Insights](#insights).
+[Insights](#insights). **Diagram** draws the tables and their declared
+relations; clicking a table in it opens that table's Data page. See
+[Relationships](#relationships).
+
+Press **?** anywhere outside a text field or the SQL editor, or use the
+**Shortcuts** button, to list the keyboard shortcuts.
+
+When a connection opens, the app sends `SELECT 1` once to find out whether
+the node runs statements. It goes straight to the node, so it is not in your
+query history. If the node has `allow_execute` off, the connection is
+**schema only**: the header says so, and Run, Run all, Explain, New Query,
+**Select top 100**, **Count rows** and **Open data** are off with the reason
+shown, and the Data page says it cannot read rows. Tables, columns, keys,
+Diagram and Insights keep working. After you turn `allow_execute` on and
+restart the pipeline, **Check again** on the Overview page (or **Refresh
+Schema**) looks again. While the answer is not known yet, nothing is
+disabled.
 
 Both pages read one schema snapshot. The node reflects the database when the
 pipeline task starts and serves that reflection to every caller, so the
@@ -119,8 +138,69 @@ say so: `from schema snapshot HH:MM`.
 ## Browsing a table
 
 A table document pages rows through the grid: page size and page number go
-straight into `LIMIT` and `OFFSET`, per-column filters and the search box
-become a bound `WHERE` clause, and a column sort becomes `ORDER BY`.
+straight into `LIMIT` and `OFFSET`, per-column filters, filter chips and the
+search box become a bound `WHERE` clause, and a column sort becomes
+`ORDER BY`. Paging stays on `OFFSET` because the pager can jump to any page,
+which a keyset cursor cannot do; on a very large table the deep pages are
+slow for that reason.
+
+### Search and filters
+
+The search box looks in the text columns and ignores case. Each engine gets
+its own form: `col::text ILIKE` on PostgreSQL, `LOWER(col) LIKE LOWER(...)` on
+MySQL, `toString(col) ILIKE` on ClickHouse, and a plain `LIKE` on an engine the
+app does not know. A `%`, `_` or `\` you type matches itself rather than acting
+as a wildcard. The header filters match the same way.
+
+**+ Filter** adds a chip above the grid: a column, an operator (equals, not
+equals, contains, starts with, `>`, `<`, `≥`, `≤`, is null, is not null) and a
+value. What you type is sent to the database separately from the statement,
+never pasted into it, and `is null` and `is not null` send no value. On a
+number or yes/no column the value is sent as a number or a boolean, so `5`
+compares as 5. Chips, header filters and the search box all apply together
+(AND). The grid's sorters show as chips too; removing one clears that sort.
+Any change goes back to page 1.
+
+### Counting rows
+
+The total in the pager is counted once per filter. Paging, and changing the
+sort or page size, reuse it; a new search, header filter or chip counts again.
+
+On a table with no filter, the app first reads the engine's own row estimate
+(`pg_class.reltuples`, `information_schema.TABLES.TABLE_ROWS`,
+`system.tables.total_rows`) instead of scanning. From 100,000 rows up, the
+grid shows `About N rows (estimate)` with a **Count exactly** button, and the
+estimate can be well off (MySQL's often is, by 40 to 50 percent). An estimate
+of -1 or NULL, which PostgreSQL gives for a table it has not analyzed, means
+the app counts exactly.
+
+A filtered search on one of those large tables is not counted at all. Each
+page asks for one row more than it shows, and when that row comes back the
+note says `More rows match` and the pager offers a next page. **Count
+exactly** counts it.
+
+A connection that cannot run statements (schema only) gets no page, count or
+estimate statement from the browser.
+
+### Opening a row
+
+Click a row to open it. The drawer lists every column in the table's own
+order, with its type, a `PK` mark where it applies, and a copy button for each
+value and for the whole row as JSON. Prev and Next move through the page; the
+title reads `Row N` counting from the first row of the table. A value is shown
+as the browser received it (see [Results](#results)): very large numbers and
+decimals may be shown rounded.
+
+A value that belongs to a foreign key is a link. It runs `SELECT * FROM
+<referenced> WHERE <key> = $1 LIMIT 2` (every column of a composite key, with
+the values sent separately) and opens that row in a drawer on top, with a back arrow and a Back
+button. If nothing matches, the drawer says so; if more than one row matches,
+it shows the first and says that too. A NULL key is not a link.
+
+**Rows that reference this one** lists the tables whose foreign keys point at
+the row's table. **Show rows** opens that table's data with a chip already set
+to this row's key. Foreign-key columns also say where they point in the
+column's header tooltip, for example `BIGINT → customers.id`.
 
 With no sort of your own, the app orders by the primary key so paging is
 repeatable. A table with no primary key and no sort has no `ORDER BY` at
@@ -348,15 +428,67 @@ result ended there.
 Above the app's limit sits the node's own `max_execute_rows` cap. A
 statement that exceeds it fails rather than returning a truncated answer,
 and the banner adds `The node caps results at N rows; choose a lower limit
-or add LIMIT.`
+or add LIMIT.` Choosing **All** says so before anything runs: `All asks for
+every row. The node refuses results over its cap (25,000 unless the pipeline
+sets max_execute_rows) and may be slow.`
 
-### Pattern checks
+### Confirmations
 
-Before running `UPDATE` or `DELETE` with no `WHERE`, an `UPDATE` or
-`DELETE` inside a `WITH` clause, or `TRUNCATE`, `DROP` or `ALTER`, the app
-asks: `Pattern check: <kind> detected. This is a text check, not a database
-safeguard.` Confirm with **Run statement**, or **Run and stop asking on this
-connection**.
+Each saved connection has a **safety level**, set in its connection editor
+under **Safety level for this connection**:
+
+- **Don't ask**: every statement runs as typed.
+- **Ask before risky writes** (the default): asks before `UPDATE` or
+  `DELETE` with no `WHERE`, an `UPDATE` or `DELETE` inside a `WITH` clause,
+  `TRUNCATE`, `DROP` and `ALTER`.
+- **Ask before every write**: asks before anything that is not a read.
+  Reads are `SELECT` (a `WITH … SELECT` included), `EXPLAIN`, `SHOW` and
+  `DESCRIBE`. Everything else asks: `INSERT`, a bounded `UPDATE` or
+  `DELETE`, `MERGE`, `SELECT … INTO`, `CREATE`, and also `CALL`, `GRANT`,
+  `SET`, `DO` and `VALUES`, because a procedure can change rows and the app
+  cannot tell. `EXPLAIN ANALYZE` counts as the statement it runs.
+
+A write made inside a function or procedure is not seen at **Ask before
+risky writes**: `SELECT my_fn()`, `DO`, `CALL` and `COPY … PROGRAM` run
+without asking there, whatever they change. And a `SELECT` that calls a
+function counts as a read even at **Ask before every write**, so a function
+that writes (`SELECT pg_terminate_backend(…)`, `SELECT nextval('s')`) never
+asks.
+
+The level is stored on the saved connection, in the same per-user file on
+the server as the connection itself, so it is the same in the app and as a
+dev tool. A connection saved before levels existed reads as **Ask before
+risky writes**. The line under the editor names the level, so it is never
+invisible. The dialog has no answer that turns asking off; change the level
+in the connection editor instead.
+
+The dialog says what the statement does, quotes it, and says how it runs
+(at once, committing on its own) and why it asked: `<connection> is set to
+ask before risky writes. This is a check on the statement text, not a
+database permission.` For a statement that changes rows it adds **Rows that
+change**: `about N rows (planner estimate)` on PostgreSQL and MySQL, from a
+plain `EXPLAIN` (no `ANALYZE`, so nothing runs) of the statement. It reads
+`Estimating…` while that runs, and `No estimate` on ClickHouse, for a `WITH`
+chain, or when the plan gives no number; for `TRUNCATE` it reads `Every
+row`. Once an `UPDATE` or `DELETE` has an estimate, the title and the button
+name the rows: `Update about 20 rows in orders?` and **Update 20 rows**.
+**Cancel** works at any time, also while the estimate is still running. The
+estimate is not recorded in History.
+
+Until the connection's dialect is known (the schema is still being read), a
+statement is read with each engine's comment rules: `#` starts a comment on
+MySQL and ClickHouse, and `/*! … */` is code on MySQL. It asks if any of
+those readings says it should, so `# note` on the line above a `DELETE`
+cannot hide it.
+
+`DROP` and `TRUNCATE` ask for the name to be typed: `Type orders to
+confirm`. The name is the object's own name as the statement spells it,
+without quotes or schema (`DROP TABLE "public"."Order Items"` asks for
+`Order Items`). The match is exact: it is case-sensitive and nothing is
+trimmed. The confirm button stays disabled until the text matches, and
+Enter confirms only then. A statement with several targets (`DROP TABLE a,
+b`), or one whose name the app cannot read (`DROP FUNCTION f(int)`), asks
+for the verb instead: `DROP` or `TRUNCATE`.
 
 A statement that begins with `WITH` is checked on the verb the chain
 carries: `WITH audit AS (SELECT id FROM orders) DELETE FROM orders` deletes
@@ -369,19 +501,17 @@ applies to. When both apply, the outer statement is the one named.
 
 The verb has to be the statement's own, not a word inside one of its
 clauses: `SELECT ... FOR UPDATE` locks rows, and an upsert's `ON CONFLICT
-... DO UPDATE` belongs to its `INSERT`, so neither is asked about. `INSERT`
-is never flagged, inside a clause or out.
+... DO UPDATE` belongs to its `INSERT`, so neither is a risky write.
 
 `EXPLAIN ANALYZE` runs the statement it describes rather than only planning
 it, so it is checked as that statement: `EXPLAIN ANALYZE DELETE FROM orders`
 is asked about like the `DELETE` it would run. A plain `EXPLAIN` runs
 nothing and is never asked about.
 
-Read that sentence literally. The check reads the statement text; it never
-consults the database, does not know what a `WHERE` clause actually matches,
-and prevents nothing. It is not called a safe mode anywhere, and when it is
-off the editor line carries a `Pattern checks off` control, so the state is
-never invisible.
+Read "a check on the statement text" literally. It never consults the
+database for permission, does not know what a `WHERE` clause actually
+matches, and prevents nothing; the node's `allow_execute` switch is the
+real gate. It is not called a safe mode anywhere.
 
 ### When a statement fails
 
@@ -442,22 +572,49 @@ the type comes from the schema and reads `BIGINT (schema)`; otherwise it is
 inferred from the returned values and reads `number (inferred from N rows)`.
 Numbers are right-aligned and sort numerically; leading-zero strings stay
 strings. Selecting a row opens a cell inspector with every column's full
-value, so a long JSON document is readable without widening the grid.
+value, so a long JSON document is readable without widening the grid. The
+inspector lists the columns of the statement whose result is shown, in the
+order that statement returned them.
 
-Export is the grid's own exporter, in the gear menu of the grid header, and
-carries the rows that run returned under whatever limit was applied.
+**Export** on the results card offers **Download CSV**, **Download JSON**
+and **Copy as Markdown**, for the rows the statement returned under whatever
+limit was applied. In CSV a NULL is an empty field and an empty string is
+`""`, and objects are written as JSON text. A spreadsheet runs a CSV cell
+that starts with a formula character, and results can hold text anyone
+typed, so in CSV, text that starts with `=`, `+`, `-` or `@` (or a tab or a
+carriage return) gets a leading `'`. Numbers keep their sign, and JSON and
+Markdown keep the text as it is. In VS Code, which does not allow downloads
+from a tool panel, CSV and JSON are copied to the clipboard instead, and the
+menu says **Copy as CSV** and **Copy as JSON**. Elsewhere the app announces
+that the download started; a browser that blocks it quietly cannot be told
+apart.
 
-A precision note rides under any result with a numeric column: `Decimal
-values arrive as floating point; integers above 2^53 lose precision.` That
-is the node's value conversion rather than the grid's rendering, so it
-applies to exports too.
+A precision note shows under a result when a value may not be the number the
+database holds: `Decimal values arrive as floating point; integers above
+2^53 lose precision.` It shows for a float with more than 15 significant
+digits, an integer beyond ±2^53, or a column the schema types as `DECIMAL`
+or `NUMERIC`. That is the node's value conversion rather than the grid's
+rendering, so it applies to exports too. Only a result whose single source
+table is known gets its types from the schema, so a `NUMERIC` column in a
+join shows the note only when one of its values is long enough to give it
+away.
+
+Rows arrive as objects keyed by column name, so two columns with the same
+name merge into one. When a statement projects `*` over a join, or names the
+same output column twice, the results say `Columns with the same name are
+merged; alias them`. The check reads the text and is deliberately narrow: an
+unaliased expression (`count(*)` twice) is not caught.
 
 ## Query history
 
 The history drawer lists what you ran on this connection, newest first, with
-search and filters for reads, writes, errors and pins. Expanding an entry
-shows the full statement, its outcome and its round trip, and lets you load
-it into the editor, run it again, pin it, annotate it or delete it.
+search and filters for reads, writes, errors and pins. Each row is named by
+the statement's first line of code: leading comments are skipped (`--` and
+`/* */` everywhere, `#` on MySQL and ClickHouse), so a generated preview is
+named by its `SELECT`, not by `-- Generated preview`. A statement that is
+only a comment keeps its first line. Expanding an entry shows the full
+statement, its outcome and its round trip, and lets you load it into the
+editor, run it again, pin it, annotate it or delete it.
 
 **Where it is stored matters.** In the app, history goes to your RocketRide
 workspace preferences on the server, per user, not into the browser, and the
@@ -482,12 +639,15 @@ statement, 256 KB across all connections. Recording can be turned off per
 connection, and **Clear** empties one connection's list, pins included.
 
 Re-running an entry that changed data asks first and quotes what it did last
-time; the rerun is a fresh run with its own entry.
+time, whatever the connection's safety level; the rerun is a fresh run with
+its own entry, and the safety level can ask again before it is sent.
 
 ## Relationships
 
 The table record drawer shows the table's columns, primary key and declared
-foreign keys, and adds:
+foreign keys, and adds a marker such as `→ customers.customer_id` beside each
+column that is part of one. It offers **Open data**, **Design**, **Copy
+name** and **Copy SELECT**, and adds:
 
 - **Referenced by (n)** — the tables whose foreign keys point at this one,
   each opening its own drawer.
@@ -504,6 +664,11 @@ generation and in the review rules. Two columns that look related because of
 their names are not treated as related. ClickHouse declares no foreign keys
 at all, so these sections say `ClickHouse declares no foreign keys; join
 paths are unavailable.`
+
+The **Diagram** page shows the same declared relations as a graph. Clicking a
+table node opens that table's Data page, and the minimap follows the theme.
+While the schema is being read the page says `Reading the schema…`; if the
+read fails it says `Could not read the schema` and offers Retry.
 
 **Open as query** writes the join into a new query document. Generated SQL
 is never run for you: the document opens under the banner `Generated preview:
@@ -625,10 +790,10 @@ these differences:
     lost.
   - **More than 128 history views open at once:** the oldest views stop
     updating until they are opened again.
-- **Switches are for the session.** **Run and stop asking on this
-  connection** turns the pattern check off until the document's window
-  closes, not for good (the app keeps it in your workspace preferences). A
-  dev tool is given no workspace preferences of its own.
+- **The safety level is the connection's.** It is stored on the saved
+  connection, not in preferences, so it is the same as in the app (see
+  [Confirmations](#confirmations)). A dev tool is given no workspace
+  preferences of its own.
 - **The connection is the sidebar's.** When the engine connection drops, run
   and apply are disabled in every document, and a statement that was waiting
   is reported as possibly still running (there is no way to cancel it). An
@@ -718,8 +883,9 @@ these differences:
   with the same name shows one: the node hands back each row as an object
   keyed by column name, and the grid takes its headers from the first row.
   Alias one of them to see both.
-- **The editor loads Monaco from a CDN.** An air-gapped browser gets the
-  rest of the app without a working SQL editor.
+- **Tables from the connection's default schema only.** The reflection reads
+  one schema, so tables in other schemas, and views, do not appear in the
+  Overview, the Diagram or the editor's autocomplete.
 
 ## Next steps
 

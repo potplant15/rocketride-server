@@ -97,6 +97,7 @@ import {
 	upsertSavedConnection,
 } from './connect';
 import type { SavedConnectionsFs, SavedSqlConnection, SqlApplyResult, SqlApplyStatement, SqlDialect, SqlEndpoint, SqlSession } from './connect';
+import { isSafetyLevel } from './connect/savedConnections';
 import { gateApplyStatements } from './sql/gate';
 import {
 	DISCOVERY_WAIT_MS,
@@ -289,7 +290,9 @@ function bounded(work: Promise<unknown>, ms: number): Promise<void> {
 /**
  * Check a saved-connection record that arrived from outside (a frame's
  * save): the shape the file holds, and a provider this app serves (a direct
- * record is started with `client.use`, so it must name a database node).
+ * record is started with `client.use`, so it must name a database node). A
+ * safety level, when the record names one, must be a known level: an unknown
+ * one is refused rather than stored and later read as the default.
  *
  * @param value - The record.
  * @returns The record.
@@ -313,6 +316,7 @@ export function checkSavedConnection(value: unknown): SavedSqlConnection {
 	} else {
 		fail("'mode' must be 'pipeline' or 'direct'");
 	}
+	if (value.safety !== undefined && !isSafetyLevel(value.safety)) fail("'safety' must be 'off', 'risky' or 'every'");
 	return value as unknown as SavedSqlConnection;
 }
 

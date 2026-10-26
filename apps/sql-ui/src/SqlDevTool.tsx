@@ -331,7 +331,7 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 		body = (
 			<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
 				<div style={styles.welcome}>
-					<EmptyState icon={<DatabaseIcon />} title="SQL Explorer" description="Open a connection from the sidebar, or add one with New Connection." />
+					<EmptyState icon={<DatabaseIcon />} title="SQL Explorer" description="Open a connection from the sidebar, or add a database with + New Connection: pick a database node from a pipeline you are running, or enter the connection details directly." />
 				</div>
 				<OverlayHost />
 			</div>
