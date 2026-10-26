@@ -327,15 +327,51 @@ result ended there.
 Above the app's limit sits the node's own `max_execute_rows` cap. A
 statement that exceeds it fails rather than returning a truncated answer,
 and the banner adds `The node caps results at N rows; choose a lower limit
-or add LIMIT.`
+or add LIMIT.` Choosing **All** says so before anything runs: `All asks for
+every row. The node refuses results over its cap (25,000 unless the pipeline
+sets max_execute_rows) and may be slow.`
 
-### Pattern checks
+### Confirmations
 
-Before running `UPDATE` or `DELETE` with no `WHERE`, an `UPDATE` or
-`DELETE` inside a `WITH` clause, or `TRUNCATE`, `DROP` or `ALTER`, the app
-asks: `Pattern check: <kind> detected. This is a text check, not a database
-safeguard.` Confirm with **Run statement**, or **Run and stop asking on this
-connection**.
+Each saved connection has a **safety level**, set in its connection editor
+under **Safety level for this connection**:
+
+- **Don't ask**: every statement runs as typed.
+- **Ask before risky writes** (the default): asks before `UPDATE` or
+  `DELETE` with no `WHERE`, an `UPDATE` or `DELETE` inside a `WITH` clause,
+  `TRUNCATE`, `DROP` and `ALTER`.
+- **Ask before every write**: also asks before every other statement that
+  writes rows or changes the schema: `INSERT`, a bounded `UPDATE` or
+  `DELETE`, `MERGE`, `REPLACE`, `SELECT … INTO`, `CREATE` and `RENAME`.
+  Other statements (`SET`, `CALL`, `GRANT` and the like) run without asking.
+
+The level is stored on the saved connection, in the same per-user file on
+the server as the connection itself, so it is the same in the app and as a
+dev tool. A connection saved before levels existed reads as **Ask before
+risky writes**. The line under the editor names the level, so it is never
+invisible. The dialog has no answer that turns asking off; change the level
+in the connection editor instead.
+
+The dialog says what the statement does, quotes it, and says how it runs
+(at once, committing on its own) and why it asked: `<connection> is set to
+ask before risky writes. This is a check on the statement text, not a
+database permission.` For a statement that changes rows it adds **Rows that
+change**: `about N rows (planner estimate)` on PostgreSQL and MySQL, from a
+plain `EXPLAIN` (no `ANALYZE`, so nothing runs) of the statement. It reads
+`Estimating…` while that runs, and `No estimate` on ClickHouse, for a `WITH`
+chain, or when the plan gives no number; for `TRUNCATE` it reads `Every
+row`. **Cancel** works at any time, also
+while the estimate is still running. The estimate is not recorded in
+History.
+
+`DROP` and `TRUNCATE` ask for the name to be typed: `Type orders to
+confirm`. The name is the object's own name as the statement spells it,
+without quotes or schema (`DROP TABLE "public"."Order Items"` asks for
+`Order Items`). The match is exact: it is case-sensitive and nothing is
+trimmed. The confirm button stays disabled until the text matches, and
+Enter confirms only then. A statement with several targets (`DROP TABLE a,
+b`), or one whose name the app cannot read (`DROP FUNCTION f(int)`), asks
+for the verb instead: `DROP` or `TRUNCATE`.
 
 A statement that begins with `WITH` is checked on the verb the chain
 carries: `WITH audit AS (SELECT id FROM orders) DELETE FROM orders` deletes
@@ -348,19 +384,17 @@ applies to. When both apply, the outer statement is the one named.
 
 The verb has to be the statement's own, not a word inside one of its
 clauses: `SELECT ... FOR UPDATE` locks rows, and an upsert's `ON CONFLICT
-... DO UPDATE` belongs to its `INSERT`, so neither is asked about. `INSERT`
-is never flagged, inside a clause or out.
+... DO UPDATE` belongs to its `INSERT`, so neither is a risky write.
 
 `EXPLAIN ANALYZE` runs the statement it describes rather than only planning
 it, so it is checked as that statement: `EXPLAIN ANALYZE DELETE FROM orders`
 is asked about like the `DELETE` it would run. A plain `EXPLAIN` runs
 nothing and is never asked about.
 
-Read that sentence literally. The check reads the statement text; it never
-consults the database, does not know what a `WHERE` clause actually matches,
-and prevents nothing. It is not called a safe mode anywhere, and when it is
-off the editor line carries a `Pattern checks off` control, so the state is
-never invisible.
+Read "a check on the statement text" literally. It never consults the
+database for permission, does not know what a `WHERE` clause actually
+matches, and prevents nothing; the node's `allow_execute` switch is the
+real gate. It is not called a safe mode anywhere.
 
 ### When a statement fails
 
@@ -421,22 +455,43 @@ the type comes from the schema and reads `BIGINT (schema)`; otherwise it is
 inferred from the returned values and reads `number (inferred from N rows)`.
 Numbers are right-aligned and sort numerically; leading-zero strings stay
 strings. Selecting a row opens a cell inspector with every column's full
-value, so a long JSON document is readable without widening the grid.
+value, so a long JSON document is readable without widening the grid. The
+inspector lists the columns of the statement whose result is shown, in the
+order that statement returned them.
 
-Export is the grid's own exporter, in the gear menu of the grid header, and
-carries the rows that run returned under whatever limit was applied.
+**Export** on the results card offers **Download CSV**, **Download JSON**
+and **Copy as Markdown**, for the rows the statement returned under whatever
+limit was applied. In CSV a NULL is an empty field and an empty string is
+`""`, and objects are written as JSON text. In VS Code, which does not allow
+downloads from a tool panel, CSV and JSON are copied to the clipboard
+instead, and the menu says **Copy as CSV** and **Copy as JSON**.
 
-A precision note rides under any result with a numeric column: `Decimal
-values arrive as floating point; integers above 2^53 lose precision.` That
-is the node's value conversion rather than the grid's rendering, so it
-applies to exports too.
+A precision note shows under a result when a value may not be the number the
+database holds: `Decimal values arrive as floating point; integers above
+2^53 lose precision.` It shows for a float with more than 15 significant
+digits, an integer beyond ±2^53, or a column the schema types as `DECIMAL`
+or `NUMERIC`. That is the node's value conversion rather than the grid's
+rendering, so it applies to exports too. Only a result whose single source
+table is known gets its types from the schema, so a `NUMERIC` column in a
+join shows the note only when one of its values is long enough to give it
+away.
+
+Rows arrive as objects keyed by column name, so two columns with the same
+name merge into one. When a statement projects `*` over a join, or names the
+same output column twice, the results say `Columns with the same name are
+merged; alias them`. The check reads the text and is deliberately narrow: an
+unaliased expression (`count(*)` twice) is not caught.
 
 ## Query history
 
 The history drawer lists what you ran on this connection, newest first, with
-search and filters for reads, writes, errors and pins. Expanding an entry
-shows the full statement, its outcome and its round trip, and lets you load
-it into the editor, run it again, pin it, annotate it or delete it.
+search and filters for reads, writes, errors and pins. Each row is named by
+the statement's first line of code: leading comments are skipped (`--` and
+`/* */` everywhere, `#` on MySQL and ClickHouse), so a generated preview is
+named by its `SELECT`, not by `-- Generated preview`. A statement that is
+only a comment keeps its first line. Expanding an entry shows the full
+statement, its outcome and its round trip, and lets you load it into the
+editor, run it again, pin it, annotate it or delete it.
 
 **Where it is stored matters.** In the app, history goes to your RocketRide
 workspace preferences on the server, per user, not into the browser, and the
@@ -461,7 +516,8 @@ statement, 256 KB across all connections. Recording can be turned off per
 connection, and **Clear** empties one connection's list, pins included.
 
 Re-running an entry that changed data asks first and quotes what it did last
-time; the rerun is a fresh run with its own entry.
+time, whatever the connection's safety level; the rerun is a fresh run with
+its own entry, and the safety level can ask again before it is sent.
 
 ## Relationships
 
@@ -595,10 +651,10 @@ these differences:
     lost.
   - **More than 128 history views open at once:** the oldest views stop
     updating until they are opened again.
-- **Switches are for the session.** **Run and stop asking on this
-  connection** turns the pattern check off until the document's window
-  closes, not for good (the app keeps it in your workspace preferences). A
-  dev tool is given no workspace preferences of its own.
+- **The safety level is the connection's.** It is stored on the saved
+  connection, not in preferences, so it is the same as in the app (see
+  [Confirmations](#confirmations)). A dev tool is given no workspace
+  preferences of its own.
 - **The connection is the sidebar's.** When the engine connection drops, run
   and apply are disabled in every document, and a statement that was waiting
   is reported as possibly still running (there is no way to cancel it). An
