@@ -71,8 +71,12 @@ function writeServedApp(port = 3999): { folder: string; app: { id: string; name:
 
 describe('primitives', () => {
 	it('devPreviewUrl locks the app, turns dev hooks on, and routes to this host', () => {
-		expect(devPreviewUrl('https://api.rocketride.ai/', 'acme.clock', 'nonce-1')).toBe('https://api.rocketride.ai/?appid=acme.clock&rrdev=1&rrsession=nonce-1');
+		expect(devPreviewUrl('https://rr.example.com/', 'acme.clock', 'nonce-1')).toBe('https://rr.example.com/?appid=acme.clock&rrdev=1&rrsession=nonce-1');
 		expect(devPreviewUrl('http://localhost:5565', 'acme.clock')).toContain(`rrsession=${DEV_SESSION_NONCE}`);
+	});
+
+	it('devPreviewUrl opens a cloud API preview on the cloud web app', () => {
+		expect(devPreviewUrl('https://api.rocketride.ai', 'acme.clock', 'nonce-1')).toBe('https://rocketride.ai/?appid=acme.clock&rrdev=1&rrsession=nonce-1');
 	});
 
 	it('splitCompleteLines carries a torn line to the next chunk', () => {
@@ -174,7 +178,7 @@ describe('executeAppDev', () => {
 
 		expect(await running).toBe(0);
 		expect(logs.join('\n')).toContain('Dev server: http://localhost:3998');
-		expect(logs.join('\n')).toContain(`Preview:    https://api.rocketride.ai/?appid=acme.clock&rrdev=1&rrsession=${DEV_SESSION_NONCE}`);
+		expect(logs.join('\n')).toContain(`Preview:    https://rocketride.ai/?appid=acme.clock&rrdev=1&rrsession=${DEV_SESSION_NONCE}`);
 		expect(client.calls[client.calls.length - 1]).toEqual({ subcommand: 'register_dev', moduleId: 'acme_clock', unregister: true });
 	});
 });

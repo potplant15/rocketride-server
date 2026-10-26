@@ -31,7 +31,8 @@
 import { describe, expect, it } from '@jest/globals';
 import * as fs from 'fs';
 import * as path from 'path';
-import { CALLBACK_PALETTES, renderCallbackPage, webAppUrlFor } from '../src/cli/commands/auth';
+import { webAppUrlFor } from '../src/client/constants';
+import { CALLBACK_PALETTES, renderCallbackPage } from '../src/cli/commands/auth';
 
 /** The inline script's body ('' when the page has none). */
 const scriptOf = (page: string): string => /<script>([\s\S]*)<\/script>/.exec(page)?.[1] ?? '';

@@ -61,6 +61,7 @@ import AdmZip from 'adm-zip';
 import ignore from 'ignore';
 import type { Ignore } from 'ignore';
 import { registerAppPack } from '../client/app-pack-registry.js';
+import { webAppUrlFor } from '../client/constants.js';
 import { renderTemplate, TEMPLATE_NAMES } from '../app-scaffold/index.js';
 import type { TemplateName } from '../app-scaffold/index.js';
 import { ensureAppTrigger, ensureProjectId, markerPathOf, readAppListing, saveAppListing } from './marker.js';
@@ -863,7 +864,7 @@ export async function createAppWorkspace(workspaceRoot: string, slug: string, op
 		publisher: developerId,
 		moduleId: appId.replace(/[.-]/g, '_'),
 		port,
-		previewUrl: `${base}/?appid=${encodeURIComponent(appId)}&rrdev=1`,
+		previewUrl: `${webAppUrlFor(base)}?appid=${encodeURIComponent(appId)}&rrdev=1`,
 	}, {
 		sidebar: options.sidebar ?? false,
 		statusFooter: options.statusFooter ?? true,

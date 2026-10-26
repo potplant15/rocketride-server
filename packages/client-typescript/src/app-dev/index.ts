@@ -50,6 +50,7 @@ import { appIconDataUri } from '../app-pack/scan.js';
 import type { ScannedApp } from '../app-pack/scan.js';
 import { isTransientLockError, runRootInstall } from '../app-pack/vendor.js';
 import { materializeDevServerGuard } from './guard.js';
+import { webAppUrlFor } from '../client/constants.js';
 
 export { DEV_SERVER_GUARD_SOURCE, materializeDevServerGuard } from './guard.js';
 
@@ -62,7 +63,8 @@ export const DEV_SESSION_NONCE = randomUUID();
 
 /**
  * The preview URL for an app's dev bundle: the server's shell, locked to the
- * app, with dev hooks on and routed to this host's overlay entry.
+ * app, with dev hooks on and routed to this host's overlay entry. The cloud
+ * API serves no shell, so its preview opens on the cloud web app.
  *
  * @param baseUrl - The server's web origin (http(s), no trailing slash needed).
  * @param appId - The app id.
@@ -70,7 +72,7 @@ export const DEV_SESSION_NONCE = randomUUID();
  * @returns The URL to open in a browser (or an embedding panel).
  */
 export function devPreviewUrl(baseUrl: string, appId: string, session: string = DEV_SESSION_NONCE): string {
-	return `${baseUrl.replace(/\/+$/, '')}/?appid=${encodeURIComponent(appId)}&rrdev=1&rrsession=${encodeURIComponent(session)}`;
+	return `${webAppUrlFor(baseUrl)}?appid=${encodeURIComponent(appId)}&rrdev=1&rrsession=${encodeURIComponent(session)}`;
 }
 
 // =============================================================================

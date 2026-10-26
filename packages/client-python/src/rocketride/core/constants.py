@@ -65,6 +65,29 @@ CONST_DEFAULT_WEB_LOCAL = f'{CONST_DEFAULT_WEB_PROTOCOL}{CONST_DEFAULT_WEB_HOST}
 # This points to the production Enterprise as a Service (EaaS) instance
 CONST_DEFAULT_WEB_CLOUD = 'https://api.rocketride.ai'
 
+# The RocketRide cloud's web app — where people use RocketRide in a browser.
+# The cloud API (CONST_DEFAULT_WEB_CLOUD) serves no web app of its own.
+CONST_DEFAULT_WEB_APP_CLOUD = 'https://rocketride.ai/'
+
+
+def web_app_url_for(server_base: str) -> str:
+    """
+    The web app for a server.
+
+    The cloud API is fronted by the cloud web app at rocketride.ai; any other
+    server serves its web app from its own origin. Mirrors the TypeScript
+    client's webAppUrlFor.
+
+    Args:
+        server_base: The server's http(s) origin (to_http_base of its URI).
+
+    Returns:
+        The web app URL, with a trailing slash.
+    """
+    origin = server_base.rstrip('/')
+    return CONST_DEFAULT_WEB_APP_CLOUD if origin.lower() == CONST_DEFAULT_WEB_CLOUD.lower() else f'{origin}/'
+
+
 # Deprecated: use CONST_DEFAULT_WEB_CLOUD instead
 CONST_DEFAULT_SERVICE = CONST_DEFAULT_WEB_CLOUD
 

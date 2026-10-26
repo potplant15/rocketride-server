@@ -55,6 +55,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from .core.constants import web_app_url_for
+
 # =============================================================================
 # TYPES
 # =============================================================================
@@ -924,7 +926,7 @@ def create_app_workspace(
             publisher=dev_id,
             module_id=re.sub(r'[.-]', '_', app_id),
             port=port,
-            preview_url=f'{base}/?appid={app_id}&rrdev=1',
+            preview_url=f'{web_app_url_for(base)}?appid={app_id}&rrdev=1',
         ),
         FrameOptions(sidebar=sidebar, status_footer=status_footer, doc_tabs=doc_tabs),
     )

@@ -55,6 +55,24 @@ export const CONST_DEFAULT_WEB_LOCAL = `${CONST_DEFAULT_WEB_PROTOCOL}${CONST_DEF
 export const CONST_DEFAULT_WEB_CLOUD = 'https://api.rocketride.ai';
 
 /**
+ * The RocketRide cloud's web app — where people use RocketRide in a browser.
+ * The cloud API (CONST_DEFAULT_WEB_CLOUD) serves no web app of its own.
+ */
+export const CONST_DEFAULT_WEB_APP_CLOUD = 'https://rocketride.ai/';
+
+/**
+ * The web app for a server: the cloud API is fronted by the cloud web app
+ * at rocketride.ai; any other server serves its web app from its own origin.
+ *
+ * @param serverBase - The server's http(s) origin (toHttpBase of its URI).
+ * @returns The web app URL, with a trailing slash.
+ */
+export function webAppUrlFor(serverBase: string): string {
+	const origin = serverBase.replace(/\/+$/, '');
+	return origin.toLowerCase() === CONST_DEFAULT_WEB_CLOUD.toLowerCase() ? CONST_DEFAULT_WEB_APP_CLOUD : `${origin}/`;
+}
+
+/**
  * @deprecated Use CONST_DEFAULT_WEB_CLOUD instead.
  */
 export const CONST_DEFAULT_SERVICE = CONST_DEFAULT_WEB_CLOUD;

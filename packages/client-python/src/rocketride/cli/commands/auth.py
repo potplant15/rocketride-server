@@ -67,6 +67,7 @@ from rocketride_common.provision import (
     write_if_changed,
 )
 
+from ...core.constants import web_app_url_for
 from ..utils.common import connect_client, disconnect_all, prompt_hidden, prompt_line, run_cli_command
 from ..utils.output import Output
 
@@ -194,30 +195,6 @@ _CALLBACK_LOGO = (
     '<path d="M0.799997 190.325C-0.200003 189.325 -0.300003 187.625 0.599997 186.425L21.1 162.024C31.1 150.024 37.9 137.725 41.3 125.325C43.6 116.625 44.6 108.525 44.1 101.225C44.1 100.325 44.4 99.4245 45.1 98.8245C45.8 98.2245 46.8 97.9245 47.7 98.1245C65 101.625 83.5 98.3245 98.5 88.9245C99.6 88.2245 101.1 88.4245 102 89.3245C102.9 90.2245 103.1 91.7245 102.4 92.8245C93 107.825 89.7 126.325 93.2 143.525C93.4 144.325 93.2 145.225 92.6 145.925C92 146.625 91 147.225 90.1 147.125C82.8 146.625 74.6 147.525 66 149.925C53.6 153.225 41.2 160.025 29.3 170.125L4.9 190.625C3.8 191.525 2.1 191.525 0.999997 190.425H0.799997V190.325Z" fill="#F93822"/>'
     '</svg>'
 )
-
-
-# The RocketRide cloud's web app — where people use RocketRide in a browser.
-_CLOUD_WEB_APP_URL = 'https://rocketride.ai/'
-
-
-def web_app_url_for(server_base: str) -> str:
-    """
-    The web app a signed-in user should land on for a server.
-
-    The cloud API (CONST_DEFAULT_WEB_CLOUD) is fronted by the cloud web app at
-    rocketride.ai; any other server serves its web app from its own origin.
-    Mirrors the TypeScript CLI's webAppUrlFor.
-
-    Args:
-        server_base: The server's http(s) origin (to_http_base of its URI).
-
-    Returns:
-        The web app URL, with a trailing slash.
-    """
-    from ...core.constants import CONST_DEFAULT_WEB_CLOUD
-
-    origin = server_base.rstrip('/')
-    return _CLOUD_WEB_APP_URL if origin.lower() == CONST_DEFAULT_WEB_CLOUD.lower() else f'{origin}/'
 
 
 def _palette_vars(p: Dict[str, str]) -> str:

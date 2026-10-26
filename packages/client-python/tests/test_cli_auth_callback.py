@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from rocketride.cli.commands.auth import CALLBACK_PALETTES, _render_callback_page, web_app_url_for
+from rocketride.cli.commands.auth import CALLBACK_PALETTES, _render_callback_page
+from rocketride.core.constants import web_app_url_for
 
 THEMES = Path(__file__).resolve().parents[2] / 'shell' / 'public' / 'themes'
 
