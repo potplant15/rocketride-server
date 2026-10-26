@@ -22,10 +22,12 @@
 
 """Regression tests for the scaffolded rsbuild config (#2455)."""
 
+import os
 import re
+import tempfile
 import unittest
 
-from rocketride._app_scaffold import TEMPLATE_NAMES, TemplateVars, render_template
+from rocketride._app_scaffold import TEMPLATE_NAMES, TemplateVars, create_app_workspace, render_template
 
 VARS = TemplateVars(
     app_id='acme.brandy',
@@ -52,3 +54,15 @@ class TestScaffoldRsbuildConfig(unittest.TestCase):
                 re.compile(r'rspack: \{[^}]*optimization: \{ emitOnErrors: false \}'),
                 template,
             )
+
+
+class TestCreateAppWorkspaceFolder(unittest.TestCase):
+    def test_scaffolds_under_apps_slug_ui(self) -> None:
+        """The folder rule matches the TypeScript scaffold and the VS Code wizard: apps/<slug>-ui."""
+        with tempfile.TemporaryDirectory() as ws:
+            created = create_app_workspace(ws, 'clock', install=False)
+
+            self.assertEqual(created['folder'], 'apps/clock-ui')
+            self.assertEqual(created['appId'], 'local.clock')
+            self.assertTrue(os.path.isfile(os.path.join(ws, 'apps', 'clock-ui', 'clock.rrapp')))
+            self.assertFalse(os.path.exists(os.path.join(ws, 'apps', 'clock')))

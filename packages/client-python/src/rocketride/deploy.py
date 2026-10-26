@@ -246,7 +246,7 @@ class DeployApi:
         """
         Scaffold a new app in the workspace — the programmatic twin of the
         App Builder's New App wizard, rendering the identical templates.
-        Writes ``./apps/<slug>``, ensures the pnpm workspace file and ignore
+        Writes ``./apps/<slug>-ui``, ensures the pnpm workspace file and ignore
         hygiene, vendors the connected server's shell + client packages, and
         runs the workspace install. Scaffolding only — nothing is deployed;
         the normal lifecycle (edit -> :meth:`verify_app` -> :meth:`add_app`
@@ -260,9 +260,10 @@ class DeployApi:
                 (default: the current working directory).
             template: 'Blank' (default) or 'Dashboard'.
             display_name: Display name (default: the slug, title-cased).
-            developer_id: Developer id for the app-id namespace (default
-                'local' — publishable beyond the workspace only after a
-                real developer id is registered).
+            developer_id: Developer id for the app-id namespace (default:
+                this client's organization developer id, else 'local' —
+                the same resolution as the New App wizard and
+                ``rocketride app create``).
             sidebar: Two-column frame with a navigation sidebar.
             status_footer: Status bar across the bottom of the app.
             doc_tabs: Document tab strip across the content area.
@@ -299,6 +300,12 @@ class DeployApi:
             uri = self._client.get_connection_info().get('uri') or ''
             if uri:
                 base = to_http_base(uri)
+
+        # step: the app-id namespace defaults to the connected org's
+        # developer id (off the cached login result — no extra call)
+        if developer_id is None:
+            organization = (self._client.get_account_info() or {}).get('organization') or {}
+            developer_id = organization.get('developerId') or None
 
         # step: the scaffold blocks for minutes (two artifact downloads
         # plus `pnpm install`), so it runs on a worker thread instead of

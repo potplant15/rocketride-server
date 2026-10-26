@@ -34,7 +34,7 @@ as the App Builder's New App wizard and ``deploy.createApp()`` do:
   App.tsx is composed from frame options — sidebar, status footer, and
   document tabs each toggle a chrome region of the scaffolded AppLayout.
 - :func:`create_app_workspace` validates the slug/developer-id grammar,
-  writes ``./apps/<slug>``, ensures the pnpm workspace file and ignore
+  writes ``./apps/<slug>-ui``, ensures the pnpm workspace file and ignore
   hygiene, vendors the server-matched shell + client packages when a server
   base URL is given, and runs ``pnpm install`` (non-fatal on failure).
 - Every generated file carries the project MIT header. The MF rsbuild shape
@@ -848,7 +848,7 @@ def create_app_workspace(
 ) -> dict:
     """Scaffold a new app — the programmatic twin of the App Builder's New App
     wizard, rendering the exact same templates. Writes the app under
-    ``./apps/<slug>``, ensures the pnpm workspace file and ignore hygiene,
+    ``./apps/<slug>-ui``, ensures the pnpm workspace file and ignore hygiene,
     vendors the server-matched platform packages when a server is reachable,
     and installs. Everything after the scaffold (editing, verify, deploy)
     is the normal app lifecycle.
@@ -896,9 +896,10 @@ def create_app_workspace(
     if template not in TEMPLATE_NAMES:
         raise ValueError(f'Unknown template "{template}" — available: {", ".join(TEMPLATE_NAMES)}.')
 
-    # step: destination — ./apps/<slug>, never over an existing folder
-    folder_rel = f'apps/{slug}'
-    folder_abs = os.path.join(ws_abs, 'apps', slug)
+    # step: destination — ./apps/<slug>-ui (the workspace convention every
+    # app UI follows), never over an existing folder
+    folder_rel = f'apps/{slug}-ui'
+    folder_abs = os.path.join(ws_abs, 'apps', f'{slug}-ui')
     if os.path.exists(folder_abs):
         raise ValueError(f'"{folder_rel}" already exists — pick another slug or remove the folder.')
 

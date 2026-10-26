@@ -105,17 +105,22 @@ All store subcommands take the common `--uri`/`--apikey` options.
 `app deploy` is a **deployment-target** verb: it defaults to the
 `ROCKETRIDE_DEPLOY_URI` / `ROCKETRIDE_DEPLOY_APIKEY` pair and refuses to
 run when no deployment target is configured. `app create` reads the
-development connection (`ROCKETRIDE_URI`) for vendoring; `app verify`
-needs no connection.
+development connection (`ROCKETRIDE_URI` / `ROCKETRIDE_APIKEY`) for
+vendoring and for the developer id; `app verify` needs no connection.
 
 - `rocketride app create <slug> [--template Blank|Dashboard] [--name <text>]
   [--developer <id>] [--sidebar] [--no-status-footer] [--doc-tabs]
   [--workspace <dir>] [--no-install]` — scaffold a new app under
-  `./apps/<slug>` with the same
-  templates as the App Builder wizard, vendoring the platform packages
-  from the development server (`ROCKETRIDE_URI`). SDK equivalent:
-  `client.deploy.createApp(slug, options)` / `client.deploy.create_app`.
-  Scaffolding only — nothing deploys.
+  `./apps/<slug>-ui` with the same scaffold as the App Builder wizard (one
+  SDK implementation serves both), vendoring the platform packages from
+  the development server. The app id is `<developerId>.<slug>`: without
+  `--developer`, the developer id comes from the account the development
+  credentials sign in as (run `rocketride login` or `rocketride init`
+  first); with no credentials, no reachable server, or an org that has
+  not registered one, it falls back to `local` and prints a warning to
+  stderr. SDK equivalent: `client.deploy.createApp(slug, options)` /
+  `client.deploy.create_app` (same developer-id default). Scaffolding
+  only — nothing deploys.
 - `rocketride app verify <folder> [--workspace <dir>]` — the
   no-side-effect precheck: manifest shape, id grammar, declared assets,
   include entries, and a pack dry run against the caps. Exit 0 when ready,
@@ -129,8 +134,8 @@ needs no connection.
 
 ```bash
 # CI: precheck, then deploy the packed source as the next registry version
-rocketride app verify ./apps/reports
-rocketride app deploy ./apps/reports --comment "ci: $GITHUB_SHA"
+rocketride app verify ./apps/reports-ui
+rocketride app deploy ./apps/reports-ui --comment "ci: $GITHUB_SHA"
 ```
 
 ## Deploy commands (`rocketride deploy ...`)

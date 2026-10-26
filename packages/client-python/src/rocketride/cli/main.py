@@ -492,7 +492,7 @@ def setup_parser() -> argparse.ArgumentParser:
     app_deploy_parser.add_argument('--verbose', action='store_true', help='Narrate every pack step')
 
     app_create_parser = app_subparsers.add_parser(
-        'create', help='Scaffold a new app under ./apps/<slug> (same templates as the App Builder wizard)'
+        'create', help='Scaffold a new app under ./apps/<slug>-ui (same templates as the App Builder wizard)'
     )
     _add_connection_args(app_create_parser)
     app_create_parser.add_argument('slug', help='App slug')

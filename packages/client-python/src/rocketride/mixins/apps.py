@@ -230,6 +230,32 @@ class AppsMixin(DAPClient):
         body = await self.call('rrext_deploy_app', subcommand='where', appId=app_id)
         return body.get('pins', [])
 
+    async def developer_status(self) -> Dict[str, Any]:
+        """
+        The caller org's developer namespace — the ``<developerId>`` half of
+        every app id it owns. Readable on both editions (OSS answers the
+        fixed namespace its sessions carry; there is no Stripe Connect there).
+
+        Returns:
+            ``{developerId, stripeAccountId, stripeAccountStatus}``;
+            ``developerId`` is None until an org admin registers one.
+        """
+        return await self.call('rrext_deploy_app', subcommand='developer_status')
+
+    async def register_developer(self, developer_id: str) -> Dict[str, Any]:
+        """
+        Claim the caller org's developer id slug (org.admin, self-service,
+        SaaS only). Apps are then created as ``<developerId>.<name>`` and can
+        publish beyond the workspace.
+
+        Args:
+            developer_id: The slug to claim (lowercase letters/underscores).
+
+        Returns:
+            The server's registration record.
+        """
+        return await self.call('rrext_deploy_app', subcommand='developer_register', developerId=developer_id)
+
     # (app_entry is RETIRED: versions serve from stable constructed URLs —
     # /apps/<appId>/v<N>/remoteEntry.js — with entitlement enforced per
     # request by the serve route, so there is nothing to mint.)

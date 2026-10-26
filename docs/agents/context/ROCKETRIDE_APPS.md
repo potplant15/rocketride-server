@@ -219,13 +219,14 @@ Two rules before anything else:
   	displayName: 'Reports',
   	statusFooter: true,
   });
-  // created.appId = 'local.reports', created.folder = 'apps/reports'
+  // created.appId = '<your developer id>.reports', created.folder = 'apps/reports-ui'
   ```
 
-  The scaffold defaults the id to `local.<slug>` (pass `developerId` once
-  your org's id is registered) and is scaffolding only — nothing deploys
-  until the normal lifecycle (`verifyApp` → `addApp` → `publishApp`)
-  runs.
+  The scaffold namespaces the id with the connected org's developer id
+  (falling back to `local.<slug>` when the org has not registered one;
+  pass `developerId` to override) and is scaffolding only — nothing
+  deploys until the normal lifecycle (`verifyApp` → `addApp` →
+  `publishApp`) runs.
 
 The New App wizard collects an app-name slug, a display name, a template
 (**Blank** or **Dashboard**), and three frame options that each toggle a

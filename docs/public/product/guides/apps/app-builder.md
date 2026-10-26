@@ -44,7 +44,7 @@ that, you come back to Design and Deploy most often.
 
 Start from the Dashboard tab, or run **RocketRide: New App** from the
 command palette. The wizard asks for a name and a template (Blank or
-Dashboard) and scaffolds the app under `apps/<slug>`. Always create apps
+Dashboard) and scaffolds the app under `apps/<slug>-ui`. Always create apps
 this way; a hand-made folder fails later with symptoms far from the cause.
 The scaffold starts the id at `local.<slug>` until your organization has a
 developer id; renaming the id later makes it a different app.
@@ -65,6 +65,12 @@ What you will edit:
 ```bash
 rocketride app create reports --template Dashboard
 ```
+
+Both the wizard and the command create the app in `apps/reports-ui` and take
+the developer id from your account. The command reads the account from the
+credentials in `.env`, so run `rocketride login` (or `rocketride init`)
+first. Without an account it warns and uses `local`; pass
+`--developer <id>` to choose one yourself.
 
 ### Design
 
@@ -101,7 +107,7 @@ The Package tab edits the `appManifest` block in `package.json`. The file
 is the truth, so editing it by hand is fine. Verification needs no server:
 
 ```bash
-rocketride app verify ./apps/reports
+rocketride app verify ./apps/reports-ui
 ```
 
 ### Your listing
@@ -136,7 +142,7 @@ A deploy packs the app folder plus any folders listed under
 `appManifest.include`, and nothing else. Every `include` entry must exist.
 
 ```bash
-rocketride app deploy ./apps/reports --comment "first version"
+rocketride app deploy ./apps/reports-ui --comment "first version"
 ```
 
 `rocketride app deploy` needs a deployment target (`ROCKETRIDE_DEPLOY_URI`
