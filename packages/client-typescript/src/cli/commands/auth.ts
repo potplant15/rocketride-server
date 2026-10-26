@@ -423,6 +423,15 @@ export function registerAuthCommands(program: Command): void {
 	const loginCmd = program
 		.command('login')
 		.description('(Re-)authenticate against a server and save credentials to .env')
+		.addHelpText(
+			'after',
+			`
+SaaS servers sign in through your browser; after sign-in the tab closes itself,
+or continues to the RocketRide web app (already signed in) when the browser does
+not allow closing it. OSS servers take an API key (--apikey, or a prompt).
+Credentials land in .env as the development pair, mirrored into the deployment
+pair unless --no-deploy.`,
+		)
 		.option('--deploy', 'Re-authenticate the deployment pair (ROCKETRIDE_DEPLOY_*) instead')
 		.option('--no-deploy', 'Do not mirror the credentials into the deploy pair')
 		.action(async (options) => {
