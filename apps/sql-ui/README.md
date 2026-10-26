@@ -138,8 +138,69 @@ say so: `from schema snapshot HH:MM`.
 ## Browsing a table
 
 A table document pages rows through the grid: page size and page number go
-straight into `LIMIT` and `OFFSET`, per-column filters and the search box
-become a bound `WHERE` clause, and a column sort becomes `ORDER BY`.
+straight into `LIMIT` and `OFFSET`, per-column filters, filter chips and the
+search box become a bound `WHERE` clause, and a column sort becomes
+`ORDER BY`. Paging stays on `OFFSET` because the pager can jump to any page,
+which a keyset cursor cannot do; on a very large table the deep pages are
+slow for that reason.
+
+### Search and filters
+
+The search box looks in the text columns and ignores case. Each engine gets
+its own form: `col::text ILIKE` on PostgreSQL, `LOWER(col) LIKE LOWER(...)` on
+MySQL, `toString(col) ILIKE` on ClickHouse, and a plain `LIKE` on an engine the
+app does not know. A `%`, `_` or `\` you type matches itself rather than acting
+as a wildcard. The header filters match the same way.
+
+**+ Filter** adds a chip above the grid: a column, an operator (equals, not
+equals, contains, starts with, `>`, `<`, `≥`, `≤`, is null, is not null) and a
+value. What you type is sent to the database separately from the statement,
+never pasted into it, and `is null` and `is not null` send no value. On a
+number or yes/no column the value is sent as a number or a boolean, so `5`
+compares as 5. Chips, header filters and the search box all apply together
+(AND). The grid's sorters show as chips too; removing one clears that sort.
+Any change goes back to page 1.
+
+### Counting rows
+
+The total in the pager is counted once per filter. Paging, and changing the
+sort or page size, reuse it; a new search, header filter or chip counts again.
+
+On a table with no filter, the app first reads the engine's own row estimate
+(`pg_class.reltuples`, `information_schema.TABLES.TABLE_ROWS`,
+`system.tables.total_rows`) instead of scanning. From 100,000 rows up, the
+grid shows `About N rows (estimate)` with a **Count exactly** button, and the
+estimate can be well off (MySQL's often is, by 40 to 50 percent). An estimate
+of -1 or NULL, which PostgreSQL gives for a table it has not analyzed, means
+the app counts exactly.
+
+A filtered search on one of those large tables is not counted at all. Each
+page asks for one row more than it shows, and when that row comes back the
+note says `More rows match` and the pager offers a next page. **Count
+exactly** counts it.
+
+A connection that cannot run statements (schema only) gets no page, count or
+estimate statement from the browser.
+
+### Opening a row
+
+Click a row to open it. The drawer lists every column in the table's own
+order, with its type, a `PK` mark where it applies, and a copy button for each
+value and for the whole row as JSON. Prev and Next move through the page; the
+title reads `Row N` counting from the first row of the table. A value is shown
+as the browser received it (see [Results](#results)): very large numbers and
+decimals may be shown rounded.
+
+A value that belongs to a foreign key is a link. It runs `SELECT * FROM
+<referenced> WHERE <key> = $1 LIMIT 2` (every column of a composite key, with
+the values sent separately) and opens that row in a drawer on top, with a back arrow and a Back
+button. If nothing matches, the drawer says so; if more than one row matches,
+it shows the first and says that too. A NULL key is not a link.
+
+**Rows that reference this one** lists the tables whose foreign keys point at
+the row's table. **Show rows** opens that table's data with a chip already set
+to this row's key. Foreign-key columns also say where they point in the
+column's header tooltip, for example `BIGINT → customers.id`.
 
 With no sort of your own, the app orders by the primary key so paging is
 repeatable. A table with no primary key and no sort has no `ORDER BY` at
