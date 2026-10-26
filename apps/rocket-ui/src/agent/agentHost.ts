@@ -29,7 +29,7 @@
  * builds its AgentHost here and installs it right after the workspace is
  * created: the workspace view (whose read-only .rocketride/ holds the
  * guides), the New App scaffold, the deploy packer, the open apps' dev
- * sessions, and the user's approval settings.
+ * sessions, the user's approval settings and the open editors.
  *
  * The host is bound to one workspace. A team switch builds a new workspace
  * and a new host; a run that started before keeps this one, so its reads,
@@ -43,6 +43,7 @@ import { scaffoldApp } from '../surfaces/preview/session/appStore';
 import { findDevSession, type WebDevSession } from '../surfaces/preview/session/devSession';
 import { packAppSource } from '../surfaces/preview/session/pack';
 import { getWorkspace, type Workspace } from '../surfaces/workspace/vfs/workspace';
+import { editorControl } from './editorControls';
 
 // =============================================================================
 // SCAFFOLD DEFAULTS
@@ -210,5 +211,18 @@ export function createRocketAgentHost(client: RocketRideClient, ws: Workspace): 
 			return session ? agentDevSession(session) : null;
 		},
 		approvals: { run: approvalFeed.run, controls: approvalFeed.controls },
+		// step: the editors of this host's workspace, where its tabs register. While another team's
+		// workspace is current the lookup finds none, so an old run opens no dialog, and an answer
+		// given after a switch saves and discards nothing
+		editor: (path) => {
+			if (!current()) return null;
+			const control = editorControl(ws.view, path);
+			if (!control) return null;
+			const whileCurrent = (act: () => Promise<void>) => async (): Promise<void> => {
+				if (!current()) throw new Error('the team changed while the question was open');
+				await act();
+			};
+			return { save: whileCurrent(control.save), discard: whileCurrent(control.discard) };
+		},
 	};
 }

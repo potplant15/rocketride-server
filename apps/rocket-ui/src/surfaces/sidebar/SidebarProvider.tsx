@@ -124,6 +124,9 @@ const SidebarProvider: React.FC = () => {
 		});
 	}, []);
 
+	/** A refused or failed file action's message, shown as a dismissable notice. */
+	const [notice, setNotice] = useState<string | null>(null);
+
 	/** Dismiss the dialog and resolve the promise. */
 	const handleConfirmResult = useCallback((confirmed: boolean) => {
 		setConfirmState(null);
@@ -308,6 +311,8 @@ const SidebarProvider: React.FC = () => {
 			} catch (err) {
 				// Constant format string (SAST rule): the action rides as an arg.
 				console.error('[SidebarProvider] action failed:', action, err);
+				// step: the user sees a refusal (a rename over unsaved changes, say); the tree alone would just not change
+				setNotice(`Could not ${action === 'createFolder' ? 'create the folder' : action === 'createFile' ? 'create the file' : action} "${path}": ${err instanceof Error ? err.message : String(err)}`);
 			}
 		},
 		[client, refresh, projectVfs]
@@ -689,6 +694,7 @@ const SidebarProvider: React.FC = () => {
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}
+			{notice && <ConfirmDialog title="Pipelines" message={notice} confirmLabel="OK" cancelLabel="Close" onConfirm={() => setNotice(null)} onCancel={() => setNotice(null)} />}
 		</>
 	);
 };

@@ -34,15 +34,16 @@
  *   - `IWorkspaceFileSystem` (this file) — the consumer VIEW contract:
  *     everything UI and tooling need on top of a backend — the cached tree
  *     inventory, content cache, editor overlays, and change subscription.
- *   - Two view implementations exist: the shell's `CachedVfs` (satisfies
- *     this interface structurally; a plain cached mirror of its backend)
- *     and `StagedFileSystem` (staged layers with commit/rollback over
- *     another view).
+ *   - Two view implementations exist: the shell's `CachedVfs` (a plain
+ *     cached mirror of its backend; it satisfies `IWorkspaceBaseView`, the
+ *     contract without path versions) and `StagedFileSystem` (staged layers
+ *     with commit/rollback over a base view, and the keeper of path versions).
  *   - `scopedFileSystem` is a prefix lens, view -> view.
  *
  * Consumers type against THIS interface, never the CachedVfs class — nominal
  * class typing would shut out the staged view, lenses, and test doubles.
- * Member signatures deliberately match CachedVfs's public surface verbatim.
+ * Member signatures deliberately match CachedVfs's public surface verbatim,
+ * except the path versions, which only the staged view keeps.
  */
 
 import type { IVirtualFileSystem, VfsEntry, VfsOverlay } from 'shell';
@@ -110,7 +111,9 @@ export interface IWorkspaceFileSystem extends IVirtualFileSystem {
 	upsert(path: string, type: 'file' | 'dir'): void;
 
 	/**
-	 * Seeds the content cache without a backend read. Does not notify.
+	 * Seeds the content cache without a backend read. Does not notify. The
+	 * staged view records the path only: its cache holds the server's copy,
+	 * and a caller's content may be an editor's buffer or staged content.
 	 *
 	 * @param path - The path to seed.
 	 * @param content - The content to cache.
@@ -181,4 +184,55 @@ export interface IWorkspaceFileSystem extends IVirtualFileSystem {
 
 	/** Fires the change tick manually (public by design, like CachedVfs). */
 	notify(): void;
+
+	// ── Path versions ────────────────────────────────────────────────────
+
+	/**
+	 * Writes one file. With `expect`, the write is refused with
+	 * StaleWriteError unless `expect` equals version(path) at the moment of
+	 * the call, so a writer never lands content computed from an older
+	 * version than the current one.
+	 *
+	 * @param path - The file to write.
+	 * @param content - The new content.
+	 * @param origin - The writer's identity ('editor', 'agent', ...).
+	 * @param expect - The version the content was computed from.
+	 */
+	write(path: string, content: unknown, origin?: string, expect?: number): Promise<void>;
+
+	/**
+	 * The path's version in this view: 0 until the view first sees a mutation
+	 * of it, then one more for every mutation that lands or is meant. A
+	 * mutation counts when it is called, not when it lands, so a writer that
+	 * read before it is already stale. Synchronous.
+	 *
+	 * @param path - The path to look up.
+	 */
+	version(path: string): number;
+
+	/**
+	 * read() plus the version the content belongs to. The version is taken
+	 * when the call is made and the read waits for the path's pending
+	 * mutations, so the content is never older than the version says.
+	 *
+	 * @param path - The file to read.
+	 * @param opts.stored - Read what the view stores, never an editor's unsaved buffer. An editor reloads the stored file this way; meanwhile every editor's unsaved changes still count as dirty.
+	 */
+	readVersioned(path: string, opts?: { stored?: boolean }): Promise<{ content: unknown; version: number }>;
+
+	/**
+	 * The origin of the last mutation of a path ('editor', 'agent',
+	 * 'scope-switch', 'commit'), or undefined when the view has seen none or
+	 * the writer gave no origin.
+	 *
+	 * @param path - The path to look up.
+	 */
+	lastWriter(path: string): string | undefined;
 }
+
+/**
+ * The view a StagedFileSystem decorates: the contract without the path
+ * versions, which only the staged view keeps. The shell's CachedVfs
+ * satisfies it structurally.
+ */
+export type IWorkspaceBaseView = Omit<IWorkspaceFileSystem, 'version' | 'readVersioned' | 'lastWriter'>;

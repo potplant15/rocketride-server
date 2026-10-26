@@ -21,7 +21,7 @@
 // SOFTWARE.
 
 // =============================================================================
-// WAVE LOOP TESTS — the done rule, reading replies, same-file order, stop and steering, no key past a tool, and timed-out calls
+// WAVE LOOP TESTS — the done rule, reading replies, same-file order, stop and steering, no key past a tool, timed-out calls, notes and user time
 // =============================================================================
 
 import assert from 'node:assert/strict';
@@ -29,7 +29,7 @@ import { test } from 'node:test';
 
 import { CheckRecord, createChatModel } from '../run';
 import type { CheckStatus } from '../toolkits/appCheck';
-import { AgentTool } from '../tools';
+import { AgentTool, RefusedError, UserTime } from '../tools';
 import { runLoop, type FinishRule, type LoopOptions, type RanCall } from './loop';
 import type { ModelCall, PromptPrefix, QuestionSpec } from './plan';
 
@@ -978,4 +978,116 @@ test('a call whose prepare timed out holds nothing back, since its work never be
 	assert.match(String(entries.get('wave-0.r0')?.error), /^TimeoutError/);
 	assert.equal(entries.get('wave-0.r1')?.error, undefined);
 	assert.deepEqual(events, ['start 1', 'write 1']);
+});
+
+// =============================================================================
+// NOTES AND USER TIME — the wave's notes, and no time limit while the user decides
+// =============================================================================
+
+test("the notes option adds this wave's notes to its question, and keeps them on a retry", async () => {
+	let wave = 0;
+	const model = scriptedModel(['not json', plan([['read', {}]]), done('ok')]);
+	await setup(model, [stub('read')], { notes: () => [`note ${wave++}`] }).run();
+	const seen = model.questions.map((q) => q.context.filter((c) => c.startsWith('note') || c.startsWith('Your previous reply')));
+	assert.deepEqual(
+		seen.map((notes) => notes.length),
+		[1, 2, 1]
+	);
+	assert.deepEqual([seen[0][0], seen[1][0], seen[2][0]], ['note 0', 'note 0', 'note 1']);
+	assert.match(seen[1][1], /^Your previous reply was not usable/);
+});
+
+test("a call's time limit stands still while the user answers its question", async () => {
+	const userTime = new UserTime();
+	const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+	// step: 40 ms in a dialog under a 15 ms limit, with a little work before and after it
+	const asking = stub('edit_file', async () => {
+		await sleep(2);
+		await userTime.during(sleep(40));
+		await sleep(2);
+		return 'edited';
+	});
+	const model = scriptedModel([plan([['edit_file', { path: 'a.ts' }]]), done('ok')]);
+	await setup(model, [asking], { timeoutMs: () => 15, userTime }).run();
+	assert.equal(entriesByKey(model.questions[1]).get('wave-0.r0')?.error, undefined, 'no timeout while the user decides');
+
+	// step: the same wait outside a question still times out
+	const slow = stub('edit_file', async () => {
+		await sleep(40);
+		return 'edited';
+	});
+	const control = scriptedModel([plan([['edit_file', { path: 'a.ts' }]]), done('ok')]);
+	await setup(control, [slow], { timeoutMs: () => 15, userTime }).run();
+	assert.match(String(entriesByKey(control.questions[1]).get('wave-0.r0')?.error), /^TimeoutError: no result after 0\.015 s/);
+});
+
+test('Stop cuts a call loose while its clock stands still for a question', async () => {
+	const userTime = new UserTime();
+	const stop = new AbortController();
+	const emitted: string[] = [];
+	// step: the call asks the user and never hears back; the user presses Stop instead
+	const asking = stub('edit_file', () => {
+		void userTime.during(new Promise<never>(() => undefined));
+		setTimeout(() => stop.abort(), 5);
+		return new Promise<string>(() => undefined);
+	});
+	const model = scriptedModel([plan([['edit_file', { path: 'a.ts' }]])]);
+	const result = await setup(model, [asking], { timeoutMs: () => 15, userTime, signal: stop.signal, emit: (_type, text) => emitted.push(text) }).run();
+	assert.equal(result.stopReason, 'stopped');
+	assert.match(emitted.at(-1) ?? '', /- edit_file a\.ts/, 'the call still waiting on the user is named as still running');
+});
+
+test("a question during a call's prepare stands its clock still, so its run still gets the limit", async () => {
+	const userTime = new UserTime();
+	const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+	// step: 40 ms in a dialog while the call gets ready, under a 15 ms limit, then 5 ms of work
+	const asking = new AgentTool({
+		name: 'edit_file',
+		description: 'edit_file',
+		parameters: { type: 'object' },
+		prepare: async () => {
+			await userTime.during(sleep(40));
+			return { run: () => sleep(5).then(() => 'edited') };
+		},
+	});
+	const model = scriptedModel([plan([['edit_file', { path: 'a.ts' }]]), done('ok')]);
+	await setup(model, [asking], { timeoutMs: () => 15, userTime }).run();
+	assert.equal(entriesByKey(model.questions[1]).get('wave-0.r0')?.error, undefined, 'the time in the dialog was not taken from the run');
+});
+
+test('a call its tool refuses with a RefusedError is unstarted: the finish rule hears nothing of it, and the next call on its file runs', async () => {
+	const heard: RanCall[] = [];
+	const finish: FinishRule = {
+		checkTool: 'check_app',
+		beginWave: () => undefined,
+		endWave: async (calls) => {
+			heard.push(...calls);
+		},
+		unchecked: () => null,
+	};
+	const refusing = stub('edit_file', () => {
+		throw new RefusedError('edit_file refused: the user kept their unsaved changes.');
+	});
+	const failing = stub('write_file', () => {
+		throw new Error('write_file failed after it wrote part of the file');
+	});
+	const after = stub('delete_file');
+	const model = scriptedModel([
+		plan([
+			['edit_file', { path: APP_FILE }],
+			['delete_file', { path: APP_FILE }],
+			['write_file', { path: 'apps/b-ui/src/b.ts' }],
+		]),
+		done('ok'),
+	]);
+	await setup(model, [refusing, failing, after], { finish }).run();
+
+	const entries = entriesByKey(model.questions[1]);
+	assert.match(String(entries.get('wave-0.r0')?.error), /^edit_file refused: the user kept their unsaved changes\.$/, 'the model reads the refusal');
+	assert.equal(after.seen.length, 1, 'the refused call held nothing back');
+	assert.deepEqual(
+		heard.map((call) => call.tool),
+		['delete_file', 'write_file'],
+		'the refused call is not heard; a plain failure is, since a write may land before its error'
+	);
 });

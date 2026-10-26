@@ -40,11 +40,16 @@
  * (a search that starts inside it still reaches them). What it
  * provides: whole-and-partial reads served from the cache, anchored
  * edit_file updates, dirty-overlay protection (reads see unsaved editor
- * buffers; mutations refuse paths the user holds dirty), read-before-edit
- * (an edit or overwrite is refused unless the file was read this run and has
- * not changed since), content search, and generic path hygiene (traversal
- * and store-illegal characters are refused here with LLM-readable errors —
- * backends still validate again).
+ * buffers; a mutation of a path the user holds dirty asks the user first
+ * and is refused when they keep their changes), read-before-edit (an edit
+ * or overwrite is refused unless the file was read this run; an overwrite of
+ * a file that changed since is refused, and an edit of one applies only
+ * when its anchor still matches once), content search, and generic path
+ * hygiene (traversal and store-illegal characters are refused here with
+ * LLM-readable errors — backends still validate again).
+ *
+ * Every write names the version it was computed from, so the view refuses
+ * it when anything else changed the file in between.
  *
  * Reads and searches show a `«secret:<id>»` marker in place of each secret
  * value, and writes and edits put the value back (./secretMarkers.ts). The
@@ -56,9 +61,12 @@
 
 import { sha256Hex } from '../../vfs/hash';
 import { ROCKETRIDE_ROOT, isReferencePath } from '../../vfs/referenceTree';
+import { StaleVersionError, StaleWriteError } from '../../vfs/stagedFileSystem';
 import type { IWorkspaceFileSystem } from '../../vfs/vfsTypes';
-import { AgentTool, AgentToolkit, type ToolStep } from '../tools';
-import { replaceSpans } from './common';
+import { SaveDroppedError, type EditorControl } from '../host';
+import { AgentTool, AgentToolkit, RefusedError, type ToolStep } from '../tools';
+import { replaceSpans, type ChoiceFn } from './common';
+import { FileTracker } from './fileTracker';
 import { SecretMarkers } from './secretMarkers';
 
 // =============================================================================
@@ -114,10 +122,13 @@ function hasInvalidPathChar(p: string): boolean {
 
 /** The default group instructions — generic file-tool doctrine only. */
 const FILESYSTEM_INSTRUCTIONS = `File tools operate on the workspace virtual filesystem. Paths are workspace-relative and always use forward slashes.
-- Read a file before editing or overwriting it. edit_file and write_file refuse a file you have not read, or one that changed since you read it; read it again, then redo the edit.
+- Read a file before editing or overwriting it. edit_file and write_file refuse a file you have not read. write_file refuses a file that changed since you read it; edit_file then applies your anchor to the current content only when it still matches once. Either way, read the file again before your next change to it.
 - Prefer edit_file (exact-anchor find/replace) for changes; write_file replaces a whole file.
-- Reads see the user's unsaved editor buffers; mutations are refused while the user has unsaved changes to the file - relay that to the user instead of retrying.
+- Reads see the user's unsaved editor buffers. Changing a file with unsaved changes asks the user first; if they keep their changes, the call is refused: ask them how to proceed instead of retrying.
 - Truncated reads are always labeled; use offset/limit to window large files cheaply.`;
+
+/** The title of the dialog that asks about unsaved changes. */
+const UNSAVED_TITLE = 'Unsaved changes';
 
 // =============================================================================
 // PATH HYGIENE — generic validation, no layout knowledge
@@ -152,6 +163,63 @@ export function normalizePath(raw: unknown, allowRoot = false): string {
 }
 
 // =============================================================================
+// UNSAVED CHANGES — asking the user before a change lands on their typing
+// =============================================================================
+
+/** How the toolkit asks about unsaved changes, and acts on the answer. */
+export interface UnsavedOptions {
+	/** Asks the user: save mine first, discard mine, or keep mine. */
+	choose: ChoiceFn;
+	/** The open editor that holds a path, or null when none does. */
+	editor: (path: string) => EditorControl | null;
+}
+
+/**
+ * Names some paths for a sentence.
+ *
+ * @param paths - The paths, at least one.
+ * @returns `a`, `a and b`, or `a, b and c`.
+ */
+function listPaths(paths: string[]): string {
+	return paths.length === 1 ? paths[0] : `${paths.slice(0, -1).join(', ')} and ${paths[paths.length - 1]}`;
+}
+
+/**
+ * The tool result when the user keeps their unsaved changes.
+ *
+ * @param dirty - The paths with unsaved changes.
+ * @returns Text telling the model to ask the user, not retry.
+ */
+function kept(dirty: string[]): string {
+	return `The user kept their unsaved changes in ${listPaths(dirty)}. Ask them how to proceed; do not retry.`;
+}
+
+/**
+ * The tool result when the question was never shown, because a dialog that
+ * is not the agent's was open. It is not the user keeping their changes.
+ *
+ * @param dirty - The paths with unsaved changes.
+ * @returns Text telling the model to try again later.
+ */
+function unasked(dirty: string[]): string {
+	return `The user was not asked about ${listPaths(dirty)} because another dialog was open. Try again after they close it.`;
+}
+
+/**
+ * A refusal, as the error the loop reads. A call that changed nothing throws
+ * RefusedError, so the finish rule does not count it as a change. A call in
+ * which the user's own save landed first throws a plain Error: the file did
+ * change during the run, so it still needs its check.
+ *
+ * @param message - What the model reads.
+ * @param changed - True when the user's save landed in this call.
+ * @returns The error.
+ */
+function refusal(message: string, changed: boolean): Error {
+	return changed ? new Error(message) : new RefusedError(message);
+}
+
+// =============================================================================
 // FILESYSTEM TOOLKIT
 // =============================================================================
 
@@ -167,14 +235,17 @@ export class FilesystemTools extends AgentToolkit {
 	/** The host's virtual tree — all I/O goes through it. */
 	private readonly vfs: IWorkspaceFileSystem;
 
-	/** SHA-256 of each file's full content as this run last read or wrote it, by path. */
-	private readonly readHashes = new Map<string, string>();
+	/** Each file this run read or changed: its version and hash then, and what the run did to it. */
+	readonly tracker = new FileTracker();
 
 	/** The secret values this run's reads hid, each with its marker; writes put them back. */
 	private readonly secrets = new SecretMarkers();
 
 	/** The host's after-save hook, if any. */
 	private readonly afterSave?: (path: string) => Promise<string>;
+
+	/** How the user is asked about unsaved changes, and the editors that act on the answer. */
+	private readonly unsaved?: UnsavedOptions;
 
 	/**
 	 * Builds the toolkit for one agent.
@@ -189,11 +260,14 @@ export class FilesystemTools extends AgentToolkit {
 	 *   after each write_file or edit_file save that worked; the text it
 	 *   returns is appended to the tool result. What it does with the path is
 	 *   the host's business: this toolkit stays layout-agnostic.
+	 * @param unsaved - How to ask the user about unsaved changes. Without it, a
+	 *   mutation of a dirty path is refused with no question.
 	 */
-	constructor(vfs: IWorkspaceFileSystem, instructions = '', afterSave?: (path: string) => Promise<string>) {
+	constructor(vfs: IWorkspaceFileSystem, instructions = '', afterSave?: (path: string) => Promise<string>, unsaved?: UnsavedOptions) {
 		super();
 		this.vfs = vfs;
 		this.afterSave = afterSave;
+		this.unsaved = unsaved;
 		// step: mechanics first, then the host's map of its own tree
 		this.instructions = instructions.trim().length > 0
 			? `${FILESYSTEM_INSTRUCTIONS}\n\n${instructions.trim()}`
@@ -203,38 +277,145 @@ export class FilesystemTools extends AgentToolkit {
 	// ── Internals ────────────────────────────────────────────────────────
 
 	/**
-	 * Refuses mutations against a path the user holds dirty in an editor —
-	 * the agent must never silently clobber unsaved work. A tree guard: the
-	 * path itself or any dirty file under it (a directory move or delete
-	 * takes its files along) refuses the call.
+	 * The paths the user holds dirty in an editor at or under some paths (a
+	 * directory move or delete takes its files along).
 	 *
-	 * @param path - Canonical path.
-	 * @param op - Tool name for the refusal message.
+	 * @param paths - Canonical paths.
+	 * @returns The dirty paths, in the order found.
 	 */
-	private guardDirty(path: string, op: string): void {
-		const dirtyPath = this.vfs.isDirty(path) ? path : [...this.vfs.dirtyPaths()].find((p) => p.startsWith(`${path}/`));
-		if (dirtyPath !== undefined) {
-			throw new Error(`${op} refused: ${dirtyPath} has unsaved editor changes. Ask the user to save or discard them first.`);
+	private dirtyUnder(paths: string[]): string[] {
+		const all = [...this.vfs.dirtyPaths()];
+		return [...new Set(paths.flatMap((path) => (this.vfs.isDirty(path) ? [path] : all.filter((p) => p.startsWith(`${path}/`)))))];
+	}
+
+	/**
+	 * Refuses a mutation while the user holds a path dirty. Synchronous: the
+	 * caller writes in the same block, so no typing can slip in between.
+	 *
+	 * @param paths - Canonical paths.
+	 * @param op - Tool name for the refusal message.
+	 * @param changed - True when the user's save landed earlier in this call (see refusal()).
+	 */
+	private refuseDirty(paths: string[], op: string, changed = false): void {
+		const dirty = this.dirtyUnder(paths);
+		if (dirty.length > 0) {
+			throw refusal(`${op} refused: ${dirty[0]} has unsaved editor changes. Ask the user to save or discard them first.`, changed);
 		}
 	}
 
 	/**
-	 * Refuses an edit or overwrite of a file the agent has not read this run,
-	 * or one whose content differs from what it read — the edit would start
-	 * from text the agent never saw.
+	 * Whether settleUnsaved can ask about every path the user holds dirty at
+	 * or under some paths: there is a way to ask, and an editor for each.
+	 *
+	 * @param paths - Canonical paths.
+	 * @returns True when nothing is dirty there, or when every dirty path can be asked about.
+	 */
+	private canSettle(paths: string[]): boolean {
+		const dirty = this.dirtyUnder(paths);
+		return dirty.length === 0 || (this.unsaved !== undefined && dirty.every((p) => this.unsaved?.editor(p) != null));
+	}
+
+	/**
+	 * Settles the user's unsaved changes before a mutation. With nothing
+	 * dirty it does nothing. Otherwise the user chooses: their editors save
+	 * first, or drop their changes, or the call is refused. With no way to
+	 * ask, or no editor that can act on a dirty path, the call is refused as
+	 * before.
+	 *
+	 * @param paths - Canonical paths the mutation changes; the first is what it acts on.
+	 * @param op - Tool name for refusal messages.
+	 * @param action - What the agent wants, for the dialog ('change apps/x.ts').
+	 * @returns What the user chose ('save' or 'discard') and the dirty paths it covered, or null when nothing was dirty.
+	 */
+	private async settleUnsaved(paths: string[], op: string, action: string): Promise<{ choice: 'save' | 'discard'; dirty: string[] } | null> {
+		const dirty = this.dirtyUnder(paths);
+		if (dirty.length === 0) return null;
+		const editors = dirty.map((p) => this.unsaved?.editor(p) ?? null);
+		if (!this.unsaved || editors.includes(null)) this.refuseDirty(paths, op);
+		const message = dirty.length === 1 && dirty[0] === paths[0] ? `The agent wants to ${action}, which has unsaved changes.` : `The agent wants to ${action}, which takes along unsaved changes in ${listPaths(dirty)}.`;
+		const choice = await (this.unsaved as UnsavedOptions).choose(UNSAVED_TITLE, message);
+		if (choice === 'keep') throw new RefusedError(kept(dirty));
+		if (choice === 'unasked') throw new RefusedError(unasked(dirty));
+		let saved = false;
+		try {
+			for (const editor of editors as EditorControl[]) {
+				if (choice === 'save') {
+					await editor.save();
+					saved = true;
+				} else await editor.discard();
+			}
+		} catch (err) {
+			// step: the user dropped or replaced their changes while the save waited its turn, so none of them was saved
+			if (err instanceof SaveDroppedError) throw refusal(`${op} refused: the unsaved changes in ${listPaths(dirty)} were not saved. While the save waited its turn, the user reloaded, discarded or closed them, or saved newer changes over them. Read ${listPaths(dirty)} again, then ask the user how to proceed.`, saved);
+			throw refusal(`${op} refused: ${choice === 'save' ? 'saving' : 'discarding'} the unsaved changes in ${listPaths(dirty)} failed (${err instanceof Error ? err.message : String(err)}). Ask the user how to proceed; do not retry.`, saved);
+		}
+		return { choice, dirty };
+	}
+
+	/**
+	 * Refuses an edit or overwrite of a file the agent has not read this run.
 	 *
 	 * @param path - Canonical path.
 	 * @param op - Tool name for the refusal message.
-	 * @param current - The file's current full content.
+	 * @returns What the run last saw of the file.
 	 */
-	private async guardRead(path: string, op: string, current: string): Promise<void> {
-		const seen = this.readHashes.get(path);
-		if (seen === undefined) {
-			throw new Error(`${op} refused: read ${path} first — edits must start from its current content.`);
+	private requireRead(path: string, op: string): { readVersion?: number; readHash: string } {
+		const seen = this.tracker.get(path);
+		if (seen?.readHash === undefined) {
+			throw new RefusedError(`${op} refused: read ${path} first — edits must start from its current content.`);
 		}
-		if (seen !== (await sha256Hex(current))) {
-			throw new Error(`${op} refused: ${path} changed since you read it. Read it again, then redo the edit.`);
+		return { readVersion: seen.readVersion, readHash: seen.readHash };
+	}
+
+	/**
+	 * The refusal for a file that changed since the run last saw it.
+	 *
+	 * @param op - Tool name for the message.
+	 * @param path - Canonical path.
+	 * @param seen - The version the run saw.
+	 * @param now - The version the file is at.
+	 * @param saved - True when the user saved their unsaved changes in this call, which is what changed the file.
+	 * @returns The error, naming both versions and the last writer when the view counted the change.
+	 */
+	private staleRefusal(op: string, path: string, seen: number | undefined, now: number, saved = false): Error {
+		const writer = this.vfs.lastWriter(path);
+		const versions = seen !== undefined && seen !== now ? ` (version ${seen}, now ${now}${writer ? `; last writer: ${writer}` : ''})` : '';
+		const why = saved ? `the user saved their unsaved changes in ${path} first, so it changed since you read it` : `${path} changed since you read it`;
+		return refusal(`${op} refused: ${why}${versions}. Read it again, then redo the change from the current content.`, saved);
+	}
+
+	/**
+	 * Writes a file at the version it was computed from. The dirty check and
+	 * the write's version check run in one synchronous block; a version
+	 * refusal from the view becomes the stale refusal. So does a refusal for
+	 * a server copy that moved on since the page read it (another tab, a
+	 * teammate): the view's cached copy is dropped, so the agent's next read
+	 * gets the server's copy, and its next write is checked against that.
+	 *
+	 * @param path - Canonical path.
+	 * @param content - The new content.
+	 * @param expect - The version the content was computed from.
+	 * @param op - Tool name for refusal messages.
+	 * @param existed - Whether the file existed before the write.
+	 * @param saved - True when the user's save landed earlier in this call (see refusal()).
+	 * @returns The version of this write.
+	 */
+	private async writeAt(path: string, content: string, expect: number, op: string, existed = true, saved = false): Promise<number> {
+		this.refuseDirty([path], op, saved);
+		const writing = this.vfs.write(path, content, AGENT_ORIGIN, expect);
+		const mine = this.vfs.version(path);
+		try {
+			await writing;
+		} catch (err) {
+			if (err instanceof StaleVersionError) throw this.staleRefusal(op, path, err.expected, err.actual, saved);
+			if (err instanceof StaleWriteError) {
+				this.vfs.invalidate(path);
+				throw refusal(`${op} refused: ${path} changed on the server since you read it (another tab or a teammate). Read it again, then redo the change from the current content.`, saved);
+			}
+			throw err;
 		}
+		this.tracker.wrote(path, mine, await sha256Hex(content), existed);
+		return mine;
 	}
 
 	/**
@@ -324,9 +505,10 @@ export class FilesystemTools extends AgentToolkit {
 	private async readFile(rawPath: unknown, maxBytes?: number, offset?: number, limit?: number): Promise<string> {
 		const path = normalizePath(rawPath);
 		const cap = Math.min(Math.max(1, maxBytes ?? READ_DEFAULT_BYTES), READ_MAX_BYTES);
-		let text = String(await this.vfs.read(path));
-		// step: record the whole file's hash, windowed or not — it is what edits are checked against
-		this.readHashes.set(path, await sha256Hex(text));
+		const read = await this.vfs.readVersioned(path);
+		let text = String(read.content);
+		// step: record the whole file's version and hash, windowed or not — they are what edits are checked against
+		this.tracker.read(path, read.version, await sha256Hex(text));
 		// step: hide secret values before any window — a window could cut one in half, and half a key no longer matches
 		const hidden = this.shown(path, text);
 		text = hidden.text;
@@ -353,7 +535,8 @@ export class FilesystemTools extends AgentToolkit {
 
 	/**
 	 * write_file: whole-file replacement through the VFS. A new file needs no
-	 * read; replacing an existing one follows the read-before-edit rule.
+	 * read; replacing an existing one follows the read-before-edit rule, and
+	 * is refused when the file changed since the run last saw it.
 	 *
 	 * @param rawPath - Agent-supplied path.
 	 * @param content - The complete new file content.
@@ -367,19 +550,28 @@ export class FilesystemTools extends AgentToolkit {
 		if (size > WRITE_MAX_BYTES) {
 			throw new Error(`write_file caps at ${WRITE_MAX_BYTES} bytes per file (got ${size}).`);
 		}
-		this.guardDirty(path, 'write_file');
 		// step: a new file needs no read; replacing an existing one must start from what was read
-		if ((await this.entryType(path)) === 'file') await this.guardRead(path, 'write_file', String(await this.vfs.read(path)));
-		await this.vfs.write(path, content, AGENT_ORIGIN);
-		this.readHashes.set(path, await sha256Hex(content));
+		let expect = this.vfs.version(path);
+		const existed = (await this.entryType(path)) === 'file';
+		const seen = existed ? this.requireRead(path, 'write_file') : undefined;
+		// step: after "Save mine first" the user's text has landed, so a stale write is no refusal (see refusal())
+		const saved = (await this.settleUnsaved([path], 'write_file', `change ${path}`))?.choice === 'save';
+		if (seen) {
+			const current = await this.vfs.readVersioned(path);
+			if (seen.readVersion !== current.version || seen.readHash !== (await sha256Hex(String(current.content)))) throw this.staleRefusal('write_file', path, seen.readVersion, current.version, saved);
+			expect = current.version;
+		}
+		await this.writeAt(path, content, expect, 'write_file', existed, saved);
 		return `Wrote ${size} bytes to ${path}.${await this.noteAfterSave(path)}`;
 	}
 
 	/**
 	 * edit_file: anchored find/replace against the cached content — the
-	 * partial-update surface. Refused when the file was not read this run or
-	 * changed since, and when the anchor is missing or ambiguous, with
-	 * recovery guidance in the error.
+	 * partial-update surface. Refused when the file was not read this run,
+	 * and when the anchor is missing or ambiguous, with recovery guidance in
+	 * the error. A file that changed since the run last saw it takes the edit
+	 * only when the anchor matches exactly one place in its current content;
+	 * the result then says so.
 	 *
 	 * @param rawPath - Agent-supplied path.
 	 * @param oldString - Exact text to replace.
@@ -396,15 +588,20 @@ export class FilesystemTools extends AgentToolkit {
 		// step: refuse a marker this run did not make; the replacement's markers become the values they stand for
 		this.secrets.reveal(oldString, 'edit_file');
 		const replacement = this.secrets.reveal(newString, 'edit_file');
-		this.guardDirty(path, 'edit_file');
-		const text = String(await this.vfs.read(path));
-		await this.guardRead(path, 'edit_file', text);
+		const seen = this.requireRead(path, 'edit_file');
+		const choice = (await this.settleUnsaved([path], 'edit_file', `change ${path}`))?.choice ?? null;
+		const saved = choice === 'save';
+		const { content, version } = await this.vfs.readVersioned(path);
+		const text = String(content);
+		const stale = seen.readVersion !== version || seen.readHash !== (await sha256Hex(text));
 
 		// step: match the anchor against the file as the model sees it, markers in place, so an anchor cannot test a guess at a hidden value
 		const found = this.secrets.anchors(path, text, oldString);
 
-		// step: count anchors — zero is a miss, several without replaceAll is ambiguous
+		// step: count anchors — zero is a miss, several without replaceAll is ambiguous. On a
+		// file that changed since the read, only an anchor that names one place still applies
 		const occurrences = found.length;
+		if (stale && occurrences !== 1) throw this.staleRefusal('edit_file', path, seen.readVersion, version, saved);
 		if (occurrences === 0) {
 			throw new Error(`edit_file: oldString not found in ${path}. Re-read the file — the anchor must match exactly, including whitespace.`);
 		}
@@ -418,9 +615,25 @@ export class FilesystemTools extends AgentToolkit {
 		if (size > WRITE_MAX_BYTES) {
 			throw new Error(`edit_file result exceeds the ${WRITE_MAX_BYTES}-byte file cap.`);
 		}
-		await this.vfs.write(path, updated, AGENT_ORIGIN);
-		this.readHashes.set(path, await sha256Hex(updated));
-		return `Replaced ${occurrences} occurrence(s) in ${path}.${await this.noteAfterSave(path)}`;
+		const writer = this.vfs.lastWriter(path);
+		await this.writeAt(path, updated, version, 'edit_file', true, saved);
+		const note = stale ? ` ${this.appliedNote(choice, writer, path)}` : '';
+		return `Replaced ${occurrences} occurrence(s) in ${path}.${note}${await this.noteAfterSave(path)}`;
+	}
+
+	/**
+	 * What an edit result adds when the file had changed since the read and
+	 * the anchor still matched once.
+	 *
+	 * @param choice - What the user chose for their unsaved changes, or null when nothing was unsaved.
+	 * @param writer - Who changed the file last before this edit, when known.
+	 * @param path - Canonical path.
+	 * @returns The note.
+	 */
+	private appliedNote(choice: 'save' | 'discard' | null, writer: string | undefined, path: string): string {
+		if (choice === 'save') return `The user saved their unsaved changes first; your anchor still matched once in the saved text, so the edit was applied on top of it. Read ${path} again before further edits.`;
+		if (choice === 'discard') return `The user discarded their unsaved changes; your anchor still matched once in the stored file, so the edit was applied there. Read ${path} again before further edits.`;
+		return `The file had changed since you read it${writer ? ` (last writer: ${writer})` : ''}; your anchor still matched once, so the edit was applied to the current content. Read it again before further edits.`;
 	}
 
 	/**
@@ -522,9 +735,12 @@ export class FilesystemTools extends AgentToolkit {
 		const oldPath = normalizePath(rawOld);
 		const newPath = normalizePath(rawNew);
 		// step: both ends — the target's dirty buffer would be overwritten too
-		this.guardDirty(oldPath, 'rename');
-		this.guardDirty(newPath, 'rename');
+		const settled = await this.settleUnsaved([oldPath, newPath], 'rename', `move ${oldPath} to ${newPath}`);
+		// step: the user's text landed, so what the agent decided to move has changed: it reads again and asks
+		if (settled?.choice === 'save') throw new Error(`rename refused: the user saved their unsaved changes in ${listPaths(settled.dirty)} first, so the files changed since you planned the move. Read ${listPaths(settled.dirty)} again, then ask the user whether to move ${oldPath} to ${newPath}.`);
+		this.refuseDirty([oldPath, newPath], 'rename');
 		await this.vfs.rename(oldPath, newPath, AGENT_ORIGIN);
+		this.tracker.renamed(oldPath, newPath, (p) => this.vfs.version(p));
 		return `Renamed ${oldPath} to ${newPath}.`;
 	}
 
@@ -546,7 +762,10 @@ export class FilesystemTools extends AgentToolkit {
 	 * list, since a delete does not go through the client. The tree root and
 	 * paths the view refuses, such as the read-only .rocketride/, are refused
 	 * here, before the user is asked; protected roots inside the tree are the
-	 * backend's rule to enforce.
+	 * backend's rule to enforce. Unsaved changes at or under the path are
+	 * asked about in the run, after the card: a prepare only reads, and Save
+	 * mine first or Discard mine changes the file. A dirty path the run could
+	 * not ask about is refused here, as before.
 	 *
 	 * @param rawPath - Agent-supplied path.
 	 * @param recursive - Required true to remove a directory and its contents.
@@ -560,13 +779,20 @@ export class FilesystemTools extends AgentToolkit {
 		if (type === 'dir' && !recursive) {
 			throw new Error(`${path} is a directory — pass recursive: true to delete it and its contents.`);
 		}
-		this.guardDirty(path, 'delete_file');
+		// step: a dirty path the run could not ask about is refused before the card; one it can ask about is asked once the act is let through
+		if (!this.canSettle([path])) this.refuseDirty([path], 'delete_file');
 		return {
 			act: { name: 'delete_file', params: [path, type] },
 			run: async () => {
-				// the user may have edited it while the card waited
-				this.guardDirty(path, 'delete_file');
-				await this.vfs.delete(path, AGENT_ORIGIN);
+				// step: the user may have edited it while the card waited, so the unsaved changes are settled now
+				const settled = await this.settleUnsaved([path], 'delete_file', `delete ${path}`);
+				// step: the user's text landed, so what the agent decided to delete has changed: it reads again and asks
+				if (settled?.choice === 'save') throw new Error(`delete_file refused: the user saved their unsaved changes in ${listPaths(settled.dirty)} first, so ${path} changed since you decided to delete it. Read it again, then ask the user whether to delete it.`);
+				this.refuseDirty([path], 'delete_file');
+				const deleting = this.vfs.delete(path, AGENT_ORIGIN);
+				const mine = this.vfs.version(path);
+				await deleting;
+				this.tracker.deleted(path, mine);
 				return `Deleted ${path}.`;
 			},
 		};
@@ -580,7 +806,7 @@ export class FilesystemTools extends AgentToolkit {
 	 * @returns Canonical paths, in the order first seen.
 	 */
 	pathsSeen(): string[] {
-		return [...this.readHashes.keys()];
+		return this.tracker.seen();
 	}
 
 	/**
@@ -651,7 +877,7 @@ export class FilesystemTools extends AgentToolkit {
 			}),
 			new AgentTool({
 				name: 'edit_file',
-				description: 'PREFERRED way to change an existing file: replace an exact text anchor. oldString must match the file exactly (including whitespace) and be unique unless replaceAll is true. Refused unless you read the file this run and it has not changed since (the error says to read it again), and when the user has unsaved editor changes to it.',
+				description: 'PREFERRED way to change an existing file: replace an exact text anchor. oldString must match the file exactly (including whitespace) and be unique unless replaceAll is true. Refused unless you read the file this run. If the file changed since, the edit applies only when oldString matches exactly one place in the current content. A file with unsaved editor changes asks the user first.',
 				parameters: {
 					type: 'object',
 					properties: {
@@ -667,7 +893,7 @@ export class FilesystemTools extends AgentToolkit {
 			}),
 			new AgentTool({
 				name: 'write_file',
-				description: `Create a file or replace one COMPLETELY with new UTF-8 content (for targeted changes use edit_file instead). Creates missing parent directories. Cap ${WRITE_MAX_BYTES} bytes. Replacing an existing file is refused unless you read it this run and it has not changed since; a new file needs no read. Also refused when the user has unsaved editor changes to the file.`,
+				description: `Create a file or replace one COMPLETELY with new UTF-8 content (for targeted changes use edit_file instead). Creates missing parent directories. Cap ${WRITE_MAX_BYTES} bytes. Replacing an existing file is refused unless you read it this run and it has not changed since; a new file needs no read. A file with unsaved editor changes asks the user first.`,
 				parameters: {
 					type: 'object',
 					properties: {

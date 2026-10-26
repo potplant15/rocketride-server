@@ -24,16 +24,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { IWorkspaceFileSystem, VfsEntry, VfsOverlay } from './vfsTypes';
-import { StagedFileSystem } from './stagedFileSystem';
+import type { IWorkspaceBaseView, VfsEntry, VfsOverlay } from './vfsTypes';
+import { sha256Hex } from './hash';
+import { StagedFileSystem, StaleVersionError, StaleWriteError } from './stagedFileSystem';
 import type { IStagingStore, Layer } from './stagedFileSystem';
 
 // =============================================================================
 // MOCKS — an in-memory base view and a recording staging store
 // =============================================================================
 
-/** In-memory IWorkspaceFileSystem used as the base (server truth). */
-class MockBase implements IWorkspaceFileSystem {
+/** In-memory base view (server truth). */
+class MockBase implements IWorkspaceBaseView {
 	files = new Map<string, string>();
 	dirs = new Set<string>();
 	overlays = new Map<string, VfsOverlay>();
@@ -137,7 +138,10 @@ class MockBase implements IWorkspaceFileSystem {
 	 * "opened earlier, then the base moved" (see `baselines`).
 	 */
 	baselines = new Map<string, string>();
+	/** Paths the page holds no copy of, so a staged write's capture asks the server (peekBase) for them. */
+	uncached = new Set<string>();
 	cachedContent(path: string): unknown {
+		if (this.uncached.has(path)) return undefined;
 		if (this.baselines.has(path)) return this.baselines.get(path);
 		return this.files.get(path);
 	}
@@ -545,7 +549,8 @@ test('onMutate announces staged mutations with their origin; write-through and n
 	assert.deepEqual(fired, [{ path: 'apps/x/a.ts', origin: 'editor' }]);
 	fired.length = 0;
 	await fs.write('apps/x/a.ts', 'A', 'editor');
-	assert.deepEqual(fired, []);
+	// typed: assert/strict's deepEqual narrows `fired` to the expected value's type, and a bare [] is never[]
+	assert.deepEqual(fired, [] as typeof fired);
 
 	// Delete and mkdir announce.
 	await fs.delete('apps/x/gone.ts', 'editor');
@@ -652,4 +657,537 @@ test('delete of a missing path is refused up front', async () => {
 	const { fs } = makeStaged({});
 	await assert.rejects(() => fs.delete('nope.ts'), /No such path/);
 	assert.equal(fs.hasPendingChanges(), false);
+});
+
+// =============================================================================
+// PATH VERSIONS — counted at the call, checked by `expect`, waited on by reads
+// =============================================================================
+
+/** A promise and the function that settles it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>((r) => (resolve = r));
+	return { promise, resolve };
+}
+
+test('a write counts when it is called; a write that expects an older version is refused', async () => {
+	const { base, fs } = makeStaged({ 'f.ts': 'v0' });
+	assert.equal(fs.version('f.ts'), 0);
+	const saving = fs.write('f.ts', 'editor', 'editor', 0);
+	assert.equal(fs.version('f.ts'), 1, 'counted before the write lands');
+	assert.equal(fs.lastWriter('f.ts'), 'editor');
+	await saving;
+
+	await assert.rejects(fs.write('f.ts', 'agent', 'agent', 0), (err: unknown) => {
+		assert.ok(err instanceof StaleWriteError, 'a version refusal is still a StaleWriteError');
+		assert.ok(err instanceof StaleVersionError);
+		assert.deepEqual([err.expected, err.actual, err.lastWriter], [0, 1, 'editor']);
+		assert.match(err.message, /version 0, now 1; last writer: editor/);
+		return true;
+	});
+	assert.equal(fs.version('f.ts'), 1, 'a refused write does not count');
+	assert.equal(await fs.read('f.ts'), 'editor');
+	assert.equal(base.files.get('f.ts'), 'v0', 'staged, not committed');
+	await fs.write('f.ts', 'agent', 'agent', 1);
+	assert.equal(await fs.read('f.ts'), 'agent');
+});
+
+test('reads wait for pending writes, and readVersioned never reports a version newer than its content', async () => {
+	const base = new MockBase();
+	base.files.set('f.ts', 'old');
+	const landing = deferred();
+	const write = base.write.bind(base);
+	base.write = async (path, content) => {
+		await landing.promise;
+		return write(path, content);
+	};
+	const fs = new StagedFileSystem(base, null, { writeThrough: true });
+
+	const saving = fs.write('f.ts', 'new', 'editor');
+	let read: { content: unknown; version: number } | undefined;
+	const reading = fs.readVersioned('f.ts').then((r) => (read = r));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(read, undefined, 'the read waits for the write');
+	landing.resolve();
+	await Promise.all([saving, reading]);
+	assert.deepEqual(read, { content: 'new', version: 1 });
+
+	// step: a read called before a write keeps its version, so its caller is stale when the write lands
+	const before = fs.readVersioned('f.ts');
+	await fs.write('f.ts', 'newer', 'agent');
+	assert.equal((await before).version, 1);
+	assert.equal(fs.version('f.ts'), 2);
+});
+
+test('a write that fails counts again, since what it left is unknown', async () => {
+	const base = new MockBase();
+	base.write = async () => {
+		throw new Error('store down');
+	};
+	const fs = new StagedFileSystem(base, null, { writeThrough: true });
+	await assert.rejects(fs.write('f.ts', 'x', 'agent'), /store down/);
+	assert.equal(fs.version('f.ts'), 2);
+});
+
+test('deleting or renaming a folder changes every path under it', async () => {
+	const { base, fs } = makeStaged({ 'apps/x/a.ts': 'A', 'apps/x/sub/b.ts': 'B', 'apps/y.ts': 'Y' });
+	base.dirs.add('apps/x');
+	await fs.delete('apps/x', 'editor');
+	assert.deepEqual([fs.version('apps/x/a.ts'), fs.version('apps/x/sub/b.ts'), fs.version('apps/y.ts')], [1, 1, 0]);
+	assert.equal(fs.lastWriter('apps/x/a.ts'), 'editor');
+	await fs.mkdir('apps/z', 'agent');
+	assert.equal(fs.version('apps/z/c.ts'), 0, 'a new folder changes nothing under it');
+});
+
+test('commit counts no version, since the view serves the same content; undo and discard count the paths they change', async () => {
+	const { base, fs } = makeStaged({ 'f.ts': 'v0' });
+	await fs.write('f.ts', 'v1', 'agent');
+	await fs.write('g.ts', 'g', 'agent');
+	const staged = fs.version('f.ts');
+	await fs.commit({ retain: true });
+	assert.equal(fs.version('f.ts'), staged, 'an editor that saved f.ts and kept typing is not made stale by the commit');
+	assert.equal(fs.lastWriter('f.ts'), 'agent');
+	assert.equal(base.files.get('f.ts'), 'v1');
+
+	await fs.undoTurn(fs.getLayers()[0].id);
+	assert.equal(fs.version('f.ts'), staged + 1);
+	assert.equal(fs.lastWriter('f.ts'), 'undo');
+	assert.equal(base.files.get('f.ts'), 'v0');
+
+	await fs.write('f.ts', 'v2', 'agent');
+	const before = fs.version('f.ts');
+	await fs.discard();
+	assert.equal(fs.version('f.ts'), before + 1);
+	assert.equal(fs.lastWriter('f.ts'), 'discard');
+	assert.equal(await fs.read('f.ts'), 'v0');
+});
+
+test('a save after Commit all is not refused: the saved version still holds', async () => {
+	const { base, fs } = makeStaged({ 'App.tsx': 'v0' });
+	// step: the editor saves at the version it loaded, keeps typing, then the user commits
+	const loaded = (await fs.readVersioned('App.tsx')).version;
+	const saving = fs.write('App.tsx', 'v1', 'editor', loaded);
+	const saved = fs.version('App.tsx');
+	await saving;
+	await fs.commit();
+	assert.equal(base.files.get('App.tsx'), 'v1');
+	await fs.write('App.tsx', 'v2', 'editor', saved);
+	assert.equal(await fs.read('App.tsx'), 'v2');
+});
+
+test('a write that lands while a commit runs stays staged: the commit sweeps only the layers it froze', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'b.ts': 'B0' });
+	await fs.write('a.ts', 'A1', 'editor');
+	// step: hold the commit inside its verify read
+	const verifying = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		await verifying.promise;
+		return peek(path);
+	};
+	const committing = fs.commit();
+	await new Promise((resolve) => setImmediate(resolve));
+	// step: an agent write of another path lands meanwhile; one of the committed path waits for the commit
+	base.peekBase = peek;
+	await fs.write('b.ts', 'B1', 'agent');
+	const writingA = fs.write('a.ts', 'A2', 'agent');
+	verifying.resolve();
+	assert.deepEqual(await committing, { committed: 1, conflicts: [] });
+	await writingA;
+	assert.equal(base.files.get('a.ts'), 'A1', 'the commit replays what it froze');
+	assert.deepEqual(
+		[...fs.changedPaths()].sort(),
+		[
+			['a.ts', 'modified'],
+			['b.ts', 'modified'],
+		],
+		'both later writes are still staged'
+	);
+	assert.equal(await fs.read('b.ts'), 'B1');
+	assert.equal(await fs.read('a.ts'), 'A2');
+	assert.deepEqual(await fs.commit(), { committed: 2, conflicts: [] });
+	assert.deepEqual([base.files.get('a.ts'), base.files.get('b.ts')], ['A2', 'B1']);
+});
+
+test('Discard all waits for a write called before it, and drops it', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0' });
+	// step: the agent's write is held in its capture of the base (the page holds no copy of it, so the capture asks the server)
+	base.uncached.add('a.ts');
+	const capturing = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		await capturing.promise;
+		return peek(path);
+	};
+	const writing = fs.write('a.ts', 'A1', 'agent');
+	const discarding = fs.discard();
+	const version = fs.version('a.ts');
+	assert.equal(version, 2, 'the discard counts the queued write it will drop');
+	capturing.resolve();
+	await Promise.all([writing, discarding]);
+	assert.equal(fs.hasPendingChanges(), false);
+	assert.equal(await fs.read('a.ts'), 'A0');
+	assert.equal(fs.version('a.ts'), version);
+});
+
+test('Discard all during Commit all does not make the committed files stale', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'b.ts': 'B0' });
+	await fs.write('a.ts', 'A1', 'editor');
+	const saved = fs.version('a.ts');
+	const verifying = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		await verifying.promise;
+		return peek(path);
+	};
+	const committing = fs.commit();
+	await new Promise((resolve) => setImmediate(resolve));
+	const discarding = fs.discard();
+	assert.equal(fs.version('a.ts'), saved, 'the commit carries a.ts to the server, so the discard has nothing of it to drop');
+	verifying.resolve();
+	await Promise.all([committing, discarding]);
+	assert.equal(base.files.get('a.ts'), 'A1');
+	assert.equal(fs.version('a.ts'), saved);
+	await fs.write('a.ts', 'A2', 'editor', saved);
+});
+
+test('rollback and discardPath run in turn: a write called before them is dropped with the rest', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'b.ts': 'B0' });
+	await fs.write('a.ts', 'A1');
+	const checkpoint = await fs.checkpoint('turn 1');
+	assert.ok(checkpoint);
+	// step: the writes are held in their capture of the base (the page holds no copy, so the capture asks the server)
+	base.uncached.add('a.ts');
+	base.uncached.add('b.ts');
+	const capturing = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		await capturing.promise;
+		return peek(path);
+	};
+	const writingB = fs.write('b.ts', 'B1');
+	const rolling = fs.rollback(checkpoint);
+	capturing.resolve();
+	await Promise.all([writingB, rolling]);
+	assert.deepEqual([...fs.changedPaths()], [['a.ts', 'modified']]);
+
+	const writingA = fs.write('a.ts', 'A2');
+	const discarding = fs.discardPath('a.ts');
+	await Promise.all([writingA, discarding]);
+	assert.equal(fs.hasPendingChanges(), false);
+	assert.equal(await fs.read('a.ts'), 'A0');
+});
+
+test('a read waits for the queue only up to its time limit, then fails with a clear error', async () => {
+	const base = new MockBase();
+	base.files.set('f.ts', 'old');
+	base.write = () => new Promise(() => undefined);
+	const fs = new StagedFileSystem(base, null, { writeThrough: true, waitMs: 20 });
+	void fs.write('f.ts', 'new', 'agent');
+	await assert.rejects(fs.read('f.ts'), /Could not read f\.ts: a change to it is still on its way to the server after 0\.02 s/);
+	await assert.rejects(fs.stat('f.ts'), /Could not read f\.ts/);
+	assert.equal(await fs.read('g.ts').catch(() => 'missing'), 'missing', 'other paths do not wait');
+});
+
+test('a read does not wait for a commit: the view serves the same content before, during and after it', async () => {
+	const base = new MockBase();
+	base.files.set('a.ts', 'A0');
+	const fs = new StagedFileSystem(base, null, { waitMs: 20 });
+	await fs.write('a.ts', 'A1', 'editor');
+	const saved = fs.version('a.ts');
+	// step: hold the commit inside its replay, longer than the wait limit
+	const replaying = deferred();
+	const write = base.write.bind(base);
+	base.write = async (path, content) => {
+		await replaying.promise;
+		return write(path, content);
+	};
+	const committing = fs.commit();
+	await new Promise((resolve) => setImmediate(resolve));
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.deepEqual(await fs.readVersioned('a.ts'), { content: 'A1', version: saved }, 'a read during the commit is served at once');
+	assert.deepEqual(Object.entries(await fs.readMany(['a.ts'])), [['a.ts', 'A1']]);
+	assert.equal(await fs.stat('a.ts'), 'file');
+	// step: a write of a committed path still lands after the commit
+	const writing = fs.write('a.ts', 'A2', 'editor', saved);
+	replaying.resolve();
+	assert.deepEqual(await committing, { committed: 1, conflicts: [] });
+	await writing;
+	assert.equal(base.files.get('a.ts'), 'A1');
+	assert.equal(await fs.read('a.ts'), 'A2');
+});
+
+test('a write that never lands cannot freeze the workspace: Discard all and Commit all wait for it only up to the time limit', async () => {
+	const base = new MockBase();
+	base.files.set('a/x.ts', 'x');
+	base.files.set('b/y.ts', 'y');
+	// step: the agent's write of x.ts is held forever in its capture of the base (the page holds no copy of it, so the capture asks the server)
+	const peek = base.peekBase.bind(base);
+	base.uncached.add('a/x.ts');
+	base.peekBase = (path) => (path === 'a/x.ts' ? new Promise(() => undefined) : peek(path));
+	const fs = new StagedFileSystem(base, null, { waitMs: 20 });
+	void fs.write('a/x.ts', 'x2', 'agent');
+	const discarding = fs.discard();
+	const writingY = fs.write('b/y.ts', 'y2', 'editor');
+	const readingY = fs.read('b/y.ts');
+	await assert.rejects(discarding, /^Error: Could not discard the changes: a change to a\/x\.ts is still on its way to the server after 0\.02 s\. Try again later; if this keeps happening, the server is not answering\.$/);
+	// step: the write and the read called after the failed discard go ahead (the read's limit starts once the discard gave up)
+	await writingY;
+	assert.equal(await readingY, 'y2');
+	await assert.rejects(fs.commit(), /^Error: Could not commit: a change to a\/x\.ts is still on its way to the server after 0\.02 s/);
+	await fs.discardPath('b/y.ts');
+	assert.equal(await fs.read('b/y.ts'), 'y', 'a per-file discard of another path does not wait for x.ts');
+	await assert.rejects(fs.discardPath('a/x.ts'), /^Error: Could not discard the changes in a\/x\.ts: a change to a\/x\.ts is still on its way to the server after 0\.02 s/);
+	// step: a discard after a staging operation that never ends names that operation
+	const fresh = new StagedFileSystem(base, null, { waitMs: 20 });
+	await fresh.write('b/y.ts', 'y3', 'editor');
+	base.peekBase = () => new Promise(() => undefined);
+	void fresh.commit();
+	await assert.rejects(fresh.discard(), /^Error: Could not discard the changes: a commit, undo or discard called before it is still running after 0\.02 s/);
+});
+
+test('a save called after Discard all is refused when the Commit all before the discard meets a conflict, so the discard drops the path only once it runs', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0' });
+	await fs.write('a.ts', 'A1', 'editor');
+	// step: a teammate changes a.ts on the server, and the commit's check of it is slow
+	base.files.set('a.ts', 'A-teammate');
+	const verifying = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		await verifying.promise;
+		return peek(path);
+	};
+	const committing = fs.commit();
+	await new Promise((resolve) => setImmediate(resolve));
+	// step: Discard all expects the commit to carry a.ts, so it counts nothing; the editor's next save passes its check and waits behind it
+	const discarding = fs.discard();
+	const saving = fs.write('a.ts', 'A1 then A2', 'editor', fs.version('a.ts'));
+	base.peekBase = peek;
+	verifying.resolve();
+	assert.equal((await committing).conflicts.length, 1);
+	await discarding;
+	await assert.rejects(saving, (err: unknown) => err instanceof StaleVersionError && err.lastWriter === 'discard');
+	assert.equal(base.files.get('a.ts'), 'A-teammate');
+	assert.equal(await fs.read('a.ts'), 'A-teammate', 'nothing of the dropped save comes back');
+});
+
+test('Discard all called while Commit all waits for an earlier write leaves what the commit carries fresh', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'b.ts': 'B0' });
+	await fs.write('b.ts', 'B1', 'editor');
+	const loaded = (await fs.readVersioned('b.ts')).version;
+	// step: the agent's write of a.ts is held in its capture (the page holds no copy of it, so the capture asks the server); the commit waits for it
+	base.uncached.add('a.ts');
+	const capturing = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		if (path === 'a.ts') await capturing.promise;
+		return peek(path);
+	};
+	const writingA = fs.write('a.ts', 'A1', 'agent');
+	const agentVersion = fs.version('a.ts');
+	const committing = fs.commit();
+	const discarding = fs.discard();
+	assert.deepEqual([fs.version('b.ts'), fs.version('a.ts')], [loaded, agentVersion], 'the queued commit carries b.ts and the write before it, so the discard counts neither');
+	capturing.resolve();
+	await Promise.all([writingA, committing, discarding]);
+	assert.deepEqual([base.files.get('a.ts'), base.files.get('b.ts')], ['A1', 'B1']);
+	await fs.write('b.ts', 'B2', 'editor', loaded);
+
+	// step: when the queued commit fails, the discard drops b.ts after all, and counts it then
+	const again = makeStaged({ 'b.ts': 'B0' });
+	await again.fs.write('b.ts', 'B1', 'editor');
+	const before = again.fs.version('b.ts');
+	again.base.files.set('b.ts', 'B-elsewhere');
+	const failing = again.fs.commit();
+	const dropping = again.fs.discard();
+	assert.equal(again.fs.version('b.ts'), before);
+	assert.equal((await failing).conflicts.length, 1);
+	await dropping;
+	assert.equal(again.fs.version('b.ts'), before + 1, 'the dropped path is stale for its editor');
+	assert.equal(await again.fs.read('b.ts'), 'B-elsewhere');
+});
+
+test('a discard called while Commit all waits counts exactly what it drops: the commit carries only what was staged before it', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'c.ts': 'C0' });
+	// step: the agent's write of a.ts is held in its capture (the page holds no copy, so the capture asks the server), so the commit waits for it
+	base.uncached.add('a.ts');
+	base.uncached.add('c.ts');
+	const capturingA = deferred();
+	const capturingC = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		if (path === 'a.ts') await capturingA.promise;
+		if (path === 'c.ts') await capturingC.promise;
+		return peek(path);
+	};
+	const writingA = fs.write('a.ts', 'A1', 'agent');
+	const committing = fs.commit();
+	// step: after Commit all the editor saves c.ts, and while that save is on its way the user discards c.ts
+	const saving = fs.write('c.ts', 'C1', 'editor', fs.version('c.ts'));
+	const saved = fs.version('c.ts');
+	const discarding = fs.discardPath('c.ts');
+	const counted = fs.version('c.ts');
+	// step: the save lands before the commit starts
+	capturingC.resolve();
+	await saving;
+	capturingA.resolve();
+	await Promise.all([writingA, committing, discarding]);
+
+	assert.equal(base.files.get('a.ts'), 'A1', 'the commit carried what was staged before it');
+	assert.equal(base.files.get('c.ts'), 'C0', 'it did not carry the save called after it, so the discard dropped that save');
+	assert.equal(await fs.read('c.ts'), 'C0');
+	assert.deepEqual([counted, fs.version('c.ts')], [saved + 1, saved + 1], 'the discard counted the save it dropped, and nothing more');
+});
+
+test('a save that lands while Commit all waits never takes the place of what the commit carries', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'b.ts': 'B0' });
+	await fs.write('a.ts', 'A1', 'agent');
+	// step: the agent's write of b.ts is held in its capture (the page holds no copy of it, so the capture asks the server), so the commit waits for it
+	base.uncached.add('b.ts');
+	const capturing = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		if (path === 'b.ts') await capturing.promise;
+		return peek(path);
+	};
+	const writingB = fs.write('b.ts', 'B1', 'agent');
+	const committing = fs.commit();
+	// step: after Commit all the editor saves a.ts again, then the user discards what is pending
+	await fs.write('a.ts', 'A2', 'editor');
+	const discarding = fs.discard();
+	capturing.resolve();
+	await Promise.all([writingB, committing, discarding]);
+
+	assert.deepEqual(await committing, { committed: 2, conflicts: [] });
+	assert.deepEqual([base.files.get('a.ts'), base.files.get('b.ts')], ['A1', 'B1'], 'the commit carried a.ts as it was when Commit all was pressed');
+	assert.equal(await fs.read('a.ts'), 'A1', 'the discard dropped only the save called after the commit');
+});
+
+test('a save after Commit all never takes the place of a restored change the commit carries, though the page staged nothing before it', async () => {
+	// step: the page restored a working layer with saved changes to a.ts and b.ts; their entries have no number
+	const staging = new MockStaging();
+	const entry = async (content: string, before: string) => ({ kind: 'write' as const, content, before, baseHash: await sha256Hex(before), stamp: 1 });
+	staging.initial = [
+		{
+			id: 'restored',
+			label: 'Working',
+			entries: new Map([
+				['a.ts', await entry('A1', 'A0')],
+				['b.ts', await entry('B1', 'B0')],
+			]),
+		},
+	];
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'b.ts': 'B0' }, staging);
+	await fs.whenReady();
+	// step: the discard of b.ts is slow to persist, so the commit called after it waits, with no staged mutation before it
+	const [persisting, slow] = [deferred(), deferred()];
+	const persist = staging.persist.bind(staging);
+	let first = true;
+	staging.persist = async (layers) => {
+		if (first) {
+			first = false;
+			persisting.resolve();
+			await slow.promise;
+		}
+		return persist(layers);
+	};
+	const dropping = fs.discardPath('b.ts');
+	await persisting.promise;
+	const committing = fs.commit();
+	await fs.write('a.ts', 'A2', 'editor');
+	slow.resolve();
+	await dropping;
+
+	assert.deepEqual(await committing, { committed: 1, conflicts: [] });
+	assert.equal(base.files.get('a.ts'), 'A1', 'the commit carried the restored change to a.ts');
+	assert.equal(await fs.read('a.ts'), 'A2', 'the save called after it stays staged');
+	await fs.discard();
+	assert.equal(await fs.read('a.ts'), 'A1', 'Discard all drops only that save');
+});
+
+test('what mutations called while Commit all waits stage keeps its order and its checkpoint', async () => {
+	const { base, fs } = makeStaged({ 'x.ts': 'X0', 'a/b.ts': 'B0', 'a/c.ts': 'C0' });
+	const capturing = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		if (path === 'x.ts') await capturing.promise;
+		return peek(path);
+	};
+	const writingX = fs.write('x.ts', 'X1', 'agent');
+	const committing = fs.commit();
+	// step: while the commit waits: a write under a/, a checkpoint, then a delete of a/
+	await fs.write('a/b.ts', 'B1', 'editor');
+	const checkpoint = await fs.checkpoint('turn 2');
+	await fs.delete('a', 'agent');
+	assert.equal(await fs.stat('a/b.ts'), null);
+	capturing.resolve();
+	await Promise.all([writingX, committing]);
+
+	assert.equal(base.files.get('x.ts'), 'X1');
+	assert.deepEqual([await fs.stat('a'), await fs.stat('a/b.ts')], [null, null], 'the delete of a/ still hides the write under it');
+	assert.ok(
+		fs.getLayers().some((layer) => layer.id === checkpoint && layer.label === 'turn 2'),
+		'the checkpoint the commit did not carry is still there'
+	);
+	assert.deepEqual([base.files.get('a/b.ts'), base.files.get('a/c.ts')], ['B0', 'C0'], 'the commit carried neither');
+});
+
+test('a rollback called while Discard all waits to start expects to drop nothing: the discard takes its checkpoint along', async () => {
+	const { base, fs } = makeStaged({ 'a.ts': 'A0', 'b.ts': 'B0' });
+	await fs.write('a.ts', 'A1', 'agent');
+	const checkpoint = await fs.checkpoint('turn 1');
+	assert.ok(checkpoint);
+	// step: the editor's first save of b.ts is held in its capture, so the discard waits for it
+	const capturing = deferred();
+	const peek = base.peekBase.bind(base);
+	base.peekBase = async (path) => {
+		if (path === 'b.ts') await capturing.promise;
+		return peek(path);
+	};
+	const firstSave = fs.write('b.ts', 'B1', 'editor');
+	const discarding = fs.discard();
+	// step: a save called after the discard lands after it; then a rollback is called
+	const secondSave = fs.write('b.ts', 'B2', 'editor', fs.version('b.ts'));
+	const mine = fs.version('b.ts');
+	const rolling = fs.rollback(checkpoint);
+	assert.equal(fs.version('b.ts'), mine, 'the rollback counts nothing it will not drop');
+	capturing.resolve();
+	await Promise.all([firstSave, discarding, secondSave]);
+	await assert.rejects(rolling, /No such checkpoint/);
+	assert.equal(fs.version('b.ts'), mine, "the editor's save still holds");
+	assert.equal(await fs.read('b.ts'), 'B2');
+});
+
+test('a rename is refused while an editor holds unsaved changes at or under its source, staged or write-through', async () => {
+	for (const writeThrough of [false, true]) {
+		const base = new MockBase();
+		base.files.set('apps/x/a.ts', 'stored');
+		const fs = new StagedFileSystem(base, null, { writeThrough });
+		let dirty = true;
+		base.registerOverlay('apps/x/a.ts', { getContent: () => 'unsaved typing', isDirty: () => dirty });
+		const before = fs.version('apps/x/a.ts');
+
+		await assert.rejects(fs.rename('apps/x/a.ts', 'apps/x/b.ts', 'workspace'), /^Error: Save or discard the unsaved changes in apps\/x\/a\.ts first\.$/);
+		await assert.rejects(fs.rename('apps/x', 'apps/y', 'workspace'), /unsaved changes in apps\/x\/a\.ts/, 'a folder above the file too');
+		assert.equal(fs.version('apps/x/a.ts'), before, 'a refused rename counts nothing');
+		assert.equal(fs.hasPendingChanges(), false, 'the unsaved typing was not staged as a new file');
+		assert.deepEqual([...base.files.keys()], ['apps/x/a.ts']);
+		assert.equal(await fs.read('apps/x/a.ts'), 'unsaved typing', 'the editor keeps its path');
+
+		// step: once the editor is clean, the rename goes ahead
+		dirty = false;
+		await fs.rename('apps/x/a.ts', 'apps/x/b.ts', 'workspace');
+		assert.equal(await fs.read('apps/x/b.ts'), 'stored', writeThrough ? 'write-through' : 'staged');
+	}
+});
+
+test('heldContent is the staged content, else the cached base content, never an overlay', async () => {
+	const { base, fs } = makeStaged({ 'f.ts': 'stored' });
+	assert.equal(fs.heldContent('f.ts'), 'stored');
+	await fs.write('f.ts', 'staged');
+	base.registerOverlay('f.ts', { getContent: () => 'typing', isDirty: () => true });
+	assert.equal(await fs.read('f.ts'), 'typing');
+	assert.equal(fs.heldContent('f.ts'), 'staged');
+	await fs.delete('f.ts');
+	assert.equal(fs.heldContent('f.ts'), undefined);
 });

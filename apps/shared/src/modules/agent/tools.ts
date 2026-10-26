@@ -69,6 +69,72 @@ export interface ToolStep {
 	run(): Promise<string>;
 }
 
+/**
+ * Thrown by a tool that refuses a call before it changes anything (the user
+ * kept their unsaved changes, the file moved on since it was read). The model
+ * reads the message like any error. The loop marks the call unstarted, like a
+ * call whose work never began, so the finish rule does not count it as a
+ * change that needs a check.
+ */
+export class RefusedError extends Error {
+	/** @param message - What the model reads: why, and what to do instead. */
+	constructor(message: string) {
+		super(message);
+		this.name = 'RefusedError';
+	}
+}
+
+/**
+ * The time the user spends answering a tool's question (the unsaved-changes
+ * dialog). The loop leaves it out of every running call's time limit: while
+ * a question is open, no call's clock runs, so a call never times out while
+ * the user decides.
+ */
+export class UserTime {
+	/** How many questions are open now. */
+	private open = 0;
+	/** Who hears a question open or close. */
+	private readonly listeners = new Set<() => void>();
+
+	/** True while at least one question is open. */
+	get asking(): boolean {
+		return this.open > 0;
+	}
+
+	/**
+	 * Holds the clocks while a question is open.
+	 *
+	 * @param question - The question; the clocks run again once it settles.
+	 * @returns The question's promise.
+	 */
+	async during<T>(question: Promise<T>): Promise<T> {
+		this.change(1);
+		try {
+			return await question;
+		} finally {
+			this.change(-1);
+		}
+	}
+
+	/**
+	 * Hears each time `asking` turns on or off.
+	 *
+	 * @param listener - Called with no arguments; read `asking`.
+	 * @returns Stops hearing.
+	 */
+	subscribe(listener: () => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	}
+
+	/** Counts a question in or out, and tells the listeners when `asking` flips. */
+	private change(by: number): void {
+		const was = this.asking;
+		this.open += by;
+		if (was !== this.asking) for (const listener of [...this.listeners]) listener();
+	}
+}
+
 /** What every tool spec has. */
 interface ToolSpecBase {
 	/** Tool name as the LLM calls it. */

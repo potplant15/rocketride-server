@@ -72,6 +72,31 @@ export interface AgentDevSession {
 	subscribeWatch(l: (s: WatchStatus) => void): () => void;
 }
 
+/**
+ * The rejection of an editor's save that wrote nothing because the user
+ * dropped or replaced what it was called with while it waited its turn (a
+ * Reload, Discard mine, Overwrite, or closing the tab with Don't Save). The
+ * save did not land, so anything that waits on it stops: Save & Run runs
+ * nothing, a publish publishes nothing, and the agent's edit after "Save mine
+ * first" is refused. It is the user's own doing, so no editor shows it as a
+ * failure.
+ */
+export class SaveDroppedError extends Error {
+	/** @param path - The workspace path whose save wrote nothing. */
+	constructor(path: string) {
+		super(`${path} was not saved: its changes were dropped or replaced while the save waited its turn.`);
+		this.name = 'SaveDroppedError';
+	}
+}
+
+/** An open editor with unsaved changes, as the agent's unsaved-changes prompt drives it. */
+export interface EditorControl {
+	/** Saves the editor's buffer through the workspace view; rejects when the save fails, and with SaveDroppedError when the user dropped the buffer while the save waited its turn. */
+	save(): Promise<void>;
+	/** Drops the editor's buffer and shows the stored file again. */
+	discard(): Promise<void>;
+}
+
 /** What the mounting app provides to the agent. */
 export interface AgentHost {
 	/** The workspace the agent reads and edits; its read-only `.rocketride/` holds the guides. */
@@ -90,6 +115,15 @@ export interface AgentHost {
 	 * @returns The name, or undefined to name the scope by its id.
 	 */
 	scopeName?(scopeKey: string): string | undefined;
+	/**
+	 * The open editor that holds a path, so the agent can save or discard the
+	 * user's unsaved changes there when the user asks it to. Hosts without
+	 * editors leave it out; a dirty file is then refused as before.
+	 *
+	 * @param path - The workspace path.
+	 * @returns The editor, or null when none holds the path.
+	 */
+	editor?(path: string): EditorControl | null;
 	/**
 	 * Creates a new app from a template.
 	 *
