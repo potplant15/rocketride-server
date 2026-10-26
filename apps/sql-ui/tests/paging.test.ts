@@ -248,7 +248,7 @@ describe('buildPageStatements chips', () => {
 			' WHERE ("code"::text ILIKE $1 OR "note"::text ILIKE $1) AND "code"::text ILIKE $2 AND "id" >= $3 AND "note" IS NULL AND "note"::text ILIKE $4',
 		);
 		assert.ok(select.startsWith(`SELECT * FROM "orders"${where}`));
-		assert.deepEqual(params, ['%ab%', '%x%', '10', 'q%']);
+		assert.deepEqual(params, ['%ab%', '%x%', 10, 'q%']);
 	});
 
 	it('quotes the chip column per dialect', () => {
@@ -266,7 +266,7 @@ describe('buildPageStatements chips', () => {
 	it('applies the chips to the COUNT as well', () => {
 		const { count, params } = buildPageStatements('postgres', 't', TABLE_NO_PK, req(), { chips: [{ column: 'id', op: 'lt', value: '3' }] });
 		assert.equal(count, 'SELECT COUNT(*) AS total FROM "t" WHERE "id" < $1');
-		assert.deepEqual(params, ['3']);
+		assert.deepEqual(params, [3]);
 	});
 });
 
@@ -300,5 +300,19 @@ describe('countKey', () => {
 		assert.notEqual(countKey('orders', a), countKey('orders', b));
 		assert.notEqual(countKey('orders', a), countKey('orders', c));
 		assert.notEqual(countKey('orders', a), countKey('items', a));
+	});
+});
+
+describe('buildPageStatements chip values follow the column type', () => {
+	it('binds a number for an equals chip on the BIGINT column', () => {
+		const { params } = buildPageStatements('postgres', 'orders', TABLE, req(), { chips: [{ column: 'id', op: 'eq', value: '7' }] });
+		assert.deepEqual(params, [7]);
+	});
+
+	it('keeps a string for a text column and for a column the schema does not list', () => {
+		const { params } = buildPageStatements('postgres', 'orders', TABLE, req(), {
+			chips: [{ column: 'code', op: 'eq', value: '7' }, { column: 'ghost', op: 'eq', value: '7' }],
+		});
+		assert.deepEqual(params, ['7', '7']);
 	});
 });

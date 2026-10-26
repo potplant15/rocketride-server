@@ -72,6 +72,18 @@ export function recordFields(def: SqlSchemaTable, row: Record<string, unknown>, 
 }
 
 /**
+ * A column list for a table the schema snapshot lacks, read from a row that
+ * came straight back from a lookup (never from a row the grid has seen, which
+ * carries a key per column it renders). Types are unknown.
+ *
+ * @param freshRow - A row from a fresh, untouched result.
+ * @returns A schema entry listing the row's columns.
+ */
+export function fallbackDef(freshRow: Record<string, unknown>): SqlSchemaTable {
+	return { columns: Object.keys(freshRow).map((column) => ({ column, type: '' })) };
+}
+
+/**
  * The row as JSON for "Copy row", keys in schema order. A column the row
  * lacks is written as null.
  *

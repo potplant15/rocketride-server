@@ -136,7 +136,8 @@ function buildWhere(dialect: SqlDialect, table: SqlSchemaTable, req: IDataGridPa
 	// Filter chips, ANDed with everything above.
 	for (const chip of chips) {
 		if (!isCompleteChip(chip)) continue;
-		clauses.push(chipPredicate(dialect, quoteIdent(dialect, chip.column), chip, bind));
+		const type = table.columns.find((c) => c.column === chip.column)?.type ?? '';
+		clauses.push(chipPredicate(dialect, quoteIdent(dialect, chip.column), chip, bind, type));
 	}
 
 	return { clause: clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '', params };
@@ -181,14 +182,14 @@ export interface PageStatements {
  * literal — which is precisely why LIKE patterns are assembled as bind
  * VALUES (`%term%`) instead of as `'%' || $1 || '%'` or an inlined pattern.
  *
- * @param dialect - The engine dialect.
- * @param tableName - The table to page over.
- * @param table - The table's reflected schema.
  * Paging is OFFSET-based: the shell pager jumps to any page number, which a
  * keyset cursor cannot do, and OFFSET is correct on every engine. It gets
  * slower the deeper the page on a large table; the data browser therefore
  * does not count big filtered tables (see `estimate.ts`).
  *
+ * @param dialect - The engine dialect.
+ * @param tableName - The table to page over.
+ * @param table - The table's reflected schema.
  * @param req - The grid's page request.
  * @param opts - The filter chips and the overfetch switch.
  * @returns The page statements and their bind values.

@@ -128,17 +128,55 @@ export function likePredicate(dialect: SqlDialect, column: string, placeholder: 
 // CHIPS
 // =============================================================================
 
+/** Integer column types, with the wrappers ClickHouse puts around them. */
+const INTEGER_TYPE = /^(u?int\d*|tinyint|smallint|mediumint|bigint|integer|serial|smallserial|bigserial)\b/i;
+
+/** Decimal and floating-point column types. */
+const DECIMAL_TYPE = /^(numeric|decimal|real|double|float\d*|number)\b/i;
+
+/**
+ * The value a comparison chip binds, by the column's type. A text value
+ * against an integer column can be refused by Postgres and ClickHouse, so
+ * numbers and booleans bind as such. Text that does not read as that type
+ * stays text (the engine then says what is wrong), and an integer beyond
+ * 2^53 stays text because a number would round it.
+ *
+ * @param type - The column's reflected type, e.g. `NUMERIC(10,2)`.
+ * @param value - What the user typed.
+ * @returns The value to bind.
+ */
+export function coerceChipValue(type: string, value: string): string | number | boolean {
+	// Nullable(Int32), LowCardinality(UInt8): look at the type inside.
+	let inner = type.trim();
+	for (let wrapped = /^(?:Nullable|LowCardinality)\((.*)\)$/i.exec(inner); wrapped; wrapped = /^(?:Nullable|LowCardinality)\((.*)\)$/i.exec(inner)) {
+		inner = wrapped[1]!.trim();
+	}
+	const text = value.trim();
+	if (INTEGER_TYPE.test(inner)) {
+		return /^-?\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : value;
+	}
+	if (DECIMAL_TYPE.test(inner)) {
+		return /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(text) ? Number(text) : value;
+	}
+	if (/^bool(ean)?\b/i.test(inner)) {
+		if (/^(true|t|1)$/i.test(text)) return true;
+		if (/^(false|f|0)$/i.test(text)) return false;
+	}
+	return value;
+}
+
 /**
  * Render one chip as a predicate. Values go through `bind`; `isNull` and
- * `notNull` call it zero times.
+ * `notNull` call it zero times. Comparison values bind by the column's type.
  *
  * @param dialect - The engine dialect.
  * @param column - The already-quoted column.
  * @param chip - The chip.
  * @param bind - Adds a bind value and returns its `$n` placeholder.
+ * @param columnType - The column's reflected type (default: text).
  * @returns The predicate.
  */
-export function chipPredicate(dialect: SqlDialect, column: string, chip: FilterChip, bind: (value: unknown) => string): string {
+export function chipPredicate(dialect: SqlDialect, column: string, chip: FilterChip, bind: (value: unknown) => string, columnType = ''): string {
 	const value = chip.value ?? '';
 	switch (chip.op) {
 		case 'isNull':
@@ -150,7 +188,7 @@ export function chipPredicate(dialect: SqlDialect, column: string, chip: FilterC
 		case 'startsWith':
 			return likePredicate(dialect, column, bind(`${escapeLike(value)}%`));
 		default:
-			return `${column} ${COMPARE_SYMBOL[chip.op]} ${bind(value)}`;
+			return `${column} ${COMPARE_SYMBOL[chip.op]} ${bind(coerceChipValue(columnType, value))}`;
 	}
 }
 

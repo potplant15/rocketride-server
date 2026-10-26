@@ -181,6 +181,32 @@ export function applyTotal(cache: CountCache, key: string, total: number, exact:
 }
 
 /**
+ * Fold a probe's outcome into the cache. A probe the engine refused (a role
+ * that cannot read the catalog) means "no estimate". A probe that failed only
+ * because a newer request replaced it says nothing about the table, so
+ * nothing is cached and the caller stops.
+ *
+ * @param cache - The cache.
+ * @param probe - The rows the probe returned, or the way it failed.
+ * @returns The updated cache, or null when the probe was superseded.
+ */
+export function applyProbeResult(cache: CountCache, probe: { rows: readonly unknown[] } | { error: true; superseded: boolean }): CountCache | null {
+	if ('error' in probe) return probe.superseded ? null : applyEstimate(cache, null);
+	return applyEstimate(cache, parseEstimate(probe.rows));
+}
+
+/**
+ * Forget the totals (after a write changed the table) but keep what the
+ * catalog said about the table's size.
+ *
+ * @param cache - The cache.
+ * @returns The cache with no total.
+ */
+export function invalidateTotals(cache: CountCache): CountCache {
+	return { ...cache, key: null, total: null, exact: false };
+}
+
+/**
  * Decide what a page request needs for its total.
  *
  * @param cache - What is known so far.

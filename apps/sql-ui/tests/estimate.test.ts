@@ -36,6 +36,8 @@ import assert from 'node:assert/strict';
 import {
 	ESTIMATE_THRESHOLD,
 	applyEstimate,
+	applyProbeResult,
+	invalidateTotals,
 	applyTotal,
 	emptyCountCache,
 	estimateStatement,
@@ -203,5 +205,41 @@ describe('overfetchPage', () => {
 		assert.equal(page.rows.length, 7);
 		assert.equal(page.hasMore, false);
 		assert.equal(page.total, 57);
+	});
+});
+
+describe('applyProbeResult', () => {
+	const fresh = emptyCountCache('orders');
+
+	it('caches the parsed estimate of a probe that answered', () => {
+		assert.equal(applyProbeResult(fresh, { rows: [{ estimate: 5_000_000 }] })?.estimate, 5_000_000);
+		assert.equal(applyProbeResult(fresh, { rows: [{ estimate: -1 }] })?.estimate, null);
+	});
+
+	it('caches "no estimate" for a probe the engine refused (permissions)', () => {
+		assert.equal(applyProbeResult(fresh, { error: true, superseded: false })?.estimate, null);
+	});
+
+	it('caches nothing for a probe that failed only because a newer request replaced it', () => {
+		// Caching null here would make a 50M-row table count exactly forever.
+		assert.equal(applyProbeResult(fresh, { error: true, superseded: true }), null);
+		assert.equal(planCount(fresh, request()), 'probe');
+	});
+});
+
+describe('invalidateTotals', () => {
+	it('forgets the total but keeps what the catalog said about the table', () => {
+		const shown = applyTotal(applyEstimate(emptyCountCache('orders'), 5_000_000), 'k', 4_999_871, true);
+		const cleared = invalidateTotals(shown);
+		assert.equal(cleared.estimate, 5_000_000);
+		assert.equal(cleared.total, null);
+		assert.equal(planCount(cleared, request({ filtered: true })), 'overfetch');
+		assert.equal(planCount(cleared, request()), 'estimate');
+	});
+
+	it('makes the same filter count again after a write', () => {
+		const counted = applyTotal(applyEstimate(emptyCountCache('orders'), 500), 'k', 42, true);
+		assert.equal(planCount(counted, request()), 'reuse');
+		assert.equal(planCount(invalidateTotals(counted), request()), 'count');
 	});
 });

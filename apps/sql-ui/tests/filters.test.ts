@@ -36,6 +36,7 @@ import { quoteIdent } from '../src/sql/paging';
 import {
 	FILTER_OPS,
 	chipPredicate,
+	coerceChipValue,
 	describeChip,
 	escapeLike,
 	isCompleteChip,
@@ -153,5 +154,63 @@ describe('chip helpers', () => {
 		assert.equal(describeChip({ column: 'total', op: 'gt', value: '100' }), 'total > 100');
 		assert.equal(describeChip({ column: 'note', op: 'contains', value: 'x' }), 'note contains x');
 		assert.equal(describeChip({ column: 'note', op: 'isNull' }), 'note is null');
+	});
+});
+
+describe('coerceChipValue', () => {
+	it('binds a number for an integer column', () => {
+		for (const type of ['INTEGER', 'bigint', 'INT4', 'smallint', 'tinyint(1)', 'serial', 'UInt64', 'Nullable(Int32)', 'LowCardinality(UInt8)']) {
+			assert.strictEqual(coerceChipValue(type, '5'), 5, type);
+		}
+	});
+
+	it('keeps a string for an integer beyond 2^53, which a number would round', () => {
+		assert.strictEqual(coerceChipValue('BIGINT', '9007199254740993'), '9007199254740993');
+	});
+
+	it('keeps text that is not a whole number on an integer column', () => {
+		assert.strictEqual(coerceChipValue('INTEGER', '5.5'), '5.5');
+		assert.strictEqual(coerceChipValue('INTEGER', 'abc'), 'abc');
+		assert.strictEqual(coerceChipValue('INTEGER', ''), '');
+	});
+
+	it('binds a number for a decimal or float column', () => {
+		for (const type of ['NUMERIC(10,2)', 'decimal', 'real', 'double precision', 'FLOAT8', 'Float64', 'Decimal(18, 4)']) {
+			assert.strictEqual(coerceChipValue(type, '12.5'), 12.5, type);
+		}
+		assert.strictEqual(coerceChipValue('NUMERIC', 'x'), 'x');
+	});
+
+	it('binds a boolean for a boolean column, and keeps other text', () => {
+		assert.strictEqual(coerceChipValue('boolean', 'true'), true);
+		assert.strictEqual(coerceChipValue('BOOL', 'F'), false);
+		assert.strictEqual(coerceChipValue('boolean', '1'), true);
+		assert.strictEqual(coerceChipValue('boolean', 'maybe'), 'maybe');
+	});
+
+	it('leaves text, date and interval columns as strings', () => {
+		for (const type of ['TEXT', 'VARCHAR(20)', 'TIMESTAMP', 'DATE', 'INTERVAL', 'uuid', 'String']) {
+			assert.strictEqual(coerceChipValue(type, '5'), '5', type);
+		}
+	});
+});
+
+describe('chipPredicate with a column type', () => {
+	const bindTo = (params: unknown[]) => (v: unknown): string => {
+		params.push(v);
+		return `$${params.length}`;
+	};
+
+	it('binds a comparison value by the column type', () => {
+		const params: unknown[] = [];
+		chipPredicate('postgres', '"n"', { column: 'n', op: 'gte', value: '10' }, bindTo(params), 'INTEGER');
+		assert.deepEqual(params, [10]);
+	});
+
+	it('keeps contains and starts with as text whatever the column type', () => {
+		const params: unknown[] = [];
+		chipPredicate('postgres', '"n"', { column: 'n', op: 'contains', value: '10' }, bindTo(params), 'INTEGER');
+		chipPredicate('postgres', '"n"', { column: 'n', op: 'startsWith', value: '10' }, bindTo(params), 'INTEGER');
+		assert.deepEqual(params, ['%10%', '10%']);
 	});
 });
