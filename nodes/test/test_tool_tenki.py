@@ -1719,7 +1719,8 @@ def test_an_sdk_error_that_is_also_a_timeout_is_not_taken_for_a_command_that_nev
     session.start = start_then_fail
     inst, _ = _instance(monkeypatch, session)
     result = inst.run_command({'command': 'ls'})
-    assert result['error'] == 'snapshot wait' and 'did not start' not in result['error']
+    # The start was confirmed (the process has a pid), so the command is reported as possibly part-done.
+    assert '(snapshot wait)' in result['error'] and 'did not start' not in result['error']
 
 
 def test_an_sdk_error_that_is_also_a_timeout_is_not_taken_for_a_missing_result(monkeypatch, logs):
@@ -4524,6 +4525,36 @@ def test_a_command_running_when_the_session_was_paused_is_not_run_again(monkeypa
     assert 'part of its work may be done' in result['error'] and 'Check what it did' in result['error']
     assert 'survives' not in result['error']  # not something the node can promise: see the measurements
     assert len(client.create_calls) == 1
+
+
+class _PausedRightAfterStart(_PausedMidCommand):
+    """Paused a few ms after the started frame: close_stdin re-raises the run error, as the SDK's _wait_started does."""
+
+    def start(self, *argv, **kwargs):
+        process = super().start(*argv, **kwargs)
+        if self.state == 'PAUSED':
+            error = self._run_error
+
+            def close_stdin():
+                self.calls.append(('close_stdin',))
+                raise error
+
+            process.close_stdin = close_stdin
+        return process
+
+
+@pytest.mark.parametrize(
+    ('tool', 'args'), [('run_command', {'command': 'git push'}), ('run_code', {'code': 'print(1)'})]
+)
+def test_a_command_whose_start_was_confirmed_before_its_run_failed_is_not_run_again(monkeypatch, logs, tool, args):
+    # Dylan's review of 67a0b2f6: the sandbox confirmed the start (the SDK has the pid), then the run failed before
+    # close_stdin returned, so close_stdin raised. The command ran; a retry after the resume would run it twice.
+    session = _PausedRightAfterStart('sb-1')
+    inst, _ = _instance(monkeypatch, session)
+    result = getattr(inst, tool)(args)
+    assert len(_execs(session)) == 1
+    assert result['session'] == 'resumed'
+    assert 'not run again' in result['error']
 
 
 class _CutAndStuck(_FakeSession):

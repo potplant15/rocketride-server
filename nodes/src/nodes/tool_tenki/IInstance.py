@@ -835,6 +835,9 @@ def _run_process(session, argv, timeout: int, started: list):
     except SandboxError:
         # Not the SDK's own plain "timed out waiting for command start": an SDK error is reported as itself.
         stop_keeping_output(process)
+        # close_stdin re-raises a run error that arrived after the started frame: the command did start.
+        if process.pid is not None:
+            started.append(True)
         raise
     except TimeoutError as e:
         # A start that arrives after this still runs the command, and its children outlive the kill (see
