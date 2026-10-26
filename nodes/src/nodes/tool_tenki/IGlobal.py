@@ -69,6 +69,7 @@ _END_LOCK_WAIT_SECS = 10
 _DEFAULT_BASE_URL = 'https://api.tenki.cloud'
 # USER_SHUTDOWN is not in Tenki's documented lifecycle, but it is in the protocol.
 _GONE_STATES = frozenset({'TERMINATING', 'TERMINATED', 'USER_SHUTDOWN'})
+_SHUTTING_DOWN = 'tool_tenki: the pipeline is shutting down, so no sandbox session is used'
 TOOL_GROUPS = frozenset({'execution', 'filesystem', 'git'})
 
 
@@ -335,8 +336,11 @@ class IGlobal(IGlobalBase):
     # Guards creating, warming up, recovering and dropping the session: agents send tool calls in parallel.
     _session_lock: threading.Lock | None = None
     # How many resumes the node has done, so a call that failed in the same pause as another sees that the other
-    # already resumed the session. Read and written under the lock.
+    # already resumed the session. Changed under the lock.
     _resumes: int = 0
+    # The (session id, resume count) of the pause whose resume budget was spent, so calls queued behind it ask once
+    # instead of each waiting out a budget of their own under the lock.
+    _given_up: tuple | None = None
     # The session the no-op command has run on since its create or last resume (see _warm_up).
     _warm_id: str | None = None
     # Set as endGlobal starts: no session is created, resumed or used after that.
@@ -347,6 +351,7 @@ class IGlobal(IGlobalBase):
     _secrets_refusal_logged: bool = False
     _quota_refusal_logged: bool = False
     # One lock per file path (see path_lock).
+    # shortcut: kept for the pipeline's life, about 150 bytes a path; drop unheld ones if pipelines change millions.
     path_locks: dict | None = None
 
     rpc_timeout_secs: int = 120
@@ -479,7 +484,8 @@ class IGlobal(IGlobalBase):
             if event is None:
                 raise error
             events.append(event)
-        session = self._get_session([])
+        if event == 'replaced':
+            session = self._get_session([])
         self._warm(session)
         return fn(session)
 
@@ -487,17 +493,13 @@ class IGlobal(IGlobalBase):
         """The shared session, created on first use."""
         with self._session_lock:
             if self._ending:
-                raise SessionUnavailableError(
-                    'tool_tenki: the pipeline is shutting down, so no sandbox session is used'
-                )
+                raise SessionUnavailableError(_SHUTTING_DOWN)
             if self.session is None:
                 session = self._create_session()
                 if self._ending:
                     # endGlobal stopped waiting for this create, so nothing else would close the session.
                     self._close(session, 'the session created during shutdown')
-                    raise SessionUnavailableError(
-                        'tool_tenki: the pipeline is shutting down, so no sandbox session is used'
-                    )
+                    raise SessionUnavailableError(_SHUTTING_DOWN)
                 self.session = session
                 debug(f'tool_tenki: created session {session.id}')
                 events.append('created')
@@ -507,12 +509,11 @@ class IGlobal(IGlobalBase):
         """Run the no-op command on ``session`` once per create or resume; return the resume count."""
         with self._session_lock:
             if self._ending:
-                raise SessionUnavailableError(
-                    'tool_tenki: the pipeline is shutting down, so no sandbox session is used'
-                )
+                raise SessionUnavailableError(_SHUTTING_DOWN)
             if self.session is session and self._warm_id != session.id:
                 self._warm_up(session)
                 self._warm_id = session.id
+                self._given_up = None  # it runs, however it got there, so a later pause gets a budget of its own
             return self._resumes
 
     @staticmethod
@@ -548,24 +549,25 @@ class IGlobal(IGlobalBase):
             if self._resumes != resumes:
                 return 'resumed'  # another call resumed it while this one failed
             state = self._state(session)
+            if state in ('RUNNING', 'RESUMING') and self._given_up == (session.id, resumes):
+                return self._wait_resumed(session, replace)  # the ask given up on was carried out after all
             if state == 'PAUSED':
                 # A pause keeps memory and /home/tenki, so a paused session is resumed, never replaced.
-                state = self._resume(session)
+                spent = self._given_up == (session.id, resumes)
+                state = self._resume(session, 0 if spent else _RESUME_RETRY_SECS)
                 if state == 'RUNNING':
                     return self._wait_resumed(session, replace)
             if state is None or state in _GONE_STATES:
                 return self._drop(session, state, replace)
             return None
 
-    def _resume(self, session: Sandbox) -> str | None:
+    def _resume(self, session: Sandbox, budget: float) -> str | None:
         """Ask Tenki to resume ``session`` until it takes; return 'RUNNING', or the gone state (None: unknown)."""
         self._warm_id = None  # a resume replaces the SDK's data-plane connection
-        deadline = time.monotonic() + _RESUME_RETRY_SECS
+        deadline = time.monotonic() + budget
         while True:
             if self._ending:
-                raise SessionUnavailableError(
-                    'tool_tenki: the pipeline is shutting down, so the sandbox is not resumed'
-                )
+                raise SessionUnavailableError(_SHUTTING_DOWN)
             try:
                 session.resume()
                 return 'RUNNING'
@@ -579,6 +581,7 @@ class IGlobal(IGlobalBase):
             if state == 'RUNNING' or state is None or state in _GONE_STATES:
                 return state
             if state not in ('PAUSED', 'RESUMING') or time.monotonic() + _RESUME_RETRY_PAUSE_SECS >= deadline:
+                self._given_up = (session.id, self._resumes)
                 warning(
                     f'tool_tenki: resume of {session.id} refused ({type(refusal).__name__}: {refusal}) and the '
                     f'session is {state}, so it is not asked again'
@@ -600,7 +603,7 @@ class IGlobal(IGlobalBase):
                 return self._drop(session, session.state, replace)
             raise SessionUnavailableError(f'session {session.id} did not finish resuming: {e}') from e
         if self._ending:
-            raise SessionUnavailableError('tool_tenki: the pipeline is shutting down, so no sandbox session is used')
+            raise SessionUnavailableError(_SHUTTING_DOWN)
         debug(f'tool_tenki: resumed paused session {session.id}')
         return 'resumed'
 
@@ -751,7 +754,8 @@ class IGlobal(IGlobalBase):
         # First, so that no call creates, resumes or uses a session after the close below.
         self._ending = True
         # An unclosed session bills until max_duration. A call holding the lock (a create, say) gets a short while to
-        # finish; a resume is not waited out, and a create that finishes later closes its own session.
+        # finish; a resume is not waited out. The client stays open then: closing its channel would cancel a create in
+        # flight, and a create that finishes later closes its own session through it.
         lock = self._session_lock
         locked = lock is not None and lock.acquire(timeout=_END_LOCK_WAIT_SECS)
         try:
@@ -763,9 +767,10 @@ class IGlobal(IGlobalBase):
                 lock.release()
         if self.client is not None:
             self._close_tagged_sessions()
-            try:
-                self.client.close()
-            except Exception as e:
-                warning(f'tool_tenki: client close failed: {e}')
-            finally:
-                self.client = None
+            if locked or lock is None:
+                try:
+                    self.client.close()
+                except Exception as e:
+                    warning(f'tool_tenki: client close failed: {e}')
+                finally:
+                    self.client = None

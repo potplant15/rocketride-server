@@ -547,11 +547,6 @@ class _Once:
         self.done = False
 
 
-def _command_once() -> _Once:
-    # A command may have acted outside the sandbox (a deploy, a request), so once started it never runs again.
-    return _Once(frozenset({'resumed', 'replaced'}), CommandInterruptedError)
-
-
 def _change_once(what: str) -> _Once:
     # A change acts only inside the sandbox, so on a replaced, empty session it is sent again.
     return _Once(frozenset({'resumed'}), lambda cause: ChangeInterruptedError(what, cause))
@@ -622,11 +617,17 @@ class IInstance(IInstanceBase):
         return output
 
     def _run(self, run) -> dict:
-        once = _command_once()
+        # A command may have acted outside the sandbox (a deploy, a request), so once started it never runs again, and
+        # however its call then fails, the agent is told part of its work may be done.
+        once = _Once(frozenset({'resumed', 'replaced'}), CommandInterruptedError)
         cap = self.IGlobal.max_output_chars
-        return self._call(
-            lambda session: run(session, once), lambda out: _exec_result(out, cap), _exec_error, once=once
-        )
+
+        def failed(error) -> dict:
+            if once.done and not isinstance(error, (CommandInterruptedError, ResultTimeoutError)):
+                error = CommandInterruptedError(error)
+            return _exec_error(error)
+
+        return self._call(lambda session: run(session, once), lambda out: _exec_result(out, cap), failed, once=once)
 
     def _change(self, path: str, what: str, change, *, replace: bool = True) -> dict:
         """A file change whose ``change`` returns None, or the reason it refused, as the tool output."""
@@ -708,7 +709,8 @@ class IInstance(IInstanceBase):
     def run_code(self, args):
         """Execute a code snippet in the shared Tenki session."""
         args = normalize_tool_input(args, tool_name='tenki')
-        code = require_str(args, 'code', tool_name='tenki')
+        require_str(args, 'code', tool_name='tenki')
+        code = args['code']  # as given: stripping would shift the line numbers of a traceback
         language = optional_str(args, 'language', tool_name='tenki') or 'python'
         if language not in _LANGUAGES:
             raise ValueError(f'"language" must be one of: {", ".join(sorted(_LANGUAGES))}')

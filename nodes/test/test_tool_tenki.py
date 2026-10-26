@@ -361,7 +361,7 @@ class _Session:
         self.paused_error = mod.InvalidStateError('session is paused')
         self.paused_start_error = None  # raised by start itself, as Sandbox.start raises a plain RuntimeError
         self.resume_refusals, self.ready_error, self.ready_gate, self.barrier = 0, None, None, None
-        self.kill_tree_error = self.kill_tree_report = None
+        self.kill_tree_error = self.kill_tree_report = self.client = None
         self.fs, self.git = _FS(self), _Git(self)
 
     def _down(self):
@@ -432,6 +432,8 @@ class _Session:
 
     def close(self):
         self.calls.append('close')
+        if self.client is not None and self.client.closed:
+            raise mod.SandboxError('Cannot invoke RPC on closed channel!')
         self.state = 'TERMINATED'
 
     def close_if_open(self):
@@ -458,9 +460,13 @@ class _Client:
         self.created.append(kwargs)
         if self.create_gate is not None:
             self.create_gate.wait(timeout=5)
+        if self.closed:  # closing the channel cancels a create in flight
+            raise mod.SandboxError('Cannot invoke RPC on closed channel!')
         if self.create_error is not None:
             raise self.create_error
-        return self.sessions.pop(0)
+        session = self.sessions.pop(0)
+        session.client = self
+        return session
 
     def get(self, sid):
         self.fetched[sid] = _Session(sid)
@@ -969,6 +975,51 @@ def test_a_resume_refused_for_the_whole_budget_is_reported_and_the_session_kept(
     assert any('still being torn down' in line and 'not asked again' in line for line in logs)
 
 
+def test_calls_queued_behind_a_resume_refused_for_the_whole_budget_ask_once_each(monkeypatch, logs):
+    # Found in review of the rework: each queued call waited out a budget of its own, one after another under the
+    # lock (four calls, eight minutes at the real 120 s).
+    monkeypatch.setattr(mod, '_RESUME_RETRY_SECS', 0.3)
+    session = _Session()
+    inst, _ = _used(monkeypatch, session)
+    session.state, session.resume_refusals, session.barrier = 'PAUSED', 10**6, threading.Barrier(4)
+    started = time.monotonic()
+    results = _parallel(*[lambda: inst.list_files({})] * 4)
+    assert all('still being torn down' in result['error'] for result in results)
+    assert time.monotonic() - started < 0.9 and session.calls.count('resume') <= 0.3 / 0.01 + 4
+
+
+def test_calls_queued_behind_a_given_up_resume_that_tenki_carried_out_are_resumed(monkeypatch, logs):
+    # Found in the second review: the last refused ask was carried out (the session went on to RESUMING), and the calls
+    # queued behind it failed with the pause instead of waiting for the resume.
+    monkeypatch.setattr(mod, '_RESUME_RETRY_SECS', 0.1)
+    session = _Session()
+    inst, _ = _used(monkeypatch, session)
+    session.state, session.resume_refusals, session.barrier = 'PAUSED', 10**6, threading.Barrier(3)
+    refresh = session.refresh
+
+    def carried_out_after_all():
+        if session.state == 'PAUSED' and any('not asked again' in line for line in logs):
+            session.state = 'RESUMING'
+        return refresh()
+
+    session.refresh = carried_out_after_all
+    results = _parallel(*[lambda: inst.list_files({})] * 3)
+    assert sorted(result.get('session', 'error') for result in results) == ['error', 'resumed', 'resumed']
+
+
+def test_a_pause_after_one_whose_resume_was_given_up_gets_a_budget_of_its_own(monkeypatch, logs):
+    # Found in the second review: the give-up mark outlived a session that came back without the node's resume.
+    monkeypatch.setattr(mod, '_RESUME_RETRY_SECS', 0.1)
+    session = _Session()
+    inst, _ = _used(monkeypatch, session)
+    session.state, session.resume_refusals = 'PAUSED', 10**6
+    assert 'still being torn down' in inst.list_files({})['error']
+    session.state, session.resume_refusals = 'RUNNING', 0  # resumed from outside the node
+    assert inst.list_files({})['entries'] == []
+    session.state, session.resume_refusals = 'PAUSED', 2
+    assert inst.list_files({})['session'] == 'resumed'
+
+
 @pytest.mark.parametrize(('after', 'event'), [('RUNNING', 'resumed'), ('TERMINATED', 'replaced')])
 def test_the_state_after_a_refused_resume_decides_what_happens(monkeypatch, logs, after, event):
     session = _Session(files={'/home/tenki/a': '1'})
@@ -1006,6 +1057,26 @@ def test_a_session_that_ends_while_it_resumes_is_dropped(monkeypatch, logs, tool
         _raise(RuntimeError('sandbox entered terminal state')),
     )
     assert getattr(inst, tool)(args)['session'] == event
+
+
+@pytest.mark.parametrize(('tool', 'args'), [('read_file', {'path': 'a'}), ('run_command', {'command': 'ls'})])
+def test_a_resumed_session_dropped_before_the_retry_is_not_swapped_for_a_fresh_one(monkeypatch, logs, tool, args):
+    # Found in review of the rework: the retry fetched the session again, so it could run on a fresh, empty one, or
+    # create one for a read, and still say "resumed".
+    session = _Session(files={'/home/tenki/a': '1'})
+    inst, client = _used(monkeypatch, session, _Session('sb-2'))
+    session.state = 'PAUSED'
+    glb = inst.IGlobal
+    recover = glb._recover
+
+    def another_call_drops_it_right_after(*args):
+        event = recover(*args)
+        session.state, glb.session = 'TERMINATED', None  # between this call's recovery and its retry
+        return event
+
+    glb._recover = another_call_drops_it_right_after
+    result = getattr(inst, tool)(args)
+    assert 'error' in result and result['session'] == 'resumed' and len(client.created) == 1
 
 
 def test_a_look_at_the_session_that_runs_past_its_deadline_is_not_the_calls_timeout(monkeypatch, logs):
@@ -1055,6 +1126,21 @@ def test_a_create_that_finishes_after_shutdown_gave_up_on_it_closes_its_own_sess
     client.create_gate.set()
     call.join(timeout=5)
     assert session.state == 'TERMINATED' and 'shutting down' in results[0]['error']
+
+
+def test_a_failed_create_that_finishes_after_shutdown_gave_up_on_it_still_closes_what_it_left(monkeypatch, logs):
+    # Found in the second review: endGlobal dropped the client it had left open, so the failed create's VM billed on.
+    monkeypatch.setattr(mod, '_END_LOCK_WAIT_SECS', 0.2)
+    record = SimpleNamespace(id='sb-t', state='RUNNING')
+    error = mod.TemplateRuntimeFailedError('runtime failed', record)
+    inst, client = _instance(monkeypatch, create_error=error, create_gate=threading.Event())
+    call = threading.Thread(target=lambda: inst.list_files({}))
+    call.start()
+    _wait_for(lambda: client.created)
+    inst.IGlobal.endGlobal()
+    client.create_gate.set()
+    call.join(timeout=5)
+    assert client.fetched['sb-t'].state == 'TERMINATED'
 
 
 def test_shutdown_sweeps_this_runs_sessions_left_running_and_skips_ended_ones(monkeypatch, logs):
@@ -1244,6 +1330,24 @@ def test_a_command_that_started_before_a_pause_is_not_run_again(monkeypatch, log
     assert inst.run_command({'command': 'ls'})['exit_code'] == 0 and len(client.created) == 1
 
 
+@pytest.mark.parametrize(
+    'retry',
+    [
+        {'run_error': mod.SessionTerminatedError(_CUT)},  # started by the retry and cut again (seen on a real VM)
+        {'run_error': mod.PermissionDeniedError('data-plane credential expired')},  # an error that is not a pause
+    ],
+    ids=['cut-again', 'other-error'],
+)
+def test_a_started_command_whose_call_fails_any_other_way_says_part_of_its_work_may_be_done(monkeypatch, logs, retry):
+    # Found in review of the rework: these came back as the bare error, so an agent could run the command again.
+    session = _Session()
+    inst, _ = _used(monkeypatch, session)
+    session.state, session.script = 'PAUSED', lambda argv: retry
+    result = inst.run_command({'command': 'make deploy'})
+    assert result['session'] == 'resumed' and len(session.commands()) == 1
+    assert 'while this command was running' in result['error'] and 'part of its work may be done' in result['error']
+
+
 def test_a_command_a_paused_session_never_started_is_run_after_the_resume(monkeypatch, logs):
     session = _Session()
     inst, _ = _used(monkeypatch, session)
@@ -1410,7 +1514,8 @@ def test_write_file_writes_verbatim_and_creates_missing_parents(monkeypatch, log
 
 
 def test_write_file_refuses_content_read_file_could_not_read_back(monkeypatch, logs):
-    # Dylan's review of 67a0b2f6: past gRPC's 4 MiB limit the SDK reports RESOURCE_EXHAUSTED as a quota error.
+    # Dylan's review of 67a0b2f6. Measured 2026-10-26: Tenki took writes up to 16 MB, but reading 4.5 MB back failed
+    # with QuotaExceededError ("Received message larger than max"), so a larger write could not be read back.
     inst, client = _instance(monkeypatch)
     with pytest.raises(ValueError, match='"content" is 4,000,002 bytes, more than the 4,000,000 write_file sends'):
         inst.write_file({'path': 'a', 'content': 'é' * 2_000_001})
@@ -1506,7 +1611,12 @@ def test_edits_of_different_files_run_together_and_edits_of_one_file_keep_both_c
     inst, _ = _instance(monkeypatch, session)
     read_bytes = session.fs.read_bytes
     together = threading.Barrier(2, timeout=5)  # broken, failing both edits, if one waits for the other's lock
-    session.fs.read_bytes = lambda path: together.wait() and read_bytes(path) or read_bytes(path)
+
+    def read_together(path):
+        together.wait()
+        return read_bytes(path)
+
+    session.fs.read_bytes = read_together
     results = _parallel(
         lambda: inst.edit_file({'path': 'a', 'old_text': 'x = 1', 'new_text': 'x = 2'}),
         lambda: inst.edit_file({'path': 'b', 'old_text': 'z = 1', 'new_text': 'z = 2'}),
