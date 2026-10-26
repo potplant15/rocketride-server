@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from rocketride.cli.commands.auth import CALLBACK_PALETTES, _render_callback_page
+from rocketride.cli.commands.auth import CALLBACK_PALETTES, _render_callback_page, web_app_url_for
 
 THEMES = Path(__file__).resolve().parents[2] / 'shell' / 'public' / 'themes'
 
@@ -84,3 +84,16 @@ def test_palettes_match_the_web_app_themes(mode, theme_id):
         'success': tokens['--rr-color-success'],
         'error': tokens['--rr-color-error'],
     }
+
+
+@pytest.mark.parametrize(
+    ('server_base', 'expected'),
+    [
+        ('https://api.rocketride.ai', 'https://rocketride.ai/'),
+        ('https://API.rocketride.ai/', 'https://rocketride.ai/'),
+        ('http://localhost:5565', 'http://localhost:5565/'),
+        ('https://rr.example.com/', 'https://rr.example.com/'),
+    ],
+)
+def test_web_app_url_for(server_base, expected):
+    assert web_app_url_for(server_base) == expected

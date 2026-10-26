@@ -196,6 +196,30 @@ _CALLBACK_LOGO = (
 )
 
 
+# The RocketRide cloud's web app — where people use RocketRide in a browser.
+_CLOUD_WEB_APP_URL = 'https://rocketride.ai/'
+
+
+def web_app_url_for(server_base: str) -> str:
+    """
+    The web app a signed-in user should land on for a server.
+
+    The cloud API (CONST_DEFAULT_WEB_CLOUD) is fronted by the cloud web app at
+    rocketride.ai; any other server serves its web app from its own origin.
+    Mirrors the TypeScript CLI's webAppUrlFor.
+
+    Args:
+        server_base: The server's http(s) origin (to_http_base of its URI).
+
+    Returns:
+        The web app URL, with a trailing slash.
+    """
+    from ...core.constants import CONST_DEFAULT_WEB_CLOUD
+
+    origin = server_base.rstrip('/')
+    return _CLOUD_WEB_APP_URL if origin.lower() == CONST_DEFAULT_WEB_CLOUD.lower() else f'{origin}/'
+
+
 def _palette_vars(p: Dict[str, str]) -> str:
     return (
         f'--bg:{p["bg"]};--paper:{p["paper"]};--text:{p["text"]};--muted:{p["muted"]};--border:{p["border"]};'
@@ -367,7 +391,9 @@ async def _sign_in_saas(uri: str, out: Output) -> str:
 
     # step: browser authorization via the loopback redirect
     # The browser continues to this server's web app once signed in
-    grant = _authorize_via_loopback(DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, f'{to_http_base(uri)}/', out)
+    grant = _authorize_via_loopback(
+        DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, web_app_url_for(to_http_base(uri)), out
+    )
 
     # step: exchange the code over a temporary DAP connection — the
     # credential string is the cd_-encoded PKCE triple; the server
