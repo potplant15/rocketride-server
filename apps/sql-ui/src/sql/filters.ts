@@ -1,0 +1,181 @@
+// =============================================================================
+// MIT License
+// Copyright (c) 2026 Aparavi Software AG
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// =============================================================================
+// SQL — FILTERS (filter-chip predicates and case-insensitive text match)
+// =============================================================================
+//
+// Pure SQL string building, like `paging.ts`, which calls in here. The caller
+// quotes the column; this module only renders the predicate around it. Every
+// value the user typed is bound through the caller's `bind` and never placed
+// in the statement text. The NULL operators bind nothing.
+// =============================================================================
+
+import type { SqlDialect } from '../connect';
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+/** The operators a filter chip offers. */
+export type FilterOp = 'eq' | 'ne' | 'contains' | 'startsWith' | 'gt' | 'lt' | 'gte' | 'lte' | 'isNull' | 'notNull';
+
+/** One "+ Filter" chip: a column, an operator, and (for most operators) a value. */
+export interface FilterChip {
+	/** The column the chip filters. */
+	column: string;
+	/** The operator. */
+	op: FilterOp;
+	/** The value (ignored by the NULL operators). */
+	value?: string;
+}
+
+/** One operator as the "+ Filter" form lists it. */
+export interface FilterOpInfo {
+	/** The operator. */
+	op: FilterOp;
+	/** The label in the operator picker. */
+	label: string;
+	/** Whether the operator takes a value. */
+	needsValue: boolean;
+}
+
+/** The operators in picker order. */
+export const FILTER_OPS: readonly FilterOpInfo[] = [
+	{ op: 'eq', label: 'equals', needsValue: true },
+	{ op: 'ne', label: 'not equals', needsValue: true },
+	{ op: 'contains', label: 'contains', needsValue: true },
+	{ op: 'startsWith', label: 'starts with', needsValue: true },
+	{ op: 'gt', label: '>', needsValue: true },
+	{ op: 'lt', label: '<', needsValue: true },
+	{ op: 'gte', label: '≥', needsValue: true },
+	{ op: 'lte', label: '≤', needsValue: true },
+	{ op: 'isNull', label: 'is null', needsValue: false },
+	{ op: 'notNull', label: 'is not null', needsValue: false },
+];
+
+/** Comparison operators and the SQL symbol each renders. */
+const COMPARE_SYMBOL: Partial<Record<FilterOp, string>> = {
+	eq: '=',
+	ne: '<>',
+	gt: '>',
+	lt: '<',
+	gte: '>=',
+	lte: '<=',
+};
+
+// =============================================================================
+// TEXT MATCH
+// =============================================================================
+
+/**
+ * Escape LIKE wildcards in a user's text so `%`, `_` and `\` match themselves.
+ * Backslash is the default LIKE escape on Postgres, MySQL and ClickHouse, so
+ * the statement carries no ESCAPE clause (ClickHouse has none); the
+ * backslashes travel inside the bound value.
+ *
+ * @param value - The text the user typed.
+ * @returns The text with `\`, `%` and `_` escaped.
+ */
+export function escapeLike(value: string): string {
+	return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * A case-insensitive LIKE over one column, per engine. Postgres casts to text
+ * (a plain LIKE on a uuid or enum column errors); MySQL lowers both sides
+ * because its LIKE follows the column's collation; ClickHouse has ILIKE and
+ * `toString` covers uuid and enum. An unknown dialect keeps a plain LIKE.
+ *
+ * @param dialect - The engine dialect.
+ * @param column - The already-quoted column.
+ * @param placeholder - The `$n` placeholder bound to the pattern.
+ * @returns The predicate.
+ */
+export function likePredicate(dialect: SqlDialect, column: string, placeholder: string): string {
+	switch (dialect) {
+		case 'postgres':
+			return `${column}::text ILIKE ${placeholder}`;
+		case 'mysql':
+			return `LOWER(${column}) LIKE LOWER(${placeholder})`;
+		case 'clickhouse':
+			return `toString(${column}) ILIKE ${placeholder}`;
+		default:
+			return `${column} LIKE ${placeholder}`;
+	}
+}
+
+// =============================================================================
+// CHIPS
+// =============================================================================
+
+/**
+ * Render one chip as a predicate. Values go through `bind`; `isNull` and
+ * `notNull` call it zero times.
+ *
+ * @param dialect - The engine dialect.
+ * @param column - The already-quoted column.
+ * @param chip - The chip.
+ * @param bind - Adds a bind value and returns its `$n` placeholder.
+ * @returns The predicate.
+ */
+export function chipPredicate(dialect: SqlDialect, column: string, chip: FilterChip, bind: (value: unknown) => string): string {
+	const value = chip.value ?? '';
+	switch (chip.op) {
+		case 'isNull':
+			return `${column} IS NULL`;
+		case 'notNull':
+			return `${column} IS NOT NULL`;
+		case 'contains':
+			return likePredicate(dialect, column, bind(`%${escapeLike(value)}%`));
+		case 'startsWith':
+			return likePredicate(dialect, column, bind(`${escapeLike(value)}%`));
+		default:
+			return `${column} ${COMPARE_SYMBOL[chip.op]} ${bind(value)}`;
+	}
+}
+
+/**
+ * Whether a chip is ready to filter: it names a column, and an operator that
+ * takes a value has one (an empty string is a value).
+ *
+ * @param chip - The chip.
+ * @returns True when the chip can be applied.
+ */
+export function isCompleteChip(chip: FilterChip): boolean {
+	if (!chip.column) return false;
+	const info = FILTER_OPS.find((o) => o.op === chip.op);
+	if (!info) return false;
+	return !info.needsValue || chip.value !== undefined;
+}
+
+/**
+ * A chip in plain words, e.g. `total > 100`.
+ *
+ * @param chip - The chip.
+ * @returns The text shown on the chip.
+ */
+export function describeChip(chip: FilterChip): string {
+	const info = FILTER_OPS.find((o) => o.op === chip.op);
+	const label = info?.label ?? chip.op;
+	return info?.needsValue ? `${chip.column} ${label} ${chip.value ?? ''}` : `${chip.column} ${label}`;
+}
