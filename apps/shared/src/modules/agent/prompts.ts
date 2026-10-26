@@ -275,7 +275,7 @@ const ROUTER = [OPENING, '', ...ROUTER_ENTRIES.map((e) => `- ${e.when}: ${e.path
  */
 const WORKSPACE_MAP = `In this workspace you build and edit apps; build, run and debug pipelines; and deploy them.
 
-The workspace has three top-level directories and nothing else. The guides under .rocketride/ are read-only reference outside it: read them, don't edit them.
+The workspace has three top-level directories you work in, apps/, nodes/ and pipelines/, plus .rocketride/, a read-only folder of guides: read them, don't edit them.
 
 apps/       - platform apps. Each apps/<folder>/ is a React + TypeScript project.
               package.json carries the control-plane "appManifest" block: id
@@ -307,7 +307,7 @@ pipelines/  - pipeline definitions. Each pipelines/<name>.pipe is one JSON
               agent component) go in the controlled node's "control" array.
 
 Workspace rules:
-- Put files only under apps/, nodes/ and pipelines/, because nothing else is part of the workspace.
+- Put files only under apps/, nodes/ and pipelines/, because .rocketride/ is read-only and nothing else is part of the workspace.
 - Leave node_modules, dist and build alone, because the platform owns them.
 - Write secrets as \${ROCKETRIDE_*} placeholders, because the server fills in their values at run time.`;
 

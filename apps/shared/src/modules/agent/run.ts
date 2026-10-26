@@ -26,10 +26,10 @@
 
 /**
  * `runAgent` builds everything one run needs and drives the Wave loop: the
- * workspace view with the guides at `.rocketride/`, the toolkits in mount
- * order, the save hook, the prompt start (built once, never changed), the
- * model, and the record of check results, which is also the loop's finish
- * rule. It streams each wave's progress as `thinking` chunks and sends the
+ * host's workspace view, whose read-only `.rocketride/` holds the guides, the
+ * toolkits in mount order, the save hook, the prompt start (built once, never
+ * changed), the model, and the record of check results, which is also the
+ * loop's finish rule. It streams each wave's progress as `thinking` chunks and sends the
  * answer as one `content` chunk, with the checks line the code builds from the
  * record. A stopped run sends no `content` chunk.
  *
@@ -46,7 +46,7 @@ import { Question } from 'rocketride';
 import type { ChatMessage } from 'shell';
 import type { ChatAskCard, ChatAsking } from 'shell/src/components/chat/types';
 
-import { GuideFileSystem } from './guides';
+import { isReferencePath } from '../vfs/referenceTree';
 import type { AgentHost } from './host';
 import { CORE_PROMPT } from './prompts';
 import { APP_CHECK_TOOL, AppCheckToolkit, monacoMarkerSource, reportPassed, typesNote } from './toolkits/appCheck';
@@ -650,9 +650,9 @@ export async function runAgent(request: string, callback: (type: string, content
 		}
 	});
 
-	// step: the workspace with the guides; every save that works returns the types of an app's
-	// TypeScript file or the validate of a pipeline, and the validate is recorded for the finish rule
-	const vfs = new GuideFileSystem(host.vfs, host.guides);
+	// step: the workspace; every save that works returns the types of an app's TypeScript file
+	// or the validate of a pipeline, and the validate is recorded for the finish rule
+	const { vfs } = host;
 	// step: the run's approvals; the toolkits and the save hook below get its checked client
 	const approvals = new Approvals({ client, vfs, ask: options.ask, settings: host.approvals?.run, signal: options.signal });
 	const afterSave = async (path: string): Promise<string> => {
@@ -664,10 +664,11 @@ export async function runAgent(request: string, callback: (type: string, content
 		return validateNote(validation);
 	};
 
-	// step: the toolkits in mount order
+	// step: the toolkits in mount order; one file toolkit per run, so reads never carry over,
+	// and its saves run the hook above
+	const files = new FilesystemTools(vfs, undefined, afterSave);
 	const composed = composeToolkits([
-		// one file toolkit per run, so reads never carry over; its saves run the hook above
-		new FilesystemTools(vfs, undefined, afterSave),
+		files,
 		new InventoryToolkit(vfs, (id) => host.devSession(id) !== null),
 		new RocketRideClientToolkit(approvals.client, vfs),
 		new AppToolkit(approvals.client, host, { signal: options.signal }),
@@ -692,5 +693,5 @@ export async function runAgent(request: string, callback: (type: string, content
 	// step: a stopped run writes no answer: the chat closes the turn with its stop row, and this adds the one fact that row can't know
 	if (result.stopReason !== 'stopped') callback('content', finalText(result, checks));
 	else if (checks.changed) callback('thinking', NOT_CHECKED);
-	console.log(`[agent] stop=${result.stopReason} waves=${result.waves} modelCalls=${result.modelMs.length} medianMs=${median(result.modelMs)} guides=[${[...vfs.guidesRead].join(',')}]`);
+	console.log(`[agent] stop=${result.stopReason} waves=${result.waves} modelCalls=${result.modelMs.length} medianMs=${median(result.modelMs)} guides=[${files.pathsSeen().filter(isReferencePath).join(',')}]`);
 }

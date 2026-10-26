@@ -29,7 +29,8 @@
 // the staged view. Edits save with Ctrl+S (or the Save button) through
 // view.write() — a save is a STAGED workspace change like any other write,
 // so it appears in Source Control, decorates the Explorer, and commits/
-// discards through the normal flow.
+// discards through the normal flow. A path the workspace refuses to change
+// (the read-only .rocketride/ guides) opens read-only, with no Save.
 //
 // TS/TSX files get the REAL language service, not bare Monaco defaults:
 // models live at file:///workspace/<path> (so the worker knows the script
@@ -49,7 +50,7 @@ import { commonStyles, Button } from 'shell';
 import { MonacoEditor, detectLanguage } from 'shared/components/monaco';
 import type { Monaco } from 'shared/components/monaco';
 import { WORKSPACE_URI_PREFIX, ensureWorkspaceEditorTs, getWorkspaceEditorTs, primeProjectSources, releaseProjectSource } from '../preview/session/editorTypes';
-import { getWorkspaceVfs } from './vfs/workspace';
+import { getWorkspaceVfs, isWritable } from './vfs/workspace';
 
 // =============================================================================
 // STYLES
@@ -100,6 +101,9 @@ const S = {
 	} as CSSProperties,
 };
 
+/** Monaco options for a path the workspace refuses to change. */
+const READ_ONLY_OPTIONS = { readOnly: true };
+
 // =============================================================================
 // COMPONENT
 // =============================================================================
@@ -127,6 +131,9 @@ const FileProvider: React.FC<FileProviderProps> = ({ path }) => {
 	// stale render's content.
 	const bufferRef = useRef<string>('');
 	const dirtyRef = useRef(false);
+
+	// A path the workspace refuses to change opens read-only, with no Save.
+	const readOnly = !isWritable(path);
 
 	const load = useCallback(async () => {
 		try {
@@ -194,7 +201,7 @@ const FileProvider: React.FC<FileProviderProps> = ({ path }) => {
 
 	/** Saves the buffer through the view — a staged write like any other. */
 	const handleSave = useCallback(async () => {
-		if (!dirtyRef.current || saving) return;
+		if (readOnly || !dirtyRef.current || saving) return;
 		setSaving(true);
 		try {
 			await getWorkspaceVfs().write(path, bufferRef.current, 'editor');
@@ -207,10 +214,11 @@ const FileProvider: React.FC<FileProviderProps> = ({ path }) => {
 		} finally {
 			setSaving(false);
 		}
-	}, [path, saving]);
+	}, [path, saving, readOnly]);
 
 	// Ctrl+S / Cmd+S inside this tab. Capture phase beats the shell's global
-	// tab:save forwarding only while focus is inside this editor's subtree.
+	// tab:save forwarding only while focus is inside this editor's subtree;
+	// a read-only tab still swallows it, so the browser's save dialog stays shut.
 	const rootRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		const root = rootRef.current;
@@ -232,15 +240,17 @@ const FileProvider: React.FC<FileProviderProps> = ({ path }) => {
 				<span style={S.bannerPath}>{path}</span>
 				{stale && <span style={S.staleNotice}>changed outside this editor — saving overwrites</span>}
 				{dirty && <span style={S.dirtyMark}>●</span>}
-				<Button small variant="secondary" onClick={() => void handleSave()} disabled={!dirty || saving} title="Save (Ctrl+S) — stages the change in Source Control">
-					{saving ? 'Saving...' : 'Save'}
-				</Button>
+				{!readOnly && (
+					<Button small variant="secondary" onClick={() => void handleSave()} disabled={!dirty || saving} title="Save (Ctrl+S) — stages the change in Source Control">
+						{saving ? 'Saving...' : 'Save'}
+					</Button>
+				)}
 			</div>
 			{error && <div style={S.empty}>Could not read this file: {error}</div>}
 			{!error && content === null && <div style={S.empty}>Loading...</div>}
 			{!error && content !== null && (
 				<div style={S.editor}>
-					<MonacoEditor value={content} language={detectLanguage(path)} uri={`${WORKSPACE_URI_PREFIX}${path}`} beforeMount={handleBeforeMount} onMount={handleMount} onChange={handleChange} />
+					<MonacoEditor value={content} language={detectLanguage(path)} uri={`${WORKSPACE_URI_PREFIX}${path}`} beforeMount={handleBeforeMount} onMount={handleMount} onChange={handleChange} options={readOnly ? READ_ONLY_OPTIONS : undefined} />
 				</div>
 			)}
 		</div>

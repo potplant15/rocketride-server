@@ -27,9 +27,9 @@
 /**
  * The agent lives in shared code and cannot import rocket-ui, so rocket-ui
  * builds its AgentHost here and installs it right after the workspace is
- * created: the workspace view, the bundled guides, the New App scaffold, the
- * deploy packer, the open apps' dev sessions, and the user's approval
- * settings.
+ * created: the workspace view (whose read-only .rocketride/ holds the
+ * guides), the New App scaffold, the deploy packer, the open apps' dev
+ * sessions, and the user's approval settings.
  */
 
 import type { RocketRideClient } from 'shell';
@@ -39,7 +39,6 @@ import { scaffoldApp } from '../surfaces/preview/session/appStore';
 import { findDevSession, type WebDevSession } from '../surfaces/preview/session/devSession';
 import { packAppSource } from '../surfaces/preview/session/pack';
 import { getWorkspaceVfs } from '../surfaces/workspace/vfs/workspace';
-import { createRocketGuideSource } from './agentGuides';
 
 // =============================================================================
 // SCAFFOLD DEFAULTS
@@ -175,7 +174,6 @@ export function feedApprovalSettings(settings: Readonly<Record<string, unknown>>
 export function createRocketAgentHost(client: RocketRideClient): AgentHost {
 	return {
 		vfs: getWorkspaceVfs(),
-		guides: createRocketGuideSource(),
 		// step: the New App wizard's publisher and starting frame
 		scaffoldApp: ({ appName, displayName, template }) =>
 			scaffoldApp({

@@ -142,6 +142,13 @@ export interface StagedFileSystemOptions {
 	 * reach the same consumers (dev preview, rescans) as physical writes.
 	 */
 	onMutate?: (path: string, origin?: string) => void;
+	/**
+	 * The paths the view refuses to change: throws for one. Runs first in
+	 * write, delete, mkdir and both ends of rename, in both modes, before
+	 * anything is staged. Manual mode stages without asking the backend, so
+	 * a backend-only rule would let a write stage and then fail at commit.
+	 */
+	assertWritable?: (path: string) => void;
 }
 
 // =============================================================================
@@ -163,6 +170,8 @@ export class StagedFileSystem implements IWorkspaceFileSystem, WorkspaceFs {
 	private writeThrough: boolean;
 	/** Staged-mutation announcement hook (see StagedFileSystemOptions). */
 	private readonly onMutate: ((path: string, origin?: string) => void) | null;
+	/** The read-only rule (see StagedFileSystemOptions). */
+	private readonly writableRule: ((path: string) => void) | null;
 
 	/**
 	 * Builds the staged view over a base view.
@@ -176,6 +185,7 @@ export class StagedFileSystem implements IWorkspaceFileSystem, WorkspaceFs {
 		this.staging = staging;
 		this.writeThrough = options.writeThrough === true;
 		this.onMutate = options.onMutate ?? null;
+		this.writableRule = options.assertWritable ?? null;
 		// step: base ticks flow through our single subscription stream
 		this.base.subscribe(() => this.notify());
 		// step: rehydrate persisted layers; reads before this resolves see the
@@ -455,6 +465,16 @@ export class StagedFileSystem implements IWorkspaceFileSystem, WorkspaceFs {
 	// ── IVirtualFileSystem — mutations (staged) ──────────────────────────
 
 	/**
+	 * Throws when the view refuses changes to a path — the same rule every
+	 * mutation runs first, so a caller can refuse before it asks the user.
+	 *
+	 * @param path - The path a change would touch.
+	 */
+	assertWritable(path: string): void {
+		this.writableRule?.(this.norm(path));
+	}
+
+	/**
 	 * Verifies the base has not moved under a path since it was read — the
 	 * freshness gate every write-through save passes. Baseline = the base
 	 * view's cached content (what the buffer was opened from); current =
@@ -484,6 +504,7 @@ export class StagedFileSystem implements IWorkspaceFileSystem, WorkspaceFs {
 
 	/** Stages a whole-file write (or passes through in write-through mode). */
 	async write(path: string, content: unknown, origin?: string): Promise<void> {
+		this.assertWritable(path);
 		await this.ready;
 		const p = this.norm(path);
 		if (this.writeThrough) {
@@ -527,6 +548,7 @@ export class StagedFileSystem implements IWorkspaceFileSystem, WorkspaceFs {
 	 *   which a staged delete does not need (subtrees are shadowed anyway).
 	 */
 	async delete(path: string, originOrRecursive?: string | boolean): Promise<void> {
+		this.assertWritable(path);
 		const origin = typeof originOrRecursive === 'string' ? originOrRecursive : undefined;
 		await this.ready;
 		const p = this.norm(path);
@@ -556,6 +578,8 @@ export class StagedFileSystem implements IWorkspaceFileSystem, WorkspaceFs {
 
 	/** Stages a file rename as tombstone + write (dirs: commit first). */
 	async rename(oldPath: string, newPath: string, origin?: string): Promise<void> {
+		this.assertWritable(oldPath);
+		this.assertWritable(newPath);
 		await this.ready;
 		const from = this.norm(oldPath);
 		const to = this.norm(newPath);
@@ -581,6 +605,7 @@ export class StagedFileSystem implements IWorkspaceFileSystem, WorkspaceFs {
 	 * actually there all along.
 	 */
 	async mkdir(path: string, origin?: string): Promise<void> {
+		this.assertWritable(path);
 		await this.ready;
 		const p = this.norm(path);
 		if (this.writeThrough) return this.base.mkdir(p, origin);

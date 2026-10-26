@@ -143,6 +143,14 @@ export interface IWorkspaceFileSystem extends IVirtualFileSystem {
 	peekBase(path: string): Promise<unknown>;
 
 	/**
+	 * Throws when the view refuses changes to a path. Views without a rule
+	 * omit it.
+	 *
+	 * @param path - The path a change would touch.
+	 */
+	assertWritable?(path: string): void;
+
+	/**
 	 * Registers a live editor buffer over a path. Reads prefer a DIRTY
 	 * overlay's content; isDirty/dirtyPaths report it.
 	 *

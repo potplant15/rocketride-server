@@ -38,23 +38,6 @@ import type { IWorkspaceFileSystem } from '../vfs/vfsTypes';
 // THE SEAM
 // =============================================================================
 
-/** Read-only access to the RocketRide guides, by path relative to '.rocketride/'. */
-export interface GuideSource {
-	/**
-	 * Every guide path, relative to '.rocketride/' (e.g. 'docs/ROCKETRIDE_APPS.md').
-	 *
-	 * @returns The guide paths.
-	 */
-	paths(): string[];
-	/**
-	 * Reads one guide.
-	 *
-	 * @param path - A path from paths().
-	 * @returns The guide text.
-	 */
-	read(path: string): Promise<string>;
-}
-
 /** A running dev session for one app: rebuilds and live console, error and build feeds. */
 export interface AgentDevSession {
 	/** The app this session serves. */
@@ -91,10 +74,8 @@ export interface AgentDevSession {
 
 /** What the mounting app provides to the agent. */
 export interface AgentHost {
-	/** The workspace the agent reads and edits. */
+	/** The workspace the agent reads and edits; its read-only `.rocketride/` holds the guides. */
 	vfs: IWorkspaceFileSystem;
-	/** The RocketRide guides the agent may read. */
-	guides: GuideSource;
 	/**
 	 * Creates a new app from a template.
 	 *

@@ -35,7 +35,9 @@
  *   - the instructions that teach the LLM what that tree contains and how
  *     to work in it (layout, entity kinds, conventions).
  *
- * This file knows NOTHING about any particular workspace layout. What it
+ * This file knows NOTHING about any particular workspace layout, beyond
+ * leaving the read-only .rocketride/ guides out of a whole-workspace search
+ * (a search that starts inside it still reaches them). What it
  * provides: whole-and-partial reads served from the cache, anchored
  * edit_file updates, dirty-overlay protection (reads see unsaved editor
  * buffers; mutations refuse paths the user holds dirty), read-before-edit
@@ -49,8 +51,8 @@
  */
 
 import { sha256Hex } from '../../vfs/hash';
+import { ROCKETRIDE_ROOT } from '../../vfs/referenceTree';
 import type { IWorkspaceFileSystem } from '../../vfs/vfsTypes';
-import { refuseGuides } from '../guides';
 import { AgentTool, AgentToolkit, type ToolStep } from '../tools';
 
 // =============================================================================
@@ -258,7 +260,8 @@ export class FilesystemTools extends AgentToolkit {
 
 	/**
 	 * Recursively collects searchable files under a directory, honoring the
-	 * skip list, the text-extension filter, and the file budget.
+	 * skip list, the text-extension filter, and the file budget. A search of
+	 * the whole workspace skips the root's .rocketride/ guides.
 	 *
 	 * @param dir - Canonical directory ('' for the root).
 	 * @param out - Accumulator of file paths.
@@ -270,7 +273,7 @@ export class FilesystemTools extends AgentToolkit {
 			if (out.length >= SEARCH_MAX_FILES) return;
 			const path = dir ? `${dir}/${entry.name}` : entry.name;
 			if (entry.type === 'dir') {
-				if (SKIP_DIRS.has(entry.name)) continue;
+				if (SKIP_DIRS.has(entry.name) || (dir === '' && entry.name === ROCKETRIDE_ROOT)) continue;
 				await this.collectSearchFiles(path, out);
 			} else {
 				const ext = entry.name.includes('.') ? entry.name.slice(entry.name.lastIndexOf('.') + 1).toLowerCase() : '';
@@ -494,8 +497,9 @@ export class FilesystemTools extends AgentToolkit {
 	 * delete_file, made ready: remove a file, or a directory when recursive is
 	 * true. The checks run here, and the act names the target for the approval
 	 * list, since a delete does not go through the client. The tree root and
-	 * the read-only guides are refused here, before the user is asked;
-	 * protected roots inside the tree are the backend's rule to enforce.
+	 * paths the view refuses, such as the read-only .rocketride/, are refused
+	 * here, before the user is asked; protected roots inside the tree are the
+	 * backend's rule to enforce.
 	 *
 	 * @param rawPath - Agent-supplied path.
 	 * @param recursive - Required true to remove a directory and its contents.
@@ -503,7 +507,7 @@ export class FilesystemTools extends AgentToolkit {
 	 */
 	private async prepareDelete(rawPath: unknown, recursive: boolean): Promise<ToolStep> {
 		const path = normalizePath(rawPath);
-		refuseGuides(path);
+		this.vfs.assertWritable?.(path);
 		const type = await this.entryType(path);
 		if (type === null) throw new Error(`No such path: ${path}`);
 		if (type === 'dir' && !recursive) {
@@ -522,6 +526,15 @@ export class FilesystemTools extends AgentToolkit {
 	}
 
 	// ── Toolkit surface ──────────────────────────────────────────────────
+
+	/**
+	 * The paths whose content this toolkit saw this run, read or written.
+	 *
+	 * @returns Canonical paths, in the order first seen.
+	 */
+	pathsSeen(): string[] {
+		return [...this.readHashes.keys()];
+	}
 
 	/**
 	 * The filesystem tool set — all tools, full access to the tree the

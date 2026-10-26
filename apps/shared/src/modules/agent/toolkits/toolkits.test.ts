@@ -26,15 +26,18 @@
 // =============================================================================
 
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
 
 import type { RocketRideClient } from 'rocketride';
 import type { ChatAskAnswer, ChatAskCard, ChatAsking } from 'shell/src/components/chat/types';
 
 import type { ConsoleRow, WatchStatus } from '../../../tools/appdev/types';
+import { docsPathFor } from '../../vfs/referenceTree';
 import type { IWorkspaceFileSystem, VfsEntry } from '../../vfs/vfsTypes';
-import { GuideFileSystem, guidePathFor } from '../guides';
 import type { AgentDevSession, AgentHost, ApprovalPrefs, ApprovalSettings, Grant } from '../host';
+import { BUILDER_PROMPTS } from '../prompts';
 import type { AgentTool } from '../tools';
 import { AppCheckToolkit, type AppCheckOptions, type CheckReport, type MarkerInfo } from './appCheck';
 import { Approvals } from './approval';
@@ -359,7 +362,6 @@ function toolOf(toolkit: { tools(): AgentTool[] }, name: string, approvals?: App
 function appTools(client: ClientGetter): AppToolkit {
 	const host: AgentHost = {
 		vfs: createMemoryWorkspace({ 'apps/a-ui/package.json': JSON.stringify({ name: 'x', appManifest: { id: 'acme.a', name: 'Alpha' } }) }),
-		guides: { paths: () => [], read: async () => '' },
 		scaffoldApp: async () => ({ appId: 'x', folder: 'x-ui' }),
 		packApp: async () => new Uint8Array([1, 2, 3]),
 		devSession: () => null,
@@ -418,35 +420,26 @@ test('edit_file and write_file refuse a dirty file, even after reading it', asyn
 // GUIDES — the agent reads guides at .rocketride/ but cannot change them
 // =============================================================================
 
-test('the file tools read guides but cannot change them', async () => {
-	const base = createMemoryWorkspace({ 'apps/a.ts': 'const a = 1;\n' });
-	const guides = { paths: () => ['docs/ROCKETRIDE_APPS.md'], read: async () => '# Apps\nBuild apps here.\n' };
-	const tools = new Map(new FilesystemTools(new GuideFileSystem(base, guides)).tools().map((t) => [t.name, t]));
-	const run = (name: string, args: Record<string, unknown>) => callable(tools.get(name) as AgentTool).execute(args);
-	const guide = '.rocketride/docs/ROCKETRIDE_APPS.md';
-	const readOnly = /Guides under \.rocketride\/ are read-only\./;
-
-	assert.match(await run('read_file', { path: guide }), /Build apps here\./);
-	await assert.rejects(run('write_file', { path: guide, content: 'x' }), readOnly);
-	await assert.rejects(run('edit_file', { path: guide, oldString: 'Apps', newString: 'Mine' }), readOnly);
+test('a delete the view refuses is refused before any card', async () => {
+	const ws = createMemoryWorkspace({ '.rocketride/docs/ROCKETRIDE_APPS.md': '# Apps\n' });
+	ws.assertWritable = (path) => {
+		if (path === '.rocketride' || path.startsWith('.rocketride/')) throw new Error('.rocketride/ is read-only reference.');
+	};
 	const asked = fakeAsk(['approve']);
-	await assert.rejects(callable(tools.get('delete_file') as AgentTool, approvalsFor(null, asked.ask)).execute({ path: guide }), readOnly);
-	assert.deepEqual(asked.cards, [], 'a guide delete is refused before any card');
-	await assert.rejects(run('rename', { oldPath: guide, newPath: 'a.md' }), readOnly);
-	await assert.rejects(run('write_file', { path: '.rocketride/notes.md', content: 'x' }), readOnly);
-	await assert.rejects(run('create_directory', { path: '.rocketride/mine' }), readOnly);
-	assert.deepEqual(base.log, [], 'nothing reached the workspace');
+
+	await assert.rejects(toolOf(new FilesystemTools(ws), 'delete_file', approvalsFor(null, asked.ask)).execute({ path: '.rocketride/docs/ROCKETRIDE_APPS.md' }), /^Error: \.rocketride\/ is read-only reference\.$/);
+	assert.deepEqual(asked.cards, [], 'no card was shown');
+	assert.deepEqual(ws.log, [], 'nothing reached the workspace');
 });
 
-test('the README, CLI and Python guides are not served', async () => {
-	const bundle = ['./context/ROCKETRIDE_APPS.md', './context/ROCKETRIDE_README.md', './context/ROCKETRIDE_CLI.md', './context/ROCKETRIDE_python_API.md'];
-	const paths = bundle.map((key) => guidePathFor(key)).filter((path): path is string => path !== null);
-	const guides = { paths: () => paths, read: async () => '# Apps\n' };
-	const tools = new Map(new FilesystemTools(new GuideFileSystem(createMemoryWorkspace({}), guides)).tools().map((t) => [t.name, t]));
-	const run = (name: string, args: Record<string, unknown>) => callable(tools.get(name) as AgentTool).execute(args);
-
-	assert.deepEqual(JSON.parse(await run('list_directory', { path: '.rocketride/docs' })), [{ name: 'ROCKETRIDE_APPS.md', type: 'file' }]);
-	await assert.rejects(run('read_file', { path: '.rocketride/docs/ROCKETRIDE_README.md' }), /^Error: No guide at \.rocketride\/docs\/ROCKETRIDE_README\.md\. Guides: \.rocketride\/docs\/ROCKETRIDE_APPS\.md$/);
+test('every guide the router names is a served file in docs/agents/context', () => {
+	const named = [...BUILDER_PROMPTS.router.matchAll(/\.rocketride\/(docs\/[\w.-]+\.md)/g)];
+	assert.ok(named.length > 0, 'the router names guides');
+	for (const [full, served] of named) {
+		const file = served.slice('docs/'.length);
+		assert.ok(existsSync(resolve(__dirname, '../../../../../../docs/agents/context', file)), `${full} is in docs/agents/context`);
+		assert.equal(docsPathFor(file), served, `${full} is served, not hidden`);
+	}
 });
 
 // =============================================================================
@@ -540,9 +533,8 @@ test('rocketride_client reads a filepath from the workspace, unsaved edits inclu
 	const ws = createMemoryWorkspace({ 'pipelines/digest.pipe': JSON.stringify({ pipeline: edited, version: 1 }), 'pipelines/nameless.pipe': JSON.stringify({ pipeline: { components: [], project_id: 'p2' } }) }, { dirty: ['pipelines/digest.pipe'] });
 	// read() returns the editor's buffer; the saved copy on disk is older.
 	ws.peekBase = async () => JSON.stringify({ pipeline: { name: 'Old', components: [], project_id: 'p1' } });
-	const vfs = new GuideFileSystem(ws, { paths: () => [], read: async () => '' });
 	const { client, calls } = scriptedClient({ use: { token: 'tk-1' }, validate: { errors: [], warnings: [] }, 'deploy.add': { artifact: { version: 1 } } });
-	const tool = clientTool(client, vfs);
+	const tool = clientTool(client, ws);
 
 	for (const method of ['use', 'validate', 'deploy.add']) await tool.execute({ method, params: [{ filepath: './pipelines/digest.pipe', source: 'webhook_1' }] });
 	const sent = { source: 'webhook_1', pipeline: { ...edited, version: 1 } };
@@ -814,7 +806,6 @@ function session(end: WatchStatus = { state: 'ok' }, consoleError?: string): Age
 function appCheck(dev: AgentDevSession, markers: MarkerInfo[] = []): { toolkit: AppCheckToolkit; heard: CheckReport[] } {
 	const host: AgentHost = {
 		vfs: createMemoryWorkspace(APP_FILES),
-		guides: { paths: () => [], read: async () => '' },
 		scaffoldApp: async () => ({ appId: 'x', folder: 'x-ui' }),
 		packApp: async () => new Uint8Array(),
 		devSession: () => dev,

@@ -25,8 +25,9 @@
 // =============================================================================
 //
 // VS Code's Explorer, over the staged workspace view: the WHOLE tree as it
-// is on disk-equivalent (the three mounts and every file under them — no
-// per-mode curation), with source-control decorations (M/A/D letters and
+// is on disk-equivalent (the top-level folders, the read-only .rocketride/
+// included, and every file under them — no per-mode curation), with
+// source-control decorations (M/A/D letters and
 // tinted names from changedPaths()) and the unsaved-edit dot (dirtyPaths()).
 // Staged (uncommitted) files list exactly like committed ones because every
 // read goes through the view.
@@ -127,13 +128,9 @@ const WorkspaceExplorerProvider: React.FC = () => {
 		async (action: 'rename' | 'delete' | 'createFolder' | 'createFile', path: string, newName?: string) => {
 			const view = getWorkspaceVfs();
 			try {
-				// step: refuse creates outside the three mounts BEFORE staging —
-				// a staged entry at the root passes silently here but fails every
-				// later "Commit all" until the user finds and discards it
-				if ((action === 'createFolder' || action === 'createFile') && !/^(apps|nodes|pipelines)\//.test(path)) {
-					setNotice('Files live inside apps/, nodes/, or pipelines/ — select one of those folders first.');
-					return;
-				}
+				// The view refuses changes to .rocketride/ (and outside the
+				// roots) before anything stages, so rename and create need no
+				// check here; delete asks the same rule before its confirm.
 				switch (action) {
 					case 'rename': {
 						// `newName` is the full new leaf (no extension magic here —
@@ -160,6 +157,8 @@ const WorkspaceExplorerProvider: React.FC = () => {
 						break;
 					}
 					case 'delete': {
+						// step: a refused delete shows its notice, never the confirm first
+						getStagedWorkspace().assertWritable(path);
 						const leaf = path.split('/').pop() ?? path;
 						const confirmed = await showConfirm('Delete', `Are you sure you want to delete "${leaf}"?`);
 						if (!confirmed) break;

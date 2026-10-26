@@ -504,6 +504,29 @@ test('write-through mode passes mutations to the base', async () => {
 	await assert.rejects(() => fs.setWriteThrough(true));
 });
 
+test('the writable rule refuses every mutation before anything is staged, in both modes', async () => {
+	const base = new MockBase();
+	base.files.set('.rocketride/docs/A.md', 'guide');
+	base.files.set('apps/x/a.ts', 'A');
+	const readOnly = /^Error: \.rocketride\/ is read-only reference\.$/;
+	const fs = new StagedFileSystem(base, null, {
+		assertWritable: (path) => {
+			if (path === '.rocketride' || path.startsWith('.rocketride/')) throw new Error('.rocketride/ is read-only reference.');
+		},
+	});
+
+	await assert.rejects(fs.write('.rocketride/docs/A.md', 'x'), readOnly);
+	await assert.rejects(fs.delete('.rocketride/docs/A.md'), readOnly);
+	await assert.rejects(fs.mkdir('.rocketride/mine'), readOnly);
+	await assert.rejects(fs.rename('.rocketride/docs/A.md', 'apps/x/A.md'), readOnly);
+	await assert.rejects(fs.rename('apps/x/a.ts', '.rocketride/a.ts'), readOnly);
+	assert.equal(fs.hasPendingChanges(), false, 'nothing was staged');
+
+	await fs.setWriteThrough(true);
+	await assert.rejects(fs.write('.rocketride/docs/A.md', 'x'), readOnly);
+	assert.deepEqual(Object.fromEntries(base.files), { '.rocketride/docs/A.md': 'guide', 'apps/x/a.ts': 'A' }, 'the base is unchanged');
+});
+
 test('onMutate announces staged mutations with their origin; write-through and no-ops stay silent', async () => {
 	const fired: Array<{ path: string; origin?: string }> = [];
 	const base = new MockBase();
