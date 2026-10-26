@@ -51,9 +51,11 @@ loop is a command.
   save credentials to `.env` (and make `.env` git-ignored in the same
   step). OSS servers take an API key; saas servers open the browser to
   sign in and mint a durable personal API key. After sign-in the browser
-  tab closes itself, or continues to the server's RocketRide web app
-  (already signed in) when the browser does not allow closing it; a
-  failed sign-in shows the reason there and in the terminal. Run it whenever a command
+  tab closes itself where the browser allows it (Chrome, Edge); elsewhere
+  (Firefox only lets scripts close windows scripts opened) it shows a
+  RocketRide-branded "You're signed in" page, in your light/dark setting,
+  with a link to the web app. A failed sign-in shows the reason there and
+  in the terminal. Run it whenever a command
   reports rejected credentials. `--deploy` targets the
   `ROCKETRIDE_DEPLOY_*` pair.
 

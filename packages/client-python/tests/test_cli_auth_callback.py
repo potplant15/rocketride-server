@@ -21,13 +21,17 @@
 # SOFTWARE.
 # =============================================================================
 
-"""The post-login callback page (#2850): close or continue to the web app; failures explain themselves (TS renderCallbackPage twin)."""
+"""The post-login callback page (#2850): branded, themed, closes on success with no redirect; failures explain themselves (TS renderCallbackPage twin)."""
 
+import json
 import re
+from pathlib import Path
 
 import pytest
 
-from rocketride.cli.commands.auth import _render_callback_page
+from rocketride.cli.commands.auth import CALLBACK_PALETTES, _render_callback_page
+
+THEMES = Path(__file__).resolve().parents[2] / 'shell' / 'public' / 'themes'
 
 
 def _script_of(page):
@@ -35,38 +39,48 @@ def _script_of(page):
     return match.group(1) if match else ''
 
 
-def test_closes_else_continues_to_the_web_app():
+def test_success_is_branded_themed_and_never_redirects():
     page = _render_callback_page(True, web_url='https://api.rocketride.ai/')
 
-    assert 'Signed in to RocketRide.' in page
-    assert '<meta name="color-scheme" content="light dark">' in page
-    assert (
-        _script_of(page)
-        == 'window.close();setTimeout(function(){location.replace("https://api.rocketride.ai/");},300);'
-    )
-    assert '<a href="https://api.rocketride.ai/">Continue to RocketRide</a>' in page
-    assert 'You can close this window' not in page
-
-
-def test_hostile_url_stays_inside_the_json_string():
-    page = _render_callback_page(True, web_url='https://evil.test/"</script><script>alert(1)</script>')
-
-    assert page.count('</script>') == 1
-    assert '<script>alert(1)' not in page
-    assert '\\u003c' in _script_of(page)
+    assert "<h1>You're signed in</h1>" in page
+    assert '<span>RocketRide</span>' in page
+    assert 'fill="#F93822"' in page
+    assert '@media (prefers-color-scheme:dark)' in page
+    assert _script_of(page) == 'window.close();'
+    assert not re.search(r'location\.(replace|assign|href)', page)
+    assert '<a class="btn" href="https://api.rocketride.ai/">Open RocketRide</a>' in page
 
 
 @pytest.mark.parametrize('web_url', ['javascript:alert(1)', 'file:///etc/passwd', 'not a url', None])
-def test_never_redirects_to_a_non_http_target(web_url):
+def test_no_button_without_a_usable_web_url(web_url):
     page = _render_callback_page(True, web_url=web_url)
 
+    assert 'class="btn"' not in page
+    assert 'javascript:' not in page
     assert _script_of(page) == 'window.close();'
-    assert 'You can return to the terminal.' in page
 
 
-def test_failure_is_escaped_with_no_script():
+def test_failure_is_escaped_branded_with_no_script():
     page = _render_callback_page(False, error='access_denied <b>by user</b>')
 
-    assert 'RocketRide sign-in failed.' in page
+    assert '<h1>Sign-in failed</h1>' in page
     assert 'access_denied &lt;b&gt;by user&lt;/b&gt;' in page
+    assert '<span>RocketRide</span>' in page
     assert '<script>' not in page
+
+
+@pytest.mark.parametrize(('mode', 'theme_id'), [('dark', 'rocketride'), ('light', 'rocketride-light')])
+def test_palettes_match_the_web_app_themes(mode, theme_id):
+    tokens = json.loads((THEMES / f'{theme_id}.json').read_text(encoding='utf-8'))
+
+    assert CALLBACK_PALETTES[mode] == {
+        'bg': tokens['--rr-bg-default'],
+        'paper': tokens['--rr-bg-paper'],
+        'text': tokens['--rr-text-primary'],
+        'muted': tokens['--rr-text-secondary'],
+        'border': tokens['--rr-border'],
+        'buttonBg': tokens['--rr-bg-button'],
+        'buttonFg': tokens['--rr-fg-button'],
+        'success': tokens['--rr-color-success'],
+        'error': tokens['--rr-color-error'],
+    }
