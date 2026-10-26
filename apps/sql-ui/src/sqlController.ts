@@ -684,6 +684,8 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 			errorSubs.add(cb);
 			return () => { errorSubs.delete(cb); };
 		},
+		// The sidebar is in this realm: status is read from the core, never published.
+		subscribeStatus: (cb) => core.subscribeStatus(cb),
 	};
 
 	return {

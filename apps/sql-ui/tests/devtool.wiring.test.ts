@@ -536,6 +536,25 @@ describe('T6 — the sidebar mount posts nothing but retained state and opens no
 			r.dispose();
 		}
 	});
+
+	it('the rows\' status words are read in the sidebar\'s own realm: following them posts nothing, and no topic carries them', async () => {
+		const r = await rig({ docKey: '', activate: false });
+		try {
+			const before = r.spy.posts.length;
+			const sources: unknown[] = [];
+			const off = r.mount.bridge.subscribeStatus((source) => { sources.push(source); });
+			await until(() => r.engine.ops().includes('client.getTasks'), 'the first discovery');
+			await until(() => (sources.at(-1) as { discovered: unknown[] | null }).discovered !== null, 'status from that discovery');
+			off();
+			const after = r.spy.posts.slice(before) as Array<{ __rrtool?: string; topic?: string }>;
+			assert.deepEqual(after.filter((post) => post.__rrtool !== 'state'), [], 'no event, call or reply');
+			const topics = new Set(r.spy.posts.filter((post) => (post as { __rrtool?: string }).__rrtool === 'state').map((post) => (post as { topic: string }).topic));
+			assert.deepEqual([...topics].sort(), ['connections', CONTROLLER_STATE_TOPIC, 'history', 'identity', 'savedQueries'].sort());
+			assert.deepEqual(r.docs.opened, []);
+		} finally {
+			r.dispose();
+		}
+	});
 });
 
 // =============================================================================

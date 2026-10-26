@@ -148,5 +148,7 @@ export function createLocalSidebarBridge(core: SqlCore): SqlSidebarBridge {
 			errorSubs.add(cb);
 			return () => { errorSubs.delete(cb); };
 		},
+
+		subscribeStatus: (cb) => core.subscribeStatus(cb),
 	};
 }
