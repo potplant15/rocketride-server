@@ -100,6 +100,43 @@ export interface UseChatMessagesOptions {
 export type ChatStatusSink = (type: string, text: string) => void;
 
 // =============================================================================
+// ASK — a "Needs your OK" card a request shows, and its answer
+// =============================================================================
+
+/** A question for the user's OK, as an injected request asks it. The shell knows nothing of what it means. */
+export interface ChatAskCard {
+	/** The action and its target, in the user's words ("Publish Daybook v3 to everyone"). The answered line repeats it. */
+	readonly title: string;
+	/** What happens, in a sentence or two, shown under the title while the card waits. */
+	readonly detail?: string;
+	/** The label of an "Always allow" button, when the request offers one ("Always allow schedule changes"). */
+	readonly alwaysLabel?: string;
+}
+
+/** How a card ended. 'stopped': the turn ended first (Stop, the turn settling, a clear, an unmount), so nobody answered it. */
+export type ChatAskAnswer = 'approve' | 'always' | 'deny' | 'stopped';
+
+/** A card the request is waiting on. */
+export interface ChatAsking {
+	/** Settles once, with how the card ended. Never rejects. */
+	readonly answer: Promise<ChatAskAnswer>;
+	/**
+	 * Answers approve for the user, when something the request reads changed so
+	 * the card no longer needs asking (the user switched the agent to Auto). The
+	 * card closes as approved. Does nothing once the card has ended.
+	 */
+	approve(): void;
+}
+
+/** A waiting card, as the view draws it. */
+export interface ChatAskView {
+	/** The card's id, for `answerAsk`. */
+	readonly id: number;
+	/** What it asks. */
+	readonly card: ChatAskCard;
+}
+
+// =============================================================================
 // TURN
 // =============================================================================
 
@@ -119,6 +156,17 @@ export interface ChatTurn {
 	 * their own. Returns [] once the turn is stopping.
 	 */
 	takeQueued(): string[];
+	/**
+	 * Shows a "Needs your OK" card at the bottom of the thread and waits for
+	 * the user. The card is not a row: it lives on the turn, is never saved,
+	 * and ends with the turn. Once answered, one status row records it
+	 * ("Approved: …", "Denied: …", "Not answered: …"). Asked on a turn that is
+	 * stopping or settled, it shows nothing and answers 'stopped' at once.
+	 *
+	 * @param card - What to ask.
+	 * @returns The waiting card.
+	 */
+	ask(card: ChatAskCard): ChatAsking;
 }
 
 /** Where a chat's one turn slot stands. */
@@ -132,6 +180,10 @@ export interface ChatTurnView {
 	stop(): void;
 	editQueued(id: number): void;
 	removeQueued(id: number): void;
+	/** The cards waiting in the running turn, oldest first. While any waits the typing indicator reads "Waiting for your OK". */
+	readonly asks: readonly ChatAskView[];
+	/** Answers a waiting card (its buttons). An id that no longer waits does nothing, so a click after Stop is ignored. */
+	answerAsk(id: number, answer: Exclude<ChatAskAnswer, 'stopped'>): void;
 }
 
 // =============================================================================

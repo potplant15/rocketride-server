@@ -116,6 +116,83 @@ export interface AgentHost {
 	 * @returns The session, or null when none is running.
 	 */
 	devSession(appId: string): AgentDevSession | null;
+	/**
+	 * The user's approval mode and grants, live. Without it a run asks for
+	 * everything the approval list rates as asking, nothing is always allowed,
+	 * and the chat shows no mode switch.
+	 */
+	approvals?: HostApprovals;
+}
+
+// =============================================================================
+// APPROVAL SETTINGS — the user's mode and grants, as the agent reads them
+// =============================================================================
+
+/**
+ * Ask: an action the approval list rates as asking waits for the user's OK.
+ * Auto: it runs without asking. Auto judges nothing; it just doesn't ask, and
+ * an action the list never allows stays refused.
+ */
+export type ApprovalMode = 'ask' | 'auto';
+
+/** The routine kinds a card can offer "Always allow" for. Publishing, submitting, removing a deployment and deleting a file are never among them. */
+export type Grant = 'schedules' | 'deploymentToggles';
+
+/** The user's approval settings at one moment. */
+export interface ApprovalPrefs {
+	/** Ask first, or don't ask. */
+	readonly mode: ApprovalMode;
+	/** The kinds the user has always allowed. */
+	readonly grants: Readonly<Record<Grant, boolean>>;
+}
+
+/**
+ * The user's approval settings as a run sees them. It reads them and hears
+ * every change; it can turn a grant on for the user's "Always allow" click,
+ * and has no way to set the mode.
+ */
+export interface ApprovalSettings {
+	/**
+	 * The settings now.
+	 *
+	 * @returns The mode and grants.
+	 */
+	read(): ApprovalPrefs;
+	/**
+	 * Calls back after every change.
+	 *
+	 * @param listener - Called with no arguments; read() has the new settings.
+	 * @returns The unsubscribe.
+	 */
+	subscribe(listener: () => void): () => void;
+	/**
+	 * Turns a grant on. Called only for the user's "Always allow" click.
+	 *
+	 * @param kind - The grant the card offered.
+	 */
+	grant(kind: Grant): void;
+}
+
+/** The chat's mode switch: the same settings, plus the one thing only the user does, setting the mode. */
+export interface ApprovalControls extends ApprovalSettings {
+	/**
+	 * Sets the mode for every agent chat at once.
+	 *
+	 * @param mode - Ask first, or don't ask.
+	 */
+	setMode(mode: ApprovalMode): void;
+}
+
+/**
+ * The user's approval settings as the host hands them over, as two separate
+ * handles: a run gets `run`, which has no way to set the mode, and only UI
+ * code gets `controls`.
+ */
+export interface HostApprovals {
+	/** What a run reads, hears and grants through. */
+	readonly run: ApprovalSettings;
+	/** What the chat's mode switch uses. */
+	readonly controls: ApprovalControls;
 }
 
 // =============================================================================
@@ -141,5 +218,15 @@ export function setAgentHost(host: AgentHost): void {
  */
 export function getAgentHost(): AgentHost {
 	if (!current) throw new Error('The agent host is not configured — rocket-ui sets it at startup.');
+	return current;
+}
+
+/**
+ * The installed host, or null when none is set. For UI that renders in hosts
+ * that may not serve the agent; agent code uses getAgentHost().
+ *
+ * @returns The installed host, or null.
+ */
+export function findAgentHost(): AgentHost | null {
 	return current;
 }

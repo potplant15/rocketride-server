@@ -29,15 +29,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { RocketRideClient } from 'rocketride';
+import type { ChatAskAnswer, ChatAskCard, ChatAsking } from 'shell/src/components/chat/types';
 
 import type { ConsoleRow, WatchStatus } from '../../../tools/appdev/types';
 import type { IWorkspaceFileSystem, VfsEntry } from '../../vfs/vfsTypes';
 import { GuideFileSystem, guidePathFor } from '../guides';
-import type { AgentDevSession, AgentHost } from '../host';
+import type { AgentDevSession, AgentHost, ApprovalPrefs, ApprovalSettings, Grant } from '../host';
 import type { AgentTool } from '../tools';
 import { AppCheckToolkit, type AppCheckOptions, type CheckReport, type MarkerInfo } from './appCheck';
+import { Approvals } from './approval';
 import { AppToolkit } from './appTools';
-import { declined, NOT_CONNECTED_MESSAGE, type ConfirmFn } from './common';
+import { NOT_CONNECTED_MESSAGE, type ClientGetter } from './common';
 import { FilesystemTools } from './filesystem';
 import { RocketRideClientToolkit } from './rocketrideClient';
 
@@ -240,6 +242,37 @@ function createMemoryWorkspace(files: Record<string, string>, opts?: { dirty?: s
 // HELPERS
 // =============================================================================
 
+/** A tool as these tests call it: prepared, let through, then run, as the loop does. */
+interface Callable {
+	/** The tool itself. */
+	readonly tool: AgentTool;
+	/**
+	 * Calls the tool.
+	 *
+	 * @param args - The tool arguments.
+	 * @returns The tool result text.
+	 */
+	execute(args: Record<string, unknown>): Promise<string>;
+}
+
+/**
+ * A tool, callable the way the loop calls it.
+ *
+ * @param tool - The tool.
+ * @param approvals - Lets a step's act through, as a run's do; without them every act is let through.
+ * @returns The tool and its call.
+ */
+function callable(tool: AgentTool, approvals?: Approvals): Callable {
+	return {
+		tool,
+		execute: async (args) => {
+			const step = await tool.prepare(args);
+			const work = step.act && approvals ? await approvals.approve(step.act, () => step.run()) : () => step.run();
+			return work();
+		},
+	};
+}
+
 /** One toolkit per workspace, so reads carry over between calls the way they do within one run. */
 const toolkits = new WeakMap<MemoryWorkspace, FilesystemTools>();
 
@@ -259,7 +292,7 @@ function run(ws: MemoryWorkspace, tool: string, args: Record<string, unknown>): 
 		?.tools()
 		.find((t) => t.name === tool);
 	if (!found) throw new Error(`No such tool: ${tool}`);
-	return found.execute(args);
+	return callable(found).execute(args);
 }
 
 /** One row of an app's version rail, as `listDeployments` returns it. */
@@ -309,37 +342,21 @@ function fakeClient(answers: Answers = {}): { client: RocketRideClient; calls: s
 }
 
 /**
- * A confirm function that records each title it was asked and answers the same each time.
- *
- * @param answer - What the user says.
- * @returns The function and the titles it was asked.
- */
-function fakeConfirm(answer: boolean): { confirm: ConfirmFn; asked: string[] } {
-	const asked: string[] = [];
-	return {
-		confirm: async (title) => {
-			asked.push(title);
-			return answer;
-		},
-		asked,
-	};
-}
-
-/**
  * One of a toolkit's tools by name.
  *
  * @param toolkit - The toolkit.
  * @param name - The tool name.
- * @returns The tool.
+ * @param approvals - Lets the tool's acts through; without them every act is let through.
+ * @returns The tool, callable.
  */
-function toolOf(toolkit: { tools(): AgentTool[] }, name: string): AgentTool {
+function toolOf(toolkit: { tools(): AgentTool[] }, name: string, approvals?: Approvals): Callable {
 	const found = toolkit.tools().find((t) => t.name === name);
 	assert.ok(found, `${name} is mounted`);
-	return found;
+	return callable(found, approvals);
 }
 
-/** The app tools over a fake client and a workspace with one app, `a-ui`, whose manifest id is `acme.a`. */
-function appTools(client: RocketRideClient, confirm: ConfirmFn, signal?: AbortSignal): AppToolkit {
+/** The app tools over a client getter and a workspace with one app, `a-ui`, whose manifest id is `acme.a`. */
+function appTools(client: ClientGetter): AppToolkit {
 	const host: AgentHost = {
 		vfs: createMemoryWorkspace({ 'apps/a-ui/package.json': JSON.stringify({ name: 'x', appManifest: { id: 'acme.a', name: 'Alpha' } }) }),
 		guides: { paths: () => [], read: async () => '' },
@@ -347,7 +364,7 @@ function appTools(client: RocketRideClient, confirm: ConfirmFn, signal?: AbortSi
 		packApp: async () => new Uint8Array([1, 2, 3]),
 		devSession: () => null,
 	};
-	return new AppToolkit(() => client, host, confirm, { pollMs: 0, buildWaitMs: 50, signal });
+	return new AppToolkit(client, host, { pollMs: 0, buildWaitMs: 50 });
 }
 
 // =============================================================================
@@ -405,14 +422,16 @@ test('the file tools read guides but cannot change them', async () => {
 	const base = createMemoryWorkspace({ 'apps/a.ts': 'const a = 1;\n' });
 	const guides = { paths: () => ['docs/ROCKETRIDE_APPS.md'], read: async () => '# Apps\nBuild apps here.\n' };
 	const tools = new Map(new FilesystemTools(new GuideFileSystem(base, guides)).tools().map((t) => [t.name, t]));
-	const run = (name: string, args: Record<string, unknown>) => (tools.get(name) as NonNullable<ReturnType<typeof tools.get>>).execute(args);
+	const run = (name: string, args: Record<string, unknown>) => callable(tools.get(name) as AgentTool).execute(args);
 	const guide = '.rocketride/docs/ROCKETRIDE_APPS.md';
 	const readOnly = /Guides under \.rocketride\/ are read-only\./;
 
 	assert.match(await run('read_file', { path: guide }), /Build apps here\./);
 	await assert.rejects(run('write_file', { path: guide, content: 'x' }), readOnly);
 	await assert.rejects(run('edit_file', { path: guide, oldString: 'Apps', newString: 'Mine' }), readOnly);
-	await assert.rejects(run('delete_file', { path: guide }), readOnly);
+	const asked = fakeAsk(['approve']);
+	await assert.rejects(callable(tools.get('delete_file') as AgentTool, approvalsFor(null, asked.ask)).execute({ path: guide }), readOnly);
+	assert.deepEqual(asked.cards, [], 'a guide delete is refused before any card');
 	await assert.rejects(run('rename', { oldPath: guide, newPath: 'a.md' }), readOnly);
 	await assert.rejects(run('write_file', { path: '.rocketride/notes.md', content: 'x' }), readOnly);
 	await assert.rejects(run('create_directory', { path: '.rocketride/mine' }), readOnly);
@@ -424,7 +443,7 @@ test('the README, CLI and Python guides are not served', async () => {
 	const paths = bundle.map((key) => guidePathFor(key)).filter((path): path is string => path !== null);
 	const guides = { paths: () => paths, read: async () => '# Apps\n' };
 	const tools = new Map(new FilesystemTools(new GuideFileSystem(createMemoryWorkspace({}), guides)).tools().map((t) => [t.name, t]));
-	const run = (name: string, args: Record<string, unknown>) => (tools.get(name) as NonNullable<ReturnType<typeof tools.get>>).execute(args);
+	const run = (name: string, args: Record<string, unknown>) => callable(tools.get(name) as AgentTool).execute(args);
 
 	assert.deepEqual(JSON.parse(await run('list_directory', { path: '.rocketride/docs' })), [{ name: 'ROCKETRIDE_APPS.md', type: 'file' }]);
 	await assert.rejects(run('read_file', { path: '.rocketride/docs/ROCKETRIDE_README.md' }), /^Error: No guide at \.rocketride\/docs\/ROCKETRIDE_README\.md\. Guides: \.rocketride\/docs\/ROCKETRIDE_APPS\.md$/);
@@ -434,23 +453,28 @@ test('the README, CLI and Python guides are not served', async () => {
 // THE USER SAYS YES FIRST
 // =============================================================================
 
-test('publish_app asks first; a no, or a yes after Stop, publishes nothing', async () => {
+test('publish_app and delete_file name their exact act, and only an approved one acts', async () => {
+	const publish = { app: 'a-ui', target: 'public' };
 	const { client, calls } = fakeClient({ listings: [[row(4, 'ok', 'ready')]] });
-	const { confirm, asked } = fakeConfirm(false);
-	const result = await toolOf(appTools(client, confirm), 'publish_app').execute({ app: 'a-ui', target: 'public' });
-	assert.equal(asked.length, 1);
-	assert.equal(result, declined(asked[0]));
-	assert.deepEqual(calls, ['listDeployments'], 'nothing was published or submitted');
+	const step = await toolOf(
+		appTools(() => client),
+		'publish_app'
+	).tool.prepare(publish);
+	assert.deepEqual(step.act, { name: 'publishApp', params: ['acme.a', 4, '@public'] });
+	assert.deepEqual(calls, ['listDeployments'], 'preparing publishes nothing');
 
-	const yes = fakeClient({ listings: [[row(4, 'ok', 'ready')]] });
-	await toolOf(appTools(yes.client, fakeConfirm(true).confirm), 'publish_app').execute({ app: 'a-ui', target: 'public' });
-	assert.deepEqual(yes.calls, ['listDeployments', 'publishApp'], 'a yes publishes');
+	// through a run's approvals the publish reaches the client only by the checked view, so its act must match its call
+	const denied = approvalsFor(client, fakeAsk(['deny']).ask);
+	await assert.rejects(toolOf(appTools(denied.client), 'publish_app', denied).execute(publish), /^Error: The user declined: Publish Alpha \(acme\.a\) v4 to everyone\./);
+	const approved = approvalsFor(client, fakeAsk(['approve']).ask);
+	assert.equal(await toolOf(appTools(approved.client), 'publish_app', approved).execute(publish), 'Published v4 to everyone.');
+	assert.equal(calls.filter((name) => name === 'publishApp').length, 1, 'only the approved publish reached the client');
 
-	const stop = new AbortController();
-	stop.abort();
-	const late = fakeClient({ listings: [[row(4, 'ok', 'ready')]] });
-	await assert.rejects(toolOf(appTools(late.client, fakeConfirm(true).confirm, stop.signal), 'publish_app').execute({ app: 'a-ui', target: 'public' }));
-	assert.deepEqual(late.calls, ['listDeployments'], 'a yes after Stop publishes nothing');
+	const ws = createMemoryWorkspace({ 'apps/a-ui/a.ts': 'a' });
+	const remove = (answer: ChatAskAnswer) => toolOf(new FilesystemTools(ws), 'delete_file', approvalsFor(null, fakeAsk([answer]).ask)).execute({ path: 'apps/a-ui/a.ts' });
+	await assert.rejects(remove('deny'), /^Error: The user declined: Delete apps\/a-ui\/a\.ts\./);
+	assert.deepEqual(ws.log, [], 'a denied delete deletes nothing');
+	assert.equal(await remove('approve'), 'Deleted apps/a-ui/a.ts.');
 });
 
 // =============================================================================
@@ -480,9 +504,14 @@ function scriptedClient(answers: Record<string, unknown>): { client: RocketRideC
 	return { client: root as unknown as RocketRideClient, calls };
 }
 
-/** The rocketride_client tool over a client (null for none) and a workspace view. */
-function clientTool(client: RocketRideClient | null, vfs: IWorkspaceFileSystem = createMemoryWorkspace({})): AgentTool {
-	return toolOf(new RocketRideClientToolkit(() => client, vfs), 'rocketride_client');
+/** A chat ask where the user approves every card. */
+function approveAll(): ChatAsking {
+	return { answer: Promise.resolve('approve'), approve: () => undefined };
+}
+
+/** The rocketride_client tool over a client (null for none) and a workspace view, let through by a run's approvals: the user approves every card unless told otherwise. */
+function clientTool(client: RocketRideClient | null, vfs: IWorkspaceFileSystem = createMemoryWorkspace({}), approvals = approvalsFor(client, approveAll)): Callable {
+	return toolOf(new RocketRideClientToolkit(approvals.client, vfs), 'rocketride_client', approvals);
 }
 
 test('rocketride_client calls a method by its guide name, with its params in order', async () => {
@@ -573,6 +602,143 @@ test('rocketride_client explains a call it cannot make', async () => {
 });
 
 // =============================================================================
+// APPROVALS — the list, the card, the modes and the checked client
+// =============================================================================
+
+/**
+ * A chat ask that answers each card in turn from `answers`; 'wait' leaves a
+ * card open until something approves it.
+ *
+ * @param answers - How each card ends, in order; past the end, 'deny'.
+ * @returns The ask, and every card it was shown.
+ */
+function fakeAsk(answers: Array<ChatAskAnswer | 'wait'>): { ask: (card: ChatAskCard) => ChatAsking; cards: ChatAskCard[] } {
+	const cards: ChatAskCard[] = [];
+	const ask = (card: ChatAskCard): ChatAsking => {
+		cards.push(card);
+		const next = answers.shift() ?? 'deny';
+		let settle: (answer: ChatAskAnswer) => void = () => undefined;
+		const answer = new Promise<ChatAskAnswer>((resolve) => {
+			settle = resolve;
+		});
+		if (next !== 'wait') settle(next);
+		return { answer, approve: () => settle('approve') };
+	};
+	return { ask, cards };
+}
+
+/** Approval settings a test changes by hand; every grant the run turns on is recorded. */
+function fakeSettings(): ApprovalSettings & { set(prefs: Partial<ApprovalPrefs>): void; granted: Grant[] } {
+	let prefs: ApprovalPrefs = { mode: 'ask', grants: { schedules: false, deploymentToggles: false } };
+	const listeners = new Set<() => void>();
+	const granted: Grant[] = [];
+	return {
+		read: () => prefs,
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		grant: (kind) => granted.push(kind),
+		set: (next) => {
+			prefs = { ...prefs, ...next };
+			for (const listener of [...listeners]) listener();
+		},
+		granted,
+	};
+}
+
+/** One run's approvals over a client, in a workspace with the app `a-ui` (id `acme.a`, named Alpha). */
+function approvalsFor(client: RocketRideClient | null, ask: (card: ChatAskCard) => ChatAsking, opts: { settings?: ApprovalSettings; signal?: AbortSignal } = {}): Approvals {
+	const vfs = createMemoryWorkspace({ 'apps/a-ui/package.json': JSON.stringify({ name: 'x', appManifest: { id: 'acme.a', name: 'Alpha' } }) });
+	return new Approvals({ client: () => client, vfs, ask, settings: opts.settings, signal: opts.signal ?? new AbortController().signal });
+}
+
+/** Calls a client method by its dotted name, on the object that holds it. */
+function callMethod(client: RocketRideClient | null, name: string, params: unknown[]): unknown {
+	const [first, second] = name.split('.');
+	const root = client as unknown as Record<string, Record<string, (...p: unknown[]) => unknown>>;
+	return second === undefined ? (root as unknown as Record<string, (...p: unknown[]) => unknown>)[first](...params) : root[first][second](...params);
+}
+
+/** An act let through by `approvals`, then run: the run makes the announced call through the checked client. */
+async function approveAndRun(approvals: Approvals, name: string, params: unknown[]): Promise<string> {
+	const run = await approvals.approve({ name, params }, async () => JSON.stringify(await callMethod(approvals.client(), name, params)));
+	return run();
+}
+
+/** Waits a few milliseconds at a time, up to 100 times, for `ready`. */
+async function until(ready: () => boolean): Promise<void> {
+	for (let i = 0; i < 100 && !ready(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
+test("an asked call runs only after Approve, with a card in the user's words; Deny and Stop run nothing", async () => {
+	const { client, calls } = scriptedClient({ publishApp: { publish: {} }, 'deploy.remove': {} });
+	const yes = fakeAsk(['approve']);
+	await approveAndRun(approvalsFor(client, yes.ask), 'publishApp', ['acme.a', 4, '@public']);
+	assert.deepEqual(yes.cards, [{ title: 'Publish Alpha (acme.a) v4 to everyone', detail: 'It is approved, so it goes live to everyone straight away.' }]);
+	assert.equal(calls.length, 1);
+
+	await assert.rejects(approveAndRun(approvalsFor(client, fakeAsk(['deny']).ask), 'publishApp', ['acme.a', 4, '@public']), /^Error: The user declined: Publish Alpha \(acme\.a\) v4 to everyone\./);
+	// the name lookups fail on this client, so the card falls back to ids
+	await assert.rejects(approveAndRun(approvalsFor(client, fakeAsk(['stopped']).ask), 'deploy.remove', ['p1', 't1']), /^Error: Not done: the user stopped the run before answering: Remove p1 from team t1\./);
+	assert.equal(calls.length, 1, 'only the approved call reached the client');
+});
+
+test('Auto runs an ask with no card, never stays refused, and switching to Auto approves a waiting card', async () => {
+	const { client, calls } = scriptedClient({ 'deploy.disable': {}, 'account.deleteAccount': {} });
+	const settings = fakeSettings();
+	const waiting = fakeAsk(['wait']);
+	const running = approveAndRun(approvalsFor(client, waiting.ask, { settings }), 'deploy.disable', ['p1', 't1']);
+	await until(() => waiting.cards.length === 1);
+	assert.equal(waiting.cards.length, 1, 'the card is waiting');
+	settings.set({ mode: 'auto' });
+	await running;
+	assert.equal(calls.length, 1, 'switching to Auto approved the waiting card');
+
+	const auto = fakeAsk([]);
+	const approvals = approvalsFor(client, auto.ask, { settings });
+	await approveAndRun(approvals, 'deploy.disable', ['p2', 't1']);
+	await assert.rejects(approveAndRun(approvals, 'account.deleteAccount', []), /^Error: account\.deleteAccount is blocked: /);
+	assert.equal(auto.cards.length, 0, 'Auto showed no card');
+	assert.deepEqual(
+		calls.map(([method]) => method),
+		['deploy.disable', 'deploy.disable'],
+		'deleteAccount never reached the client'
+	);
+});
+
+test('Always allow turns the grant on, and the checked client refuses an asked call nobody announced', async () => {
+	const { client, calls } = scriptedClient({ 'deploy.setSchedule': {}, publishApp: { publish: {} } });
+	Object.assign(client, { getOrgId: () => 'org-1' });
+	const settings = fakeSettings();
+	const always = fakeAsk(['always']);
+	await approveAndRun(approvalsFor(client, always.ask, { settings }), 'deploy.setSchedule', ['p1', 'cron_1', null, 't1']);
+	assert.deepEqual(always.cards, [{ title: 'Clear the schedule of p1 (cron_1) on team t1', detail: 'It stops running on a schedule.', alwaysLabel: 'Always allow schedule changes' }]);
+	assert.deepEqual(settings.granted, ['schedules']);
+
+	const checked = approvalsFor(client, fakeAsk([]).ask).client() as unknown as { publishApp(...params: unknown[]): unknown; getOrgId(): string };
+	assert.throws(() => checked.publishApp('acme.a', 4, '@me'), /^Error: publishApp needs the user's OK, and the call that reached it didn't say it would make it/);
+	assert.equal(checked.getOrgId(), 'org-1', 'a free sync method stays sync');
+	assert.equal(calls.length, 1, 'the unannounced publish never reached the client');
+});
+
+test('Stop while a card looks up names refuses at once, without waiting out the lookups', async () => {
+	const stop = new AbortController();
+	const hang = () => new Promise<never>(() => undefined);
+	const stopWhileReading = () => {
+		stop.abort();
+		return hang();
+	};
+	const client = { getOrgId: () => 'org-1', account: { listTeams: hang }, deploy: { get: stopWhileReading } } as unknown as RocketRideClient;
+	const shown = fakeAsk(['approve']);
+	const approving = approvalsFor(client, shown.ask, { signal: stop.signal }).approve({ name: 'deploy.remove', params: ['p1', 't1'] }, async () => 'removed');
+	// well inside the 2 s a lookup may take
+	const late = new Promise((resolve) => setTimeout(resolve, 500, 'still waiting'));
+	await assert.rejects(Promise.race([approving, late]), /^Error: Not done: the user stopped the run before answering: Remove p1 from team t1\.$/);
+	assert.deepEqual(shown.cards, [], 'no card was shown');
+});
+
+// =============================================================================
 // deploy_app
 // =============================================================================
 
@@ -580,7 +746,10 @@ test("deploy_app waits for the version it uploaded, not a teammate's newer one",
 	// The upload reply names v5; a teammate's v6 lands beside it and is built first.
 	const listings = [[row(4)], [row(6, 'building'), row(5, 'queued'), row(4)], [row(6), row(5, 'building'), row(4)], [row(6), row(5), row(4)]];
 	const { client } = fakeClient({ listings, added: { artifact: { registryVersion: 5, buildStatus: 'queued' } } });
-	const result = await toolOf(appTools(client, fakeConfirm(true).confirm), 'deploy_app').execute({ app: 'a-ui', message: 'Mine' });
+	const result = await toolOf(
+		appTools(() => client),
+		'deploy_app'
+	).execute({ app: 'a-ui', message: 'Mine' });
 	assert.equal(result, 'Deployed v5; server build OK.');
 });
 
