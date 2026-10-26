@@ -535,7 +535,34 @@ export async function executeAppDev(ref: string | undefined, options: AppDevOpti
  * @param program - The root commander program.
  */
 export function registerAppCommands(program: Command): void {
-	const appCmd = program.command('app').description('App lifecycle operations');
+	const appCmd = program
+		.command('app')
+		.description('Build, preview, deploy, and publish apps (the App Builder from the terminal)')
+		.addHelpText(
+			'after',
+			`
+[app] is an app folder (apps/clock-ui), an app id (personal.clock), its name
+(clock), its folder name (clock-ui), or nothing (the current folder). A lone
+number is read as the version: 'rocketride app publish 3'.
+
+Connections: create and dev use the development connection (ROCKETRIDE_URI);
+every other verb except verify uses the deployment target
+(ROCKETRIDE_DEPLOY_URI) and never falls back to the development connection.
+
+Examples:
+  rocketride app create clock                        new app in ./apps/clock-ui
+  rocketride app dev clock --open                    live preview; Ctrl+C stops
+  rocketride app verify clock --store                local checks, incl. the store bar
+  rocketride app deploy clock --publish @me          deploy, wait for the build, publish
+  rocketride app versions clock                      version rail and where each is live
+  rocketride app publish clock 2 --to @team/QA       publish a version to a team
+  rocketride app unpublish clock --from @me          take it off your desktop
+  rocketride app developer status                    your org's developer id
+
+Removing an app: there is no hard delete; unpublish removes an audience binding
+and keeps every version and its history. 'app where' lists each audience still
+serving the app; a team or @public binding can keep it on your desktop.`,
+		);
 	const workspaceOption = '--workspace <dir>';
 	const workspaceHelp = 'Workspace root apps are found in and the deploy zip is rooted at (default: current directory)';
 
@@ -614,8 +641,8 @@ export function registerAppCommands(program: Command): void {
 
 	// ── app unpublish / disable ──────────────────────────────────────────
 	for (const [verb, description] of [
-		['unpublish', 'Stop serving an app to an audience (versions and history survive)'],
-		['disable', "Switch off an audience's binding but keep it listed (publishing again re-enables it)"],
+		['unpublish', 'Remove an app from an audience; --from @me takes it off your desktop (versions and history survive; publish again to restore)'],
+		['disable', "Switch an audience off but keep it listed as disabled (publish again to re-enable)"],
 	] as const) {
 		const cmd = appCmd
 			.command(`${verb} [app]`)
