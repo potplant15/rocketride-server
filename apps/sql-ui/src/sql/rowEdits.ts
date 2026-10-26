@@ -26,7 +26,7 @@
 //
 // The data browser never writes as you edit: every edit, new row and delete
 // is staged here, and Apply sends the statements this module builds, as one
-// transaction where the engine has one (SqlSession.applyStatements). Pure
+// transaction where the engine has one (SqlSession.applyBatch). Pure
 // and immutable: every function returns a new RowEdits and never writes to
 // the row object it was given (a grid row is Tabulator's to mutate; PLAN-MAP
 // fact 4), so React state can hold it as is.

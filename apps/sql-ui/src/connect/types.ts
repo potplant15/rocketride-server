@@ -257,7 +257,7 @@ export interface SqlSession {
 	 * first failure stops the rest, and the result says `transactional: false`.
 	 *
 	 * Every caller a view can reach goes through the engine core
-	 * (sqlCore.ts `applyStatements`), which first checks the whole list with
+	 * (sqlCore.ts `applyBatch`), which first checks the whole list with
 	 * the node's dialect (sql/gate.ts `gateApplyStatements`) and runs
 	 * ClickHouse without a transaction. The session id never leaves the realm
 	 * that holds the engine connection.
@@ -270,7 +270,7 @@ export interface SqlSession {
 	 * @throws ExplorerToolError when nothing was applied: the list was
 	 *         refused, the connection is not running, or `begin` was refused.
 	 */
-	applyStatements(statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult>;
+	applyBatch(statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult>;
 	/**
 	 * Reflect the schema of the attached database (or a single table).
 	 *

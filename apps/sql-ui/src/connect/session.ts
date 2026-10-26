@@ -216,7 +216,7 @@ class SqlToolSession implements SqlSession {
 	}
 
 	/**
-	 * Apply app-written statements (see {@link SqlSession.applyStatements}).
+	 * Apply app-written statements (see {@link SqlSession.applyBatch}).
 	 * Runs exactly what it is given: the list's gate and the dialect rule
 	 * (ClickHouse sessions undo nothing, so it is asked with `atomic: false`)
 	 * belong to the engine core, the only caller in this realm.
@@ -226,7 +226,7 @@ class SqlToolSession implements SqlSession {
 	 * @param opts.atomic - Open a transaction (falls back when the node has no `begin`).
 	 * @returns What ran.
 	 */
-	async applyStatements(statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult> {
+	async applyBatch(statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult> {
 		if (!opts.atomic) return this.applyEach(statements);
 		let sessionId: string;
 		try {

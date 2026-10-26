@@ -102,7 +102,7 @@ export interface SqlOps extends ToolOpMap {
 	 * checked again with the node's dialect first, and nothing is ever sent
 	 * twice. A failure once statements are sent is data in the result.
 	 */
-	'sql.applyStatements': ToolOpSpec<IDeadline & { connId: string; statements: Array<{ sql: string; params?: JsonValue[]; expect?: number }>; atomic: boolean }, Reply<SqlApplyResult>>;
+	'sql.applyBatch': ToolOpSpec<IDeadline & { connId: string; statements: Array<{ sql: string; params?: JsonValue[]; expect?: number }>; atomic: boolean }, Reply<SqlApplyResult>>;
 	// ── Connection editor support ────────────────────────────────────────────
 	/** Fetch one service definition (the direct path's config schema). */
 	'sql.getService': ToolOpSpec<IDeadline & { provider: string }, Reply<JsonValue>>;

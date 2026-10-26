@@ -24,8 +24,8 @@
 // APPLY — the engine core's rules, on both mounts
 // =============================================================================
 //
-// `sql.applyStatements` (a dev-tool frame) and the full app's session both
-// reach sqlCore.ts applyStatements, which checks the list with the node's
+// `sql.applyBatch` (a dev-tool frame) and the full app's session both
+// reach sqlCore.ts applyBatch, which checks the list with the node's
 // dialect before anything is sent: ClickHouse never opens a transaction (its
 // sessions undo nothing), and an unknown dialect never gets one. The
 // statement-level sequences are in applySession.test.ts; T3/T4/T10 for the
@@ -69,7 +69,7 @@ describe('the engine core decides the transaction with the node\'s dialect', () 
 		const r = await rig({ tool: nodeOf('clickhouse') });
 		try {
 			const session = r.env.getSession(await r.env.resolveEndpoint(PIPELINE));
-			const result = await session.applyStatements(EDITS, { atomic: true });
+			const result = await session.applyBatch(EDITS, { atomic: true });
 			assert.deepEqual(result, { transactional: false, results: [{ affected_rows: 1 }, { affected_rows: 1 }], failure: null });
 			assert.deepEqual(['begin', 'commit', 'rollback'].map((tool) => toolRequests(r.engine, tool).length), [0, 0, 0]);
 			assert.equal(toolRequests(r.engine, 'execute').length, 2);
@@ -83,7 +83,7 @@ describe('the engine core decides the transaction with the node\'s dialect', () 
 			const r = await rig({ tool: nodeOf(dialect) });
 			try {
 				const session = r.env.getSession(await r.env.resolveEndpoint(PIPELINE));
-				const result = await session.applyStatements(EDITS, { atomic: true });
+				const result = await session.applyBatch(EDITS, { atomic: true });
 				assert.equal(result.transactional, true, dialect);
 				assert.deepEqual(['begin', 'commit', 'rollback'].map((tool) => toolRequests(r.engine, tool).length), [1, 1, 0], dialect);
 			} finally {
@@ -96,7 +96,7 @@ describe('the engine core decides the transaction with the node\'s dialect', () 
 		const r = await rig({ tool: nodeOf(() => { throw new Error('connection refused'); }) });
 		try {
 			await r.env.resolveEndpoint(PIPELINE);
-			const apply = (atomic: boolean) => r.frame.caller.callReply('sql.applyStatements', { connId: 'c-pipe', statements: EDITS, atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyStatements'] });
+			const apply = (atomic: boolean) => r.frame.caller.callReply('sql.applyBatch', { connId: 'c-pipe', statements: EDITS, atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] });
 			await assert.rejects(apply(true), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid' && error.message === APPLY_UNKNOWN_DIALECT_TEXT);
 			assert.equal(toolRequests(r.engine, 'begin').length + toolRequests(r.engine, 'execute').length, 0, 'nothing was sent');
 			assert.deepEqual(await apply(false), { transactional: false, results: [{ affected_rows: 1 }, { affected_rows: 1 }], failure: null });
@@ -116,10 +116,10 @@ describe('the full app takes the same path: its session\'s apply goes through th
 			engine.realm.login(USER);
 			await until(() => getSavedConnections().length === 1, 'the saved list');
 			const session = env.getSession(await env.resolveEndpoint(PIPELINE));
-			await assert.rejects(session.applyStatements([...EDITS, { sql: 'COMMIT' }], { atomic: true }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid' && error.tool === 'apply');
+			await assert.rejects(session.applyBatch([...EDITS, { sql: 'COMMIT' }], { atomic: true }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid' && error.tool === 'apply');
 			const sent = (tool: string): number => engine.requests.filter((request) => request.op === 'client.tool' && (request.params as { tool: string }).tool === tool).length;
 			assert.equal(sent('begin') + sent('execute'), 0);
-			const result = await session.applyStatements(EDITS.map((statement) => ({ ...statement, expect: 1 })), { atomic: true });
+			const result = await session.applyBatch(EDITS.map((statement) => ({ ...statement, expect: 1 })), { atomic: true });
 			assert.deepEqual(result, { transactional: true, results: [{ affected_rows: 1 }, { affected_rows: 1 }], failure: null });
 			assert.deepEqual([sent('begin'), sent('execute'), sent('commit')], [1, 2, 1]);
 		} finally {

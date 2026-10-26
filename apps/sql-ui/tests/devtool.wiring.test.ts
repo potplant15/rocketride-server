@@ -209,7 +209,7 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 				getSchema: await session.getSchema(),
 				refreshSchema: await session.refreshSchema(),
 				dialect: await session.dialect(),
-				apply: await session.applyStatements([{ sql: 'UPDATE "orders" SET "name" = $1 WHERE "id" = $2', params: ['b', 2] }, { sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true }),
+				apply: await session.applyBatch([{ sql: 'UPDATE "orders" SET "name" = $1 WHERE "id" = $2', params: ['b', 2] }, { sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true }),
 				discover: await r.env.discoverEndpoints(),
 				service: await r.env.getService('db_mysql'),
 				validate: await r.env.validate({ version: 1, component: { id: 'db_mysql_1', provider: 'db_mysql', config: {} } }),
@@ -290,7 +290,7 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 		try {
 			await assert.rejects(r.env.resolveEndpoint(PIPELINE), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'unavailable' && /not running/.test(error.message));
 			// A resolution failure inside an op names that op's tool (reviewer F6).
-			const fails = (op: 'sql.execute' | 'sql.getSchema' | 'sql.refreshSchema' | 'sql.dialect' | 'sql.applyStatements', tool: string, params: Record<string, unknown> = {}) => assert.rejects(
+			const fails = (op: 'sql.execute' | 'sql.getSchema' | 'sql.refreshSchema' | 'sql.dialect' | 'sql.applyBatch', tool: string, params: Record<string, unknown> = {}) => assert.rejects(
 				r.frame.caller.callReply(op, { connId: 'c-pipe', ...params } as never, { timeoutMs: SQL_OP_TIMEOUT_MS[op] }),
 				(error: unknown) => error instanceof ExplorerToolError && error.kind === 'unavailable' && error.tool === tool,
 			);
@@ -298,7 +298,7 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			await fails('sql.getSchema', 'get_schema');
 			await fails('sql.refreshSchema', 'refresh_schema');
 			await fails('sql.dialect', 'dialect');
-			await fails('sql.applyStatements', 'apply', { statements: [{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], atomic: true });
+			await fails('sql.applyBatch', 'apply', { statements: [{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], atomic: true });
 		} finally {
 			r.dispose();
 		}
@@ -318,8 +318,8 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			await session.getSchema();
 			await session.refreshSchema();
 			// A row count that does not match, so the apply's rollback is sent too.
-			await session.applyStatements([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], { atomic: true });
-			await session.applyStatements([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
+			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], { atomic: true });
+			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
 			await session.execute('SELECT 1');
 			const bus = (tool: string): number | undefined => toolRequests(r.engine, tool).at(-1)?.timeoutMs;
 			assert.equal(bus('dialect'), DIALECT_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
@@ -353,8 +353,8 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			await session.getSchema();
 			await session.refreshSchema();
 			await session.execute('SELECT 1');
-			await session.applyStatements([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
-			assert.ok(r.frameCalls.some((call) => call.op === 'sql.applyStatements'));
+			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
+			assert.ok(r.frameCalls.some((call) => call.op === 'sql.applyBatch'));
 			for (const call of r.frameCalls) {
 				assert.equal(call.timeoutMs, SQL_OP_TIMEOUT_MS[call.op as keyof typeof SQL_OP_TIMEOUT_MS], `${call.op} frame timeout`);
 			}
@@ -378,9 +378,9 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			// An apply: resolve; the gate's dialect call; begin; its statements, the
 			// apply's budget in all; commit; and a rollback after a failure. Bounded
 			// by the node's 300 s idle-transaction timeout, so minutes, not a day.
-			assert.equal(at('sql.applyStatements'), RESOLVE_BUDGET_MS + busOf(DIALECT_WAIT_MS) + busOf(BEGIN_WAIT_MS) + busOf(APPLY_BUDGET_MS) + 2 * busOf(END_TX_WAIT_MS) + FRAME_OP_MARGIN_MS);
+			assert.equal(at('sql.applyBatch'), RESOLVE_BUDGET_MS + busOf(DIALECT_WAIT_MS) + busOf(BEGIN_WAIT_MS) + busOf(APPLY_BUDGET_MS) + 2 * busOf(END_TX_WAIT_MS) + FRAME_OP_MARGIN_MS);
 			assert.equal(APPLY_BUDGET_MS, NODE_TX_IDLE_MS);
-			assert.ok(at('sql.applyStatements') < 15 * 60_000, `${at('sql.applyStatements')} ms`);
+			assert.ok(at('sql.applyBatch') < 15 * 60_000, `${at('sql.applyBatch')} ms`);
 			for (const op of Object.keys(SQL_OP_TIMEOUT_MS) as Array<keyof typeof SQL_OP_TIMEOUT_MS>) assert.notEqual(at(op), 120_000, op);
 		} finally {
 			r.dispose();
@@ -876,7 +876,7 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 		} });
 		try {
 			await r.env.resolveEndpoint(PIPELINE);
-			const apply = (sqls: string[], atomic = true) => r.frame.caller.callReply('sql.applyStatements', { connId: 'c-pipe', statements: sqls.map((sql) => ({ sql, expect: 1 })), atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyStatements'] });
+			const apply = (sqls: string[], atomic = true) => r.frame.caller.callReply('sql.applyBatch', { connId: 'c-pipe', statements: sqls.map((sql) => ({ sql, expect: 1 })), atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] });
 			const EDIT = 'UPDATE "orders" SET "name" = \'x\' WHERE "id" = 1';
 			for (const list of [[EDIT, 'COMMIT'], ['BEGIN', EDIT], [EDIT, 'SAVEPOINT s1'], [`${EDIT}; ROLLBACK`]]) {
 				for (const atomic of [true, false]) {
@@ -957,7 +957,7 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 		try {
 			await r.env.resolveEndpoint(PIPELINE);
 			const before = r.engine.requests.length;
-			type Checked = 'sql.execute' | 'sql.getSchema' | 'sql.getService' | 'sql.validate' | 'sql.releaseEndpoint' | 'sql.applyStatements';
+			type Checked = 'sql.execute' | 'sql.getSchema' | 'sql.getService' | 'sql.validate' | 'sql.releaseEndpoint' | 'sql.applyBatch';
 			const call = (op: Checked, params: Record<string, unknown>) => r.frame.caller.callReply(op, { connId: 'c-pipe', ...params } as never, { timeoutMs: SQL_OP_TIMEOUT_MS[op] });
 			const bad: Array<[Checked, Record<string, unknown>]> = [
 				['sql.releaseEndpoint', { key: 42 }],
@@ -973,16 +973,16 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 				['sql.execute', { sql: 'SELECT ?', params: { 0: 1 } }],
 				['sql.execute', { sql: 'SELECT 1', idempotent: 'yes' }],
 				['sql.getSchema', { table: 7 }],
-				['sql.applyStatements', { statements: [{ sql: 'SELECT 1' }] }],
-				['sql.applyStatements', { statements: [{ sql: 'SELECT 1' }], atomic: 'yes' }],
-				['sql.applyStatements', { statements: [], atomic: true }],
-				['sql.applyStatements', { statements: 'SELECT 1', atomic: true }],
-				['sql.applyStatements', { statements: [null], atomic: true }],
-				['sql.applyStatements', { statements: [{ sql: 42 }], atomic: true }],
-				['sql.applyStatements', { statements: [{ sql: 'SELECT ?', params: 'x' }], atomic: true }],
-				['sql.applyStatements', { statements: [{ sql: 'DELETE FROM t', expect: 1.5 }], atomic: true }],
-				['sql.applyStatements', { statements: [{ sql: 'DELETE FROM t', expect: -1 }], atomic: true }],
-				['sql.applyStatements', { statements: Array.from({ length: MAX_APPLY_STATEMENTS + 1 }, () => ({ sql: 'SELECT 1' })), atomic: false }],
+				['sql.applyBatch', { statements: [{ sql: 'SELECT 1' }] }],
+				['sql.applyBatch', { statements: [{ sql: 'SELECT 1' }], atomic: 'yes' }],
+				['sql.applyBatch', { statements: [], atomic: true }],
+				['sql.applyBatch', { statements: 'SELECT 1', atomic: true }],
+				['sql.applyBatch', { statements: [null], atomic: true }],
+				['sql.applyBatch', { statements: [{ sql: 42 }], atomic: true }],
+				['sql.applyBatch', { statements: [{ sql: 'SELECT ?', params: 'x' }], atomic: true }],
+				['sql.applyBatch', { statements: [{ sql: 'DELETE FROM t', expect: 1.5 }], atomic: true }],
+				['sql.applyBatch', { statements: [{ sql: 'DELETE FROM t', expect: -1 }], atomic: true }],
+				['sql.applyBatch', { statements: Array.from({ length: MAX_APPLY_STATEMENTS + 1 }, () => ({ sql: 'SELECT 1' })), atomic: false }],
 			];
 			for (const [op, params] of bad) {
 				await assert.rejects(call(op, params), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid', JSON.stringify(params));

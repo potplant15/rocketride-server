@@ -218,7 +218,7 @@ export function checkExecuteInput(input: { sql: unknown; params?: unknown; idemp
 export const MAX_APPLY_STATEMENTS = 1000;
 
 /**
- * Check `sql.applyStatements`' input.
+ * Check `sql.applyBatch`'s input.
  *
  * @param input - The op params.
  * @param input.statements - The statements.
@@ -497,11 +497,11 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 		},
 		'sql.refreshSchema': ({ connId }) => core.withSession(connId, (session) => session.refreshSchema(), 'refresh_schema'),
 		'sql.dialect': ({ connId }) => core.withSession(connId, (session) => session.dialect(), 'dialect'),
-		'sql.applyStatements': ({ connId, statements, atomic }) => {
+		'sql.applyBatch': ({ connId, statements, atomic }) => {
 			checkApplyInput({ statements, atomic });
 			// The core gates the list with the node's dialect and keeps the
 			// session id: the frame gets the outcome only. Never repeated (T10).
-			return core.applyStatements(connId, statements, atomic);
+			return core.applyBatch(connId, statements, atomic);
 		},
 		'sql.getService': async ({ provider }) => {
 			if (typeof provider !== 'string' || provider === '') throw invalidInput('get_service', 'The provider must be a name.');

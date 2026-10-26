@@ -24,7 +24,7 @@
 // DESIGNER APPLY — one transaction on PostgreSQL, the plan kept when it fails
 // =============================================================================
 //
-// The designer's Apply goes through SqlSession.applyStatements: as one
+// The designer's Apply goes through SqlSession.applyBatch: as one
 // transaction on PostgreSQL (its DDL is transactional), statement by
 // statement elsewhere (MySQL commits DDL implicitly; ClickHouse has no
 // transactions). The pure helpers TableDesignView exports are tested here;
@@ -158,9 +158,9 @@ describe('the outcome banner says the plan ran as one transaction only when the 
 	});
 });
 
-describe('TableDesignView applies through applyStatements', () => {
+describe('TableDesignView applies through applyBatch', () => {
 	it('sends the plan in one call, atomic by the dialect, and no longer runs statements one execute at a time', () => {
-		assert.match(VIEW, /\.applyStatements\(statements\.map\(\(sql\) => \(\{ sql \}\)\), \{ atomic: mode\.atomic \}\)/);
+		assert.match(VIEW, /\.applyBatch\(statements\.map\(\(sql\) => \(\{ sql \}\)\), \{ atomic: mode\.atomic \}\)/);
 		assert.match(VIEW, /const mode = designApplyMode\(snapshot\.dialect\)/);
 		assert.doesNotMatch(VIEW, /for \(const sql of statements\)/);
 		assert.doesNotMatch(VIEW, /prev\.slice\(done\)/);

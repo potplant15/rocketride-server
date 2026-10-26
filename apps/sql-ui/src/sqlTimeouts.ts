@@ -113,7 +113,7 @@ export const SQL_OP_TIMEOUT_MS = {
 	// it, so the node's 300 s idle-transaction timeout bounds them, not the
 	// statement's 24 h cap); then `commit`, and a `rollback` after a failure
 	// (a refused commit is followed by one too). Never repeated (T10).
-	'sql.applyStatements': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(DIALECT_WAIT_MS) + toolCallBudgetMs(BEGIN_WAIT_MS) + toolCallBudgetMs(APPLY_BUDGET_MS) + 2 * toolCallBudgetMs(END_TX_WAIT_MS)),
+	'sql.applyBatch': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(DIALECT_WAIT_MS) + toolCallBudgetMs(BEGIN_WAIT_MS) + toolCallBudgetMs(APPLY_BUDGET_MS) + 2 * toolCallBudgetMs(END_TX_WAIT_MS)),
 	'sql.getService': frameOpTimeoutMs(SERVICE_TIMEOUT_MS),
 	'sql.validate': frameOpTimeoutMs(VALIDATE_TIMEOUT_MS),
 	'sql.envKeys': frameOpTimeoutMs(ENV_KEYS_TIMEOUT_MS),

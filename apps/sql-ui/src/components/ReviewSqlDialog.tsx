@@ -289,7 +289,7 @@ function clockTime(ms: number): string {
 /**
  * What an apply's reply says was saved.
  *
- * @param result - The reply (SqlSession.applyStatements).
+ * @param result - The reply (SqlSession.applyBatch).
  * @param facts - How many changes were sent, to which table, and when it finished.
  * @param facts.total - How many changes were sent.
  * @param facts.table - The table.

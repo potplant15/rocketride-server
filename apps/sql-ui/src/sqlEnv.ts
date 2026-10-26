@@ -219,7 +219,7 @@ function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint): Sql
 		dialect: (): Promise<SqlDialect> => caller.callReply('sql.dialect', { connId }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.dialect'] }),
 		// The whole apply runs in the controller: the frame sends the list and
 		// gets the outcome, never a session id.
-		applyStatements: (statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult> => caller.callReply('sql.applyStatements', {
+		applyBatch: (statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult> => caller.callReply('sql.applyBatch', {
 			connId,
 			statements: statements.map((statement) => ({
 				sql: statement.sql,
@@ -227,7 +227,7 @@ function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint): Sql
 				...(statement.expect !== undefined ? { expect: statement.expect } : {}),
 			})),
 			atomic: opts.atomic,
-		}, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyStatements'] }),
+		}, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] }),
 	};
 }
 

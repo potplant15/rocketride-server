@@ -29,7 +29,7 @@
 // exactly what Apply will run. Create mode (table = null) builds a CREATE
 // TABLE from the drafted column list instead.
 //
-// Apply sends the whole plan in one call (SqlSession.applyStatements). On
+// Apply sends the whole plan in one call (SqlSession.applyBatch). On
 // PostgreSQL, whose DDL is transactional, it asks for one transaction: a
 // failure rolls the whole plan back and the plan stays as it was. MySQL
 // commits each DDL statement implicitly and ClickHouse has no transactions,
@@ -717,7 +717,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 		let fellBack = false;
 		try {
 			try {
-				const result = await env.getSession(endpoint).applyStatements(statements.map((sql) => ({ sql })), { atomic: mode.atomic });
+				const result = await env.getSession(endpoint).applyBatch(statements.map((sql) => ({ sql })), { atomic: mode.atomic });
 				transactional = result.transactional;
 				fellBack = mode.atomic && !result.transactional;
 				if (result.failure !== null) {

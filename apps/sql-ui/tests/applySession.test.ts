@@ -136,7 +136,7 @@ beforeEach(async () => {
 describe('apply in one transaction', () => {
 	it('commits on success: begin, every statement on the session in order with its binds, then commit', async () => {
 		const fake = fakeClient(node());
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: true });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: true });
 		assert.deepEqual(result, { transactional: true, results: [{ affected_rows: 1 }, { affected_rows: 1 }, { affected_rows: 1 }], failure: null });
 		assert.deepEqual(tools(fake.calls), ['begin', 'execute', 'execute', 'execute', 'commit']);
 		assert.deepEqual(fake.calls.slice(1, 4).map((call) => call.input), EDITS.map((statement) => ({ sql: statement.sql, params: statement.params, session_id: 'tx-1' })));
@@ -150,7 +150,7 @@ describe('apply in one transaction', () => {
 			if (String(call.input.sql).startsWith('INSERT')) throw raised('SQL execution failed: duplicate key value violates unique constraint "orders_pkey"', 'TASK_STOPPED');
 			return { rows: [], affected_rows: 1 };
 		} }));
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: true });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: true });
 		assert.deepEqual(tools(fake.calls), ['begin', 'execute', 'execute', 'rollback']);
 		assert.deepEqual(fake.calls[3]!.input, { session_id: 'tx-1' });
 		assert.equal(result.transactional, true);
@@ -166,7 +166,7 @@ describe('apply in one transaction', () => {
 
 	it('a statement that changes another number of rows than expected rolls back, and nothing is committed', async () => {
 		const fake = fakeClient(node({ execute: (call) => ({ rows: [], affected_rows: String(call.input.sql).startsWith('DELETE') ? 0 : 1 }) }));
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: true });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: true });
 		assert.deepEqual(tools(fake.calls), ['begin', 'execute', 'execute', 'execute', 'rollback']);
 		assert.equal(result.failure?.stage, 'expect');
 		assert.equal(result.failure?.index, 2);
@@ -175,7 +175,7 @@ describe('apply in one transaction', () => {
 		assert.match(result.failure?.message ?? '', /changed 0 rows; it must change exactly 1/);
 		// Two rows is a mismatch too: the key matched more than one row.
 		const two = fakeClient(node({ execute: () => ({ rows: [], affected_rows: 2 }) }));
-		const second = await sessionOn(two.client).applyStatements(EDITS.slice(0, 1), { atomic: true });
+		const second = await sessionOn(two.client).applyBatch(EDITS.slice(0, 1), { atomic: true });
 		assert.equal(second.failure?.stage, 'expect');
 		assert.deepEqual(tools(two.calls), ['begin', 'execute', 'rollback']);
 	});
@@ -187,7 +187,7 @@ describe('apply in one transaction', () => {
 			// The node closed the session when it refused the commit.
 			rollback: () => { throw raised('unknown or expired transaction session: tx-1'); },
 		}));
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: true });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: true });
 		assert.deepEqual(tools(fake.calls), ['begin', 'execute', 'execute', 'execute', 'commit', 'rollback']);
 		assert.deepEqual(result.failure, { index: 3, stage: 'commit', message: refusal, committed: 0, unknown: false });
 		assert.equal(result.transactional, true);
@@ -195,7 +195,7 @@ describe('apply in one transaction', () => {
 
 	it('a commit whose answer never arrived may have committed: the result says the outcome is unknown', async () => {
 		const fake = fakeClient(node({ commit: () => { throw new ExplorerToolError({ kind: 'timeout', tool: 'commit', message: 'Stopped waiting for commit after 60 s.' }); } }));
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: true });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: true });
 		assert.equal(result.failure?.stage, 'commit');
 		assert.equal(result.failure?.unknown, true);
 		assert.equal(result.failure?.committed, 0);
@@ -203,13 +203,13 @@ describe('apply in one transaction', () => {
 
 	it('a begin the node refuses applies nothing and is thrown (nothing else is sent, nothing retried)', async () => {
 		const fake = fakeClient(node({ begin: () => { throw raised('execute tool is disabled for this node (set allow_execute=true)', 'TASK_STOPPED'); } }));
-		await assert.rejects(sessionOn(fake.client).applyStatements(EDITS, { atomic: true }), (error: unknown) => error instanceof ExplorerToolError && error.tool === 'begin' && /allow_execute/.test(error.message));
+		await assert.rejects(sessionOn(fake.client).applyBatch(EDITS, { atomic: true }), (error: unknown) => error instanceof ExplorerToolError && error.tool === 'begin' && /allow_execute/.test(error.message));
 		assert.deepEqual(tools(fake.calls), ['begin']);
 	});
 
 	it('a begin that answers without a session id applies nothing', async () => {
 		const fake = fakeClient(node({ begin: () => ({ ok: true }) }));
-		await assert.rejects(sessionOn(fake.client).applyStatements(EDITS, { atomic: true }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'malformed');
+		await assert.rejects(sessionOn(fake.client).applyBatch(EDITS, { atomic: true }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'malformed');
 		assert.deepEqual(tools(fake.calls), ['begin']);
 	});
 
@@ -218,7 +218,7 @@ describe('apply in one transaction', () => {
 			if (String(call.input.sql).startsWith('DELETE')) throw raised('SQL execution failed: permission denied');
 			return { rows: [], affected_rows: 1 };
 		} }));
-		await sessionOn(fake.client).applyStatements(EDITS, { atomic: true });
+		await sessionOn(fake.client).applyBatch(EDITS, { atomic: true });
 		const timeout = (tool: string): Array<number | undefined> => fake.calls.filter((call) => call.tool === tool).map((call) => call.timeout);
 		assert.equal(BEGIN_WAIT_MS, 40_000);
 		assert.equal(END_TX_WAIT_MS, 60_000);
@@ -240,7 +240,7 @@ describe('apply without a transaction', () => {
 				return { rows: [], affected_rows: 1 };
 			},
 		}));
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: true });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: true });
 		assert.deepEqual(tools(fake.calls), ['begin', 'execute', 'execute']);
 		assert.equal(fake.calls.some((call) => 'session_id' in call.input), false, 'no statement rides a session');
 		assert.deepEqual(result, {
@@ -252,14 +252,14 @@ describe('apply without a transaction', () => {
 
 	it('asked for no transaction (ClickHouse, a MySQL plan) it sends no begin, commit or rollback', async () => {
 		const fake = fakeClient(node());
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: false });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: false });
 		assert.deepEqual(tools(fake.calls), ['execute', 'execute', 'execute']);
 		assert.deepEqual(result, { transactional: false, results: [{ affected_rows: 1 }, { affected_rows: 1 }, { affected_rows: 1 }], failure: null });
 	});
 
 	it('a statement that changed the wrong number of rows has committed already: the result counts it, and nothing after it is sent', async () => {
 		const fake = fakeClient(node({ execute: () => ({ rows: [], affected_rows: 0 }) }));
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: false });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: false });
 		assert.deepEqual(tools(fake.calls), ['execute']);
 		assert.equal(result.failure?.stage, 'expect');
 		assert.equal(result.failure?.committed, 1);
@@ -270,7 +270,7 @@ describe('apply without a transaction', () => {
 			if (String(call.input.sql).startsWith('INSERT')) throw new ExplorerToolError({ kind: 'timeout', tool: 'execute', message: 'Stopped waiting for execute after 300 s.' });
 			return { rows: [], affected_rows: 1 };
 		} }));
-		const result = await sessionOn(fake.client).applyStatements(EDITS, { atomic: false });
+		const result = await sessionOn(fake.client).applyBatch(EDITS, { atomic: false });
 		assert.deepEqual(tools(fake.calls), ['execute', 'execute']);
 		assert.equal(result.failure?.committed, 1);
 		assert.equal(result.failure?.unknown, true);
@@ -278,7 +278,7 @@ describe('apply without a transaction', () => {
 
 	it('a statement without `expect` may change any number of rows (a DDL plan)', async () => {
 		const fake = fakeClient(node({ execute: () => ({ rows: [], affected_rows: 0 }) }));
-		const result = await sessionOn(fake.client).applyStatements([{ sql: 'ALTER TABLE "orders" ADD COLUMN "notes" text' }], { atomic: true });
+		const result = await sessionOn(fake.client).applyBatch([{ sql: 'ALTER TABLE "orders" ADD COLUMN "notes" text' }], { atomic: true });
 		assert.deepEqual(result, { transactional: true, results: [{ affected_rows: 0 }], failure: null });
 		assert.deepEqual(fake.calls[1]!.input, { sql: 'ALTER TABLE "orders" ADD COLUMN "notes" text', session_id: 'tx-1' }, 'no params key when there is nothing to bind');
 	});

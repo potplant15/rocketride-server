@@ -182,7 +182,7 @@ export interface SqlCore {
 	withSession<T>(connId: string, fn: (session: SqlSession, ctx: SessionContext) => Promise<T>, tool?: string): Promise<T>;
 	/**
 	 * Apply app-written statements on a connection (both mounts come here:
-	 * the controller's `sql.applyStatements` and the full app's session). The
+	 * the controller's `sql.applyBatch` and the full app's session). The
 	 * whole list is checked first with the node's dialect
 	 * (sql/gate.ts gateApplyStatements: one statement per entry, no
 	 * transaction control, and no transaction on an unknown dialect); a
@@ -195,7 +195,7 @@ export interface SqlCore {
 	 * @returns What ran (a failure once statements are sent is data).
 	 * @throws ExplorerToolError `invalid` (the list was refused), `unavailable`, or `begin`'s refusal: nothing was applied.
 	 */
-	applyStatements(connId: string, statements: SqlApplyStatement[], atomic: boolean): Promise<SqlApplyResult>;
+	applyBatch(connId: string, statements: SqlApplyStatement[], atomic: boolean): Promise<SqlApplyResult>;
 	/**
 	 * Stop a direct connection's temp pipeline, best effort (a no-op for a
 	 * pipeline connection).
@@ -527,13 +527,13 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		return fn(session, { dialect });
 	};
 
-	const applyStatements = (connId: string, statements: SqlApplyStatement[], atomic: boolean): Promise<SqlApplyResult> => withSession(connId, async (session, ctx) => {
+	const applyBatch = (connId: string, statements: SqlApplyStatement[], atomic: boolean): Promise<SqlApplyResult> => withSession(connId, async (session, ctx) => {
 		const dialect = await ctx.dialect();
 		const refusal = gateApplyStatements(statements.map((statement) => statement.sql), dialect, atomic);
 		if (refusal !== null) throw new ExplorerToolError({ kind: 'invalid', tool: 'apply', message: refusal });
 		// A ClickHouse `begin` reserves a connection but opens no transaction
 		// (the node's `_sessionsAreTransactions`), so it is never asked for one.
-		return session.applyStatements(statements, { atomic: atomic && dialect !== 'clickhouse' });
+		return session.applyBatch(statements, { atomic: atomic && dialect !== 'clickhouse' });
 	}, 'apply');
 
 	const sessionFor = (endpoint: SqlEndpoint): SqlSession => {
@@ -547,7 +547,7 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 			getSchema: (table) => withSession(connId, (session) => session.getSchema(table), 'get_schema'),
 			refreshSchema: () => withSession(connId, (session) => session.refreshSchema(), 'refresh_schema'),
 			dialect: () => withSession(connId, (session) => session.dialect(), 'dialect'),
-			applyStatements: (statements, options) => applyStatements(connId, statements, options.atomic),
+			applyBatch: (statements, options) => applyBatch(connId, statements, options.atomic),
 		};
 	};
 
@@ -569,7 +569,7 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		keyOf: async (connId) => endpointKeyForConnection(await recordOf(connId, 'history')),
 		sessionFor,
 		withSession: (connId, fn, tool) => withSession(connId, fn, tool),
-		applyStatements,
+		applyBatch,
 		async release(connId, key) {
 			// Read before the first await: a delete that follows a release in the
 			// same turn must not hide the record from it.

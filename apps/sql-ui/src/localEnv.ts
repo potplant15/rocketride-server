@@ -80,7 +80,7 @@ export function createLocalSqlEnv(core: SqlCore, isConnected: boolean, serviceTi
 		prefs,
 		ready: isConnected,
 		// The core's session: an apply goes through the core's own gate
-		// (sqlCore.ts applyStatements), as the controller's op does.
+		// (sqlCore.ts applyBatch), as the controller's op does.
 		getSession: (endpoint) => core.sessionFor(endpoint),
 		resolveEndpoint: (conn) => core.resolve(conn.id),
 		releaseEndpoint: (connId, key) => {
