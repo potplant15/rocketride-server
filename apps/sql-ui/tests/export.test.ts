@@ -174,6 +174,11 @@ describe('QueryView: the Export button', () => {
 		assert.match(view, /exportResult\(format, resultCols, rows\)/);
 	});
 
+	it('moves focus into the menu (a portal) when it opens, and back to the button when it closes from the keyboard', () => {
+		assert.match(view, /requestAnimationFrame\(\(\) => exportMenuRef\.current\?\.querySelector\('button'\)\?\.focus\(\)\)/);
+		assert.match(view, /if \(event\.key === 'Escape'\) exportAnchorRef\.current\?\.querySelector\('button'\)\?\.focus\(\);/);
+	});
+
 	it('copies instead of downloading in a VS Code webview', () => {
 		assert.match(view, /const copiesExports = useMemo\(\(\) => isInVSCode\(\), \[\]\);/);
 		assert.match(view, /downloadsRefused: copiesExports/);

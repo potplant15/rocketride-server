@@ -201,11 +201,14 @@ const styles = {
 	// The Export button's menu.
 	exportMenu: {
 		...commonStyles.popupMenu,
+		minWidth: 200,
+	} as CSSProperties,
+
+	exportItems: {
 		display: 'flex',
 		flexDirection: 'column',
 		alignItems: 'stretch',
 		gap: 2,
-		minWidth: 200,
 	} as CSSProperties,
 
 	exportHeading: {
@@ -322,14 +325,16 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// Bumped when a batch starts: with the shown statement's index it keys the
 	// grid, so a new result gets a new grid rather than new data under old columns.
 	const [batchSeq, setBatchSeq] = useState(0);
-	// The affected-row estimate for the open write confirmation.
-	const [estimate, setEstimate] = useState<RowEstimate>({ state: 'none' });
+	// The affected-row estimate, with the statement it is for: a batch can ask
+	// about two statements in a row, and the second must not show the first's.
+	const [estimate, setEstimate] = useState<{ run: StatementRun; value: RowEstimate } | null>(null);
 	const [estimateGeneration] = useState(createGeneration);
 	const [exportOpen, setExportOpen] = useState(false);
 
 	// ── Refs ─────────────────────────────────────────────────────────────────
 	const editorRef = useRef<SqlEditorHandle>(null);
 	const exportAnchorRef = useRef<HTMLSpanElement>(null);
+	const exportMenuRef = useRef<HTMLDivElement>(null);
 	// The buffer text as of the last run or the last load: anything else in the
 	// editor is unsaved work that must not be replaced without asking.
 	const committedTextRef = useRef(initialSql ?? '');
@@ -456,27 +461,36 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// waits for it. Closing the dialog drops a late answer.
 	useEffect(() => {
 		if (!patternPrompt) return undefined;
-		const statement = rowEstimateStatement(patternPrompt.run.sql, dialect);
+		const { run } = patternPrompt;
+		const statement = rowEstimateStatement(run.sql, dialect);
 		if (statement === null || !env.ready) {
-			setEstimate({ state: 'none' });
+			setEstimate({ run, value: { state: 'none' } });
 			return undefined;
 		}
-		setEstimate({ state: 'estimating' });
+		setEstimate({ run, value: { state: 'estimating' } });
 		let alive = true;
 		const ticket = estimateGeneration.next();
 		env.getSession(endpoint).execute(statement, { idempotent: true, generation: ticket }).then(
 			(result) => {
 				if (!alive) return;
 				const rows = parseRowEstimate(dialect, result.rows ?? []);
-				setEstimate(rows === null ? { state: 'none' } : { state: 'rows', rows });
+				setEstimate({ run, value: rows === null ? { state: 'none' } : { state: 'rows', rows } });
 			},
-			() => { if (alive) setEstimate({ state: 'none' }); },
+			() => { if (alive) setEstimate({ run, value: { state: 'none' } }); },
 		);
 		return () => {
 			alive = false;
 			estimateGeneration.invalidate();
 		};
 	}, [patternPrompt, dialect, env, endpoint, estimateGeneration]);
+
+	// The open confirmation's own estimate; before its effect has run, what it
+	// is about to be.
+	const promptEstimate = useMemo((): RowEstimate => {
+		if (!patternPrompt) return { state: 'none' };
+		if (estimate !== null && estimate.run === patternPrompt.run) return estimate.value;
+		return env.ready && rowEstimateStatement(patternPrompt.run.sql, dialect) !== null ? { state: 'estimating' } : { state: 'none' };
+	}, [patternPrompt, estimate, env.ready, dialect]);
 
 	// ── Editor wiring ────────────────────────────────────────────────────────
 
@@ -774,6 +788,8 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	 */
 	const exportRows = useCallback((format: ExportFormat): void => {
 		setExportOpen(false);
+		// The menu was a portal: give focus back to the button that opened it.
+		exportAnchorRef.current?.querySelector('button')?.focus();
 		if (!displayed) return;
 		const payload = { ...exportResult(format, resultCols, rows), fileName: exportFileName(label, displayed.index, format) };
 		const what = `${rows.length.toLocaleString()} ${rows.length === 1 ? 'row' : 'rows'} as ${EXPORT_NAMES[format]}`;
@@ -783,6 +799,15 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			else announce(format === 'markdown' ? `Copied ${what}` : `Downloads are not available here, so ${what} was copied`);
 		});
 	}, [displayed, resultCols, rows, label, copiesExports]);
+
+	// The menu renders in a portal at the end of the page, so Tab from the
+	// button would never reach it: focus moves to its first item when it opens
+	// (on the next frame, once it has been measured and shown).
+	useEffect(() => {
+		if (!exportOpen) return undefined;
+		const frame = requestAnimationFrame(() => exportMenuRef.current?.querySelector('button')?.focus());
+		return () => cancelAnimationFrame(frame);
+	}, [exportOpen]);
 
 	/** Title for the results region when there is no grid to show. */
 	const emptyTitle = !displayed
@@ -938,10 +963,21 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 											</Button>
 										</span>
 										<AnchoredPopup anchorRef={exportAnchorRef} open={exportOpen} onClose={() => setExportOpen(false)} align="end" style={styles.exportMenu}>
-											<div style={styles.exportHeading}>{`Rows this statement returned (${rows.length.toLocaleString()})`}</div>
-											<Button variant="ghost" small onClick={() => exportRows('csv')}>{copiesExports ? 'Copy as CSV' : 'Download CSV'}</Button>
-											<Button variant="ghost" small onClick={() => exportRows('json')}>{copiesExports ? 'Copy as JSON' : 'Download JSON'}</Button>
-											<Button variant="ghost" small onClick={() => exportRows('markdown')}>Copy as Markdown</Button>
+											<div
+												ref={exportMenuRef}
+												role="group"
+												aria-label="Export"
+												style={styles.exportItems}
+												onKeyDown={(event) => {
+													// Escape closes the menu (the popup's own listener); focus goes back to the button.
+													if (event.key === 'Escape') exportAnchorRef.current?.querySelector('button')?.focus();
+												}}
+											>
+												<div style={styles.exportHeading}>{`Rows this statement returned (${rows.length.toLocaleString()})`}</div>
+												<Button variant="ghost" small onClick={() => exportRows('csv')}>{copiesExports ? 'Copy as CSV' : 'Download CSV'}</Button>
+												<Button variant="ghost" small onClick={() => exportRows('json')}>{copiesExports ? 'Copy as JSON' : 'Download JSON'}</Button>
+												<Button variant="ghost" small onClick={() => exportRows('markdown')}>Copy as Markdown</Button>
+											</div>
 										</AnchoredPopup>
 									</span>
 								}
@@ -1027,7 +1063,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 					sql={patternPrompt.run.sql}
 					dialect={dialect}
 					connection={connectionRecord?.name ?? endpoint.nodeName}
-					estimate={estimate}
+					estimate={promptEstimate}
 					onAnswer={answerPattern}
 				/>
 			)}

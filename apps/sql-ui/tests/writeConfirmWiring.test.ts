@@ -88,9 +88,14 @@ describe('QueryView asks by the connection\'s safety level', () => {
 
 describe('the affected-row estimate', () => {
 	it('runs a plain EXPLAIN on the document\'s session while the dialog is open, repeatable, outside the runner', () => {
-		assert.match(view, /const statement = rowEstimateStatement\(patternPrompt\.run\.sql, dialect\);/);
+		assert.match(view, /const \{ run \} = patternPrompt;\s*const statement = rowEstimateStatement\(run\.sql, dialect\);/);
 		assert.match(view, /env\.getSession\(endpoint\)\.execute\(statement, \{ idempotent: true, generation: ticket \}\)/);
 		assert.match(view, /parseRowEstimate\(dialect, result\.rows \?\? \[\]\)/);
+	});
+
+	it('shows only the open statement\'s own estimate, never the previous statement\'s', () => {
+		assert.match(view, /if \(estimate !== null && estimate\.run === patternPrompt\.run\) return estimate\.value;/);
+		assert.match(view, /estimate=\{promptEstimate\}/);
 	});
 
 	it('drops a late answer once the dialog closes', () => {
