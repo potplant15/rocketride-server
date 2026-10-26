@@ -67,7 +67,7 @@ import { announce } from '../a11y/announce';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
 import { liveBufferText, selectRunTargets } from '../sql/targets';
 import { classifyStatement, patternCheck } from '../sql/classify';
-import { applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, leadingVerb } from '../sql/batch';
+import { applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
 import {
 	ALLOW_EXECUTE_OFF_TEXT,
@@ -124,6 +124,9 @@ const LIMIT_OPTIONS = ['200', '1000', 'All'] as const;
 
 /** Prefs key holding the per-connection pattern-check switch. */
 const PATTERN_CHECK_PREF = 'sql.patternChecks';
+
+/** The column list of a result that has none (a stable empty array for memos). */
+const EMPTY_COLUMNS: readonly string[] = [];
 
 // =============================================================================
 // STYLES
@@ -279,7 +282,11 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	const [explainOpen, setExplainOpen] = useState(false);
 	const [explainSql, setExplainSql] = useState('');
 	const [pendingLoad, setPendingLoad] = useState<string | null>(null);
-	const [inspected, setInspected] = useState<{ row: Record<string, unknown>; number: number } | null>(null);
+	// The inspected row, by its index in the shown statement's own rows.
+	const [inspected, setInspected] = useState<number | null>(null);
+	// Bumped when a batch starts: with the shown statement's index it keys the
+	// grid, so a new result gets a new grid rather than new data under old columns.
+	const [batchSeq, setBatchSeq] = useState(0);
 	const [patternChecksOn, setPatternChecksOn] = useState<boolean>(() => {
 		const bag = prefs.getPref(PATTERN_CHECK_PREF) as Record<string, boolean> | undefined;
 		return bag?.[endpoint.key] !== false;
@@ -387,12 +394,8 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		// user stopped waiting for (or whose tab closed) is not sent again by the
 		// full app's retry, and a frame drops its late answer.
 		execute: (run, send, ticket) => env.getSession(endpoint).execute(send.sql, { idempotent: run.kind === 'read', generation: ticket }),
-		settle: (run, response) => {
-			const rows = response.rows ?? [];
-			const affected = response.affected_rows ?? 0;
-			const outcome: StatementRun['outcome'] = rows.length > 0 || run.kind === 'read' ? 'rows' : 'affected';
-			return { outcome, rows, rowCount: rows.length, affected };
-		},
+		// Captures the result's columns before any grid has seen its rows.
+		settle: (run, response) => settleStatement(run, response),
 		describeFailure: (message) => describeFailure(message),
 		// Says "ran" or "committed" per the kinds that preceded the failure — the
 		// sentence that stops a reader assuming the batch rolled back.
@@ -404,6 +407,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			startedRunTextRef.current = editorRunTextRef.current;
 			setUntouchedGenerated(false);
 			setInspected(null);
+			setBatchSeq((seq) => seq + 1);
 		},
 		onFinished: (info, opts) => {
 			if (info.shown) setLastRun({ index: info.shown.index, at: Date.now(), start: info.shown.start, end: info.shown.end });
@@ -648,17 +652,26 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// ── Results ──────────────────────────────────────────────────────────────
 
 	const displayed = selectedRun !== null ? runs[selectedRun] ?? null : null;
-	const rows = displayed?.rows ?? [];
+	const rows = useMemo(() => displayed?.rows ?? [], [displayed]);
+
+	// The inspector holds an index into the shown statement's rows, so showing
+	// another statement closes it rather than pointing it at that one's rows.
+	useEffect(() => { setInspected(null); }, [selectedRun]);
+	// The shown statement's columns, as captured when it settled. Never read
+	// off a row: the grid writes its columns' keys into the rows it renders.
+	const resultCols = displayed?.columns ?? EMPTY_COLUMNS;
+	// The grid renders (and writes into) copies; the statement's rows stay as
+	// the node returned them.
+	const gridRows = useMemo(() => gridCopies(rows), [rows]);
 
 	const columnTypes = useMemo(
-		() => (rows.length > 0 && displayed ? inferColumnTypes(rows, snapshot.schema, displayed.sql, dialect) : {}),
-		[rows, displayed, snapshot.schema, dialect],
+		() => (rows.length > 0 && displayed ? inferColumnTypes(rows, snapshot.schema, displayed.sql, dialect, resultCols) : {}),
+		[rows, displayed, snapshot.schema, dialect, resultCols],
 	);
 
 	const columns = useMemo<GridColumnDefinition[]>(() => {
-		const first = rows[0];
-		if (!first) return [];
-		return Object.keys(first).map((key) => {
+		if (rows.length === 0) return [];
+		return resultCols.map((key) => {
 			const info = columnTypes[key];
 			return {
 				title: key,
@@ -671,7 +684,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 				formatter: (cell: GridCellComponent) => resultCellEl(cell.getValue()),
 			} satisfies GridColumnDefinition;
 		});
-	}, [rows, columnTypes]);
+	}, [rows, resultCols, columnTypes]);
 
 	/** True when at least one shown column is numeric (float-precision note). */
 	const hasNumeric = useMemo(() => Object.values(columnTypes).some((info) => info.rrType === 'number'), [columnTypes]);
@@ -836,6 +849,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 					{displayed && rows.length > 0 ? (
 						<Card noBodyPadding fill>
 							<CardDataGrid<Record<string, unknown>>
+								key={`${batchSeq}:${displayed.index}`}
 								title="Results"
 								actions={
 									<span style={styles.meta}>
@@ -845,14 +859,17 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 									</span>
 								}
 								columns={columns}
-								data={rows}
+								data={gridRows}
 								tableId="sql-query-results"
 								persistence={env.gridPersistence}
 								paginate={false}
 								height="100%"
 								emptyTitle="No rows"
 								emptyDescription="The statement returned no rows."
-								onRowClick={(row) => setInspected({ row, number: Math.max(1, rows.indexOf(row) + 1) })}
+								onRowClick={(row) => {
+									const index = gridRows.indexOf(row);
+									if (index >= 0) setInspected(index);
+								}}
 							/>
 						</Card>
 					) : (
@@ -875,8 +892,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			{/* One row of the result, in full. */}
 			<CellInspector
 				open={inspected !== null}
-				row={inspected?.row ?? null}
-				rowNumber={inspected?.number ?? 0}
+				row={inspected === null ? null : rows[inspected] ?? null}
+				columns={resultCols}
+				rowNumber={(inspected ?? 0) + 1}
 				rowCount={rows.length}
 				subtitle={displayed ? `statement ${displayed.index + 1}${lastRun ? ` · executed ${clock(lastRun.at)}` : ''}` : ''}
 				onClose={() => setInspected(null)}

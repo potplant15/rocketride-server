@@ -36,7 +36,7 @@
 // not the database's execution time and must never be labelled as such.
 // =============================================================================
 
-import type { SqlDialect } from '../connect';
+import type { SqlDialect, SqlExecuteResult } from '../connect';
 import type { StatementKind } from './classify';
 import { CTE_WRITE_WORDS, selectsInto } from './classify';
 import { codeOnly, codeWithOperands, keywordSites, stripSqlComments } from './split';
@@ -67,6 +67,12 @@ export interface StatementRun extends IStatementRunBase {
 	kind: StatementKind;
 	/** Returned rows, when the outcome is `rows`. */
 	rows?: Record<string, unknown>[];
+	/**
+	 * The result's column names, captured when the statement settled. The grid
+	 * writes keys into the row objects it renders (see {@link gridCopies}), so
+	 * a list read back off a row later can be another statement's.
+	 */
+	columns?: string[];
 	/** How the row limit came about — decides which meta wording applies. */
 	limitState?: LimitState;
 }
@@ -99,6 +105,61 @@ export function leadingVerb(sql: string, dialect: SqlDialect = 'unknown'): strin
  */
 export function formatRunLabel(run: StatementRun): string {
 	return formatSharedRunLabel({ ...run, rowCount: run.rows?.length ?? run.rowCount });
+}
+
+// =============================================================================
+// RESULTS
+// =============================================================================
+
+/**
+ * The column names of a result, in first-seen order. Every row is read, so a
+ * key missing from the first row still counts.
+ *
+ * Call it only on rows no grid has rendered yet (as {@link settleStatement}
+ * does): Tabulator adds a key for every column it has to each row it renders.
+ *
+ * @param rows - The result rows, as the node returned them.
+ * @returns The column names.
+ */
+export function resultColumns(rows: readonly Record<string, unknown>[]): string[] {
+	const seen = new Set<string>();
+	for (const row of rows) {
+		for (const key of Object.keys(row)) seen.add(key);
+	}
+	return [...seen];
+}
+
+/**
+ * The fields a statement's answer settles: the outcome, the rows and the
+ * columns they carry, and the affected count.
+ *
+ * The columns are captured HERE, before any grid has seen the rows, which is
+ * what keeps the inspector and the grid on this statement's own columns.
+ *
+ * @param run - The statement.
+ * @param response - The node's answer.
+ * @returns The fields to merge into the run.
+ */
+export function settleStatement(run: StatementRun, response: SqlExecuteResult): Partial<StatementRun> {
+	const rows = response.rows ?? [];
+	const affected = response.affected_rows ?? 0;
+	const outcome: StatementRun['outcome'] = rows.length > 0 || run.kind === 'read' ? 'rows' : 'affected';
+	return { outcome, rows, rowCount: rows.length, affected, columns: resultColumns(rows) };
+}
+
+/**
+ * Shallow copies of a result's rows, for the grid.
+ *
+ * Tabulator writes into the objects it is given: every column the grid has
+ * when a row renders adds a key, even an `undefined` one. The grid applies new
+ * data before new columns, so a statement's rows can render under the previous
+ * statement's columns. Handing it copies keeps the statement's own rows clean.
+ *
+ * @param rows - The statement's rows.
+ * @returns One copy per row, in order.
+ */
+export function gridCopies(rows: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+	return rows.map((row) => ({ ...row }));
 }
 
 // =============================================================================

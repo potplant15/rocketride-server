@@ -233,11 +233,15 @@ function singleSourceTable(sql: string, dialect: SqlDialect): string | null {
 /**
  * Decide a grid type for every column of a result.
  *
- * @param rows - The result rows (column set taken from every row, so a column
- *               that is absent from the first row is still typed).
+ * @param rows - The result rows.
  * @param schema - The connection's schema snapshot, when one is loaded.
  * @param sql - The statement that produced the rows, when it is known.
  * @param dialect - The engine dialect.
+ * @param resultColumns - The result's columns as captured when it settled.
+ *                        Without them the set is read off every row, so a
+ *                        column absent from the first row is still typed; a
+ *                        row the grid has rendered carries the grid's keys
+ *                        too, which is why the query view passes its list.
  * @returns One {@link ColumnTypeInfo} per column, keyed by column name.
  */
 export function inferColumnTypes(
@@ -245,15 +249,18 @@ export function inferColumnTypes(
 	schema?: SqlSchemaResponse | null,
 	sql?: string,
 	dialect: SqlDialect = 'unknown',
+	resultColumns?: readonly string[],
 ): Record<string, ColumnTypeInfo> {
 	const out: Record<string, ColumnTypeInfo> = {};
 	if (rows.length === 0) return out;
 
 	// Column set, in first-seen order.
-	const columns: string[] = [];
-	for (const row of rows) {
-		for (const key of Object.keys(row)) {
-			if (!columns.includes(key)) columns.push(key);
+	const columns: string[] = resultColumns ? [...resultColumns] : [];
+	if (!resultColumns) {
+		for (const row of rows) {
+			for (const key of Object.keys(row)) {
+				if (!columns.includes(key)) columns.push(key);
+			}
 		}
 	}
 
