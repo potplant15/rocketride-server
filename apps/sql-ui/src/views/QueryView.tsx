@@ -43,7 +43,9 @@
 //      before anything is sent rather than run into a false sense of safety.
 //
 // The confirmation dialog is likewise a TEXT CHECK and says so in its own
-// words; it prevents nothing and is not called a safe mode anywhere.
+// words; it prevents nothing and is not called a safe mode anywhere. What it
+// asks about is the SAVED CONNECTION's safety level, set in the connection's
+// editor; the dialog itself has no answer that turns asking off.
 // =============================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -57,8 +59,9 @@ import SqlEditor from '../components/SqlEditor';
 import type { DecorationRange, EditorCursorState, SqlEditorHandle } from '../components/SqlEditor';
 import StatementStrip from '../components/StatementStrip';
 import CellInspector from '../components/CellInspector';
+import WriteConfirmDialog from '../components/WriteConfirmDialog';
 import { FailureBanner } from 'shared/explorer/components/FailureBanner';
-import { PatternConfirmDialog } from 'shared/explorer/components/PatternConfirmDialog';
+import { createGeneration } from 'shared/explorer/generation';
 import { lineRange, clock } from 'shared/explorer/runner/format';
 import { useStatementRunner } from 'shared/explorer/runner/useStatementRunner';
 import HistoryPanel from '../components/HistoryPanel';
@@ -66,7 +69,12 @@ import ExplainPanel from '../components/ExplainPanel';
 import { announce } from '../a11y/announce';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
 import { liveBufferText, selectRunTargets } from '../sql/targets';
-import { classifyStatement, patternCheck } from '../sql/classify';
+import { classifyStatement } from '../sql/classify';
+import { needsConfirmation, parseRowEstimate, rowEstimateStatement, toWriteConfirmation } from '../sql/safety';
+import type { RowEstimate } from '../sql/safety';
+import { safetyLevelOf } from '../connect/savedConnections';
+import type { SafetyLevel } from '../connect/savedConnections';
+import { useConnectionRecord } from '../connectionRecord';
 import { applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
 import {
@@ -122,8 +130,12 @@ interface RunTarget {
 /** Row-limit options offered by the header toggle. */
 const LIMIT_OPTIONS = ['200', '1000', 'All'] as const;
 
-/** Prefs key holding the per-connection pattern-check switch. */
-const PATTERN_CHECK_PREF = 'sql.patternChecks';
+/** The line under the editor names the connection's safety level. */
+const SAFETY_LINE: Record<SafetyLevel, string> = {
+	off: 'Does not ask before writes',
+	risky: 'Asks before risky writes',
+	every: 'Asks before every write',
+};
 
 /** The column list of a result that has none (a stable empty array for memos). */
 const EMPTY_COLUMNS: readonly string[] = [];
@@ -263,9 +275,11 @@ function toHistoryEntry(run: StatementRun): HistoryEntry {
 export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSql, origin }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
-	// The pattern-check switch: workspace preferences in the full app, this
-	// session only in a dev-tool frame (SqlEnv prefs; never usePrefs here).
-	const prefs = env.prefs;
+	// What asks before it runs is the saved connection's safety level: the
+	// same per-user record in both mounts. Until the record is known it reads
+	// as the default, which asks.
+	const { record: connectionRecord } = useConnectionRecord(endpoint.connId ?? null);
+	const safety = safetyLevelOf(connectionRecord);
 
 	// ── Editor + run state ───────────────────────────────────────────────────
 	const [sql, setSql] = useState(initialSql ?? '');
@@ -287,14 +301,12 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// Bumped when a batch starts: with the shown statement's index it keys the
 	// grid, so a new result gets a new grid rather than new data under old columns.
 	const [batchSeq, setBatchSeq] = useState(0);
-	const [patternChecksOn, setPatternChecksOn] = useState<boolean>(() => {
-		const bag = prefs.getPref(PATTERN_CHECK_PREF) as Record<string, boolean> | undefined;
-		return bag?.[endpoint.key] !== false;
-	});
+	// The affected-row estimate for the open write confirmation.
+	const [estimate, setEstimate] = useState<RowEstimate>({ state: 'none' });
+	const [estimateGeneration] = useState(createGeneration);
 
 	// ── Refs ─────────────────────────────────────────────────────────────────
 	const editorRef = useRef<SqlEditorHandle>(null);
-	const patternChecksOnRef = useRef(patternChecksOn);
 	// The buffer text as of the last run or the last load: anything else in the
 	// editor is unsaved work that must not be replaced without asking.
 	const committedTextRef = useRef(initialSql ?? '');
@@ -306,8 +318,6 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	const editorRunTextRef = useRef<string | null>(null);
 	const startedRunTextRef = useRef<string | null>(null);
 
-	useEffect(() => { patternChecksOnRef.current = patternChecksOn; }, [patternChecksOn]);
-
 	const dialect = snapshot.dialect;
 	const statements = useMemo(() => splitStatements(sql, dialect), [sql, dialect]);
 
@@ -317,32 +327,10 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		[snapshot.schema, snapshot.refreshedAt],
 	);
 
-	// ── Preferences ──────────────────────────────────────────────────────────
-
-	/**
-	 * Turn the pattern check on or off for THIS connection, in the mount's
-	 * preferences (the full app's workspace preferences, server-side and per
-	 * user; a dev-tool frame's session) and in local state.
-	 *
-	 * @param on - Whether the check should run.
-	 */
-	const setPatternChecks = useCallback((on: boolean): void => {
-		const bag = (prefs.getPref(PATTERN_CHECK_PREF) as Record<string, boolean> | undefined) ?? {};
-		prefs.setPref(PATTERN_CHECK_PREF, { ...bag, [endpoint.key]: on });
-		// Written HERE, not only by the effect that mirrors the state below:
-		// the run loop resumes from `await askPatternConfirm(...)` in a
-		// microtask and reads this ref for the NEXT statement, which happens
-		// before React runs that passive effect. Leaving it to the effect made
-		// "Run and stop asking" ask again for every further match in the batch.
-		patternChecksOnRef.current = on;
-		setPatternChecksOn(on);
-		announce(on ? 'Pattern checks on for this connection' : 'Pattern checks off for this connection');
-	}, [prefs, endpoint.key]);
-
 	// ── The runner ───────────────────────────────────────────────────────────
 	//
 	// The batch's rules (one statement per call, the first failure ends it, a
-	// late answer after Stop waiting is dropped, a pattern check asks first) are
+	// late answer after Stop waiting is dropped, a flagged statement asks first) are
 	// shared with the other Explorers (shared/explorer/runner); everything SQL
 	// decides is handed in here. The runner lives in the document: in a dev-tool
 	// frame its session is the REMOTE one (every statement an op on the
@@ -381,9 +369,11 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		// announce(): the Banner is already a polite live region (Banner.tsx:75-76),
 		// and mirroring it would read the refusal twice.
 		refuse: (list) => (list.some((run) => run.kind === 'tx') ? TRANSACTION_REFUSAL_TEXT : null),
-		patternChecksOn: () => patternChecksOnRef.current,
-		patternCheck: (run) => patternCheck(run.sql, dialect),
-		disablePatternChecks: () => setPatternChecks(false),
+		// Read before every statement, so a level changed in the connection's
+		// editor applies from the next statement on. No answer in the dialog
+		// turns asking off: the level is the connection's, changed in its editor.
+		patternChecksOn: () => safety !== 'off',
+		patternCheck: (run) => needsConfirmation(run.sql, dialect, safety),
 		prepare: (run) => {
 			const prepared = applyRowLimit(run.sql, limit, dialect);
 			return { send: { sql: prepared.sql }, patch: { limitApplied: prepared.limit, limitState: prepared.state } };
@@ -433,6 +423,37 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		// The warning Banner carries the notice; it is a live region already.
 		onStopped: () => editorRef.current?.focus(),
 	});
+
+	// ── The write confirmation's row estimate ────────────────────────────────
+	//
+	// While a confirmation is open, a plain EXPLAIN (no ANALYZE: it plans and
+	// runs nothing) asks the planner how many rows the write would change. It
+	// goes on the document's session, not through the runner, so it is never
+	// recorded in history; the dialog shows "Estimating…" meanwhile and never
+	// waits for it. Closing the dialog drops a late answer.
+	useEffect(() => {
+		if (!patternPrompt) return undefined;
+		const statement = rowEstimateStatement(patternPrompt.run.sql, dialect);
+		if (statement === null || !env.ready) {
+			setEstimate({ state: 'none' });
+			return undefined;
+		}
+		setEstimate({ state: 'estimating' });
+		let alive = true;
+		const ticket = estimateGeneration.next();
+		env.getSession(endpoint).execute(statement, { idempotent: true, generation: ticket }).then(
+			(result) => {
+				if (!alive) return;
+				const rows = parseRowEstimate(dialect, result.rows ?? []);
+				setEstimate(rows === null ? { state: 'none' } : { state: 'rows', rows });
+			},
+			() => { if (alive) setEstimate({ state: 'none' }); },
+		);
+		return () => {
+			alive = false;
+			estimateGeneration.invalidate();
+		};
+	}, [patternPrompt, dialect, env, endpoint, estimateGeneration]);
 
 	// ── Editor wiring ────────────────────────────────────────────────────────
 
@@ -809,16 +830,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 				{/* The pre-run truth line: what Run would send, in words. */}
 				<div style={styles.willRun}>
 					<span>{preview.text}</span>
-					{!patternChecksOn && (
-						<Button
-							variant="ghost"
-							small
-							title="Confirmations for unbounded UPDATE/DELETE, an UPDATE/DELETE inside a WITH clause, TRUNCATE, DROP and ALTER are off for this connection. Click to turn them on."
-							onClick={() => setPatternChecks(true)}
-						>
-							Pattern checks off
-						</Button>
-					)}
+					<span title="Safety level for this connection. Change it in the connection's settings.">{SAFETY_LINE[safety]}</span>
 				</div>
 
 				{/* Transaction control was refused before anything was sent. */}
@@ -931,12 +943,15 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 				/>
 			)}
 
-			{/* Pattern check — a TEXT check, and it says so. */}
+			{/* The connection's safety level asks first — a TEXT check, and it says so. */}
 			{patternPrompt && (
-				<PatternConfirmDialog
-					kind={patternPrompt.finding.kind}
-					excerpt={patternPrompt.run.sql.split('\n').slice(0, 3).join('\n')}
-					consequence="It runs immediately and commits on its own."
+				<WriteConfirmDialog
+					key={patternPrompt.run.index}
+					confirmation={toWriteConfirmation(patternPrompt.finding)}
+					sql={patternPrompt.run.sql}
+					dialect={dialect}
+					connection={connectionRecord?.name ?? endpoint.nodeName}
+					estimate={estimate}
 					onAnswer={answerPattern}
 				/>
 			)}
