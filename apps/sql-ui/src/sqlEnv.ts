@@ -59,6 +59,8 @@ import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SqlSession, Save
 import { SQL_OP_TIMEOUT_MS } from './sqlTimeouts';
 import type { IPrefsAccessor } from 'shared/explorer/history/types';
 import type { SqlHistoryApi } from './history/api';
+import type { SqlSavedQueriesApi } from './history/savedQueries';
+import { createRemoteSavedQueries } from './history/remoteSavedQueries';
 
 // =============================================================================
 // THE SEAM
@@ -112,6 +114,11 @@ export interface SqlEnv {
 	 * prefs.
 	 */
 	gridPersistence: IDataGridPersistence;
+	/**
+	 * Saved queries: read and edit. The full app keeps them in its workspace
+	 * preferences; a dev-tool frame reaches the controller's file through ops.
+	 */
+	savedQueries: SqlSavedQueriesApi;
 }
 
 /** A realm's session-only preferences (dev-tool frames): kept in memory, never written anywhere. */
@@ -229,9 +236,12 @@ function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint): Sql
  * @param ready - The controller realm's server reachability (`host:connection`).
  * @param owner - The identity fingerprint the frame belongs to (sent with mutations).
  * @param history - The frame's view of the controller's history (history/remoteHistory.ts).
+ * @param savedQueries - The frame's view of the controller's saved queries
+ *   (history/remoteSavedQueries.ts, following the frame's channel); default:
+ *   one over the caller alone, which reads again after its own changes only.
  * @returns The environment (rebuild when `ready` changes).
  */
-export function createRemoteSqlEnv(caller: IFrameCaller<SqlOps>, ready: boolean, owner: () => string | null, history: SqlHistoryApi): SqlEnv {
+export function createRemoteSqlEnv(caller: IFrameCaller<SqlOps>, ready: boolean, owner: () => string | null, history: SqlHistoryApi, savedQueries: SqlSavedQueriesApi = createRemoteSavedQueries({ caller, owner })): SqlEnv {
 	return {
 		history,
 		prefs: SESSION_PREFS,
@@ -256,5 +266,6 @@ export function createRemoteSqlEnv(caller: IFrameCaller<SqlOps>, ready: boolean,
 		getConnection: (connId) => caller.callReply('sql.connection', { connId }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.connection'] }),
 		// A frame has no service cache of its own; the dialog falls back to its titles.
 		serviceTitle: () => undefined,
+		savedQueries,
 	};
 }

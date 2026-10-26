@@ -44,6 +44,9 @@
 //                           connection a frame has read (the 128 read most
 //                           recently), a revision and the recording switch.
 //                           Entries travel as op results.
+//   STATE  'savedQueries'  { storage, rev }: where saved queries are kept and
+//                           one revision that moves on every change. The
+//                           queries travel as op results.
 //
 //   Each topic stays within 64 KiB and all of them within 128 KiB (the whole
 //   map is republished on every publish): shrinkSqlState replaces an
@@ -77,6 +80,14 @@
 // writes the batch still in the debounce first. Last writer wins across
 // windows (a known limitation the privacy line states).
 //
+// SAVED QUERIES. Kept the same way in a SECOND file of the user's store,
+// `@/User/.workspace/rocketride.sql.queries.json` (history/savedQueriesFile.ts:
+// read before anything is served, one bag per identity, the previous
+// account's accessor dropped or parked exactly as history's is), so they
+// never fill the history file's cap. Their caps refuse a save rather than
+// trim (history/savedQueries.ts). Last writer wins across windows, as for
+// history, and the privacy line says so.
+//
 // LIFETIME (R6, R7). `attachSqlController` runs inside the sidebar's
 // `useEffect` and its `dispose` is the cleanup: exactly one op server per
 // mount, created after the channel, never in a render. At mount it publishes
@@ -109,12 +120,16 @@ import type { HistoryEdit, HistoryStorage } from './history/api';
 import type { HistoryEntry } from './history/types';
 import { createSqlHistoryStore, memoryPrefs } from './history/historyStore';
 import type { SqlHistoryStore } from './history/historyStore';
+import { checkSavedQueryEdit, editSavedQueriesIn, savedQueriesIn } from './history/savedQueries';
+import { createSavedQueriesFile } from './history/savedQueriesFile';
+import type { SavedQueriesFile } from './history/savedQueriesFile';
 import type { SqlSidebarBridge } from './sidebarBridge';
 import { gateStatement } from './sql/gate';
 import { createSqlCore } from './sqlCore';
 import type { SqlCore, SqlCoreBus } from './sqlCore';
 import { sqlChannel } from './sqlFrame';
 import type { SqlToolProtocol } from './sqlFrame';
+import { SAVED_QUERIES_LOAD_WAIT_MS } from './sqlTimeouts';
 
 /** What {@link attachSqlController} needs (DevToolProps plus the injected realm and factories). */
 export interface SqlControllerOptions {
@@ -148,6 +163,8 @@ export interface SqlControllerMount {
 	readonly core: SqlCore;
 	/** The controller's history store (persisted in the user's history file). */
 	readonly history: SqlHistoryStore;
+	/** The controller's saved queries (persisted in the user's saved-queries file). */
+	readonly savedQueries: SavedQueriesFile;
 	/** The channel the controller serves on. */
 	readonly channel: ToolChannel;
 	/** Feed every new activeDocKey prop value (activation, R7). */
@@ -324,7 +341,7 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 	 */
 	const requireOwner = (owner: string | null | undefined, tool: string): void => {
 		const now = core.identity.get().fingerprint;
-		const outcome = tool === 'history' ? 'this history was not read' : 'nothing was changed';
+		const outcome = tool === 'history' ? 'this history was not read' : tool === 'savedQueries' ? 'no saved query was read' : 'nothing was changed';
 		if (now === null) throw new ExplorerToolError({ kind: 'unavailable', tool, message: `Not signed in to a RocketRide server, so ${outcome}.` });
 		if (owner !== now) throw new ExplorerToolError({ kind: 'stale', tool, message: `The signed-in account changed since this document opened, so ${outcome}.` });
 	};
@@ -445,6 +462,17 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 		detachHistory = attachWhenLoaded(accessor, (api, fingerprint) => history.attachPrefs(api, fingerprint));
 	};
 
+	// ── Saved queries, persisted in their own file, per identity ────────────
+
+	let publishSaved: () => void = () => undefined;
+	const saved = createSavedQueriesFile({
+		cm: opts.cm,
+		identity: core.identity,
+		activation: core.activation,
+		loadWaitMs: SAVED_QUERIES_LOAD_WAIT_MS,
+		onChange: () => publishSaved(),
+	});
+
 	const handlers: RequiredControllerHandlers<SqlOps> = {
 		'sql.resolveEndpoint': ({ connId }) => core.resolve(connId),
 		'sql.releaseEndpoint': async ({ connId, key }) => {
@@ -522,6 +550,27 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 			requireOwner(owner, 'historyEdit');
 			applyHistoryEdit(history, key, checkHistoryEdit(edit));
 		},
+		'sql.savedQueries': async ({ connId, owner }) => {
+			// Only the frame's own account's, checked again after every wait: a
+			// frame bound to A is never served B's queries.
+			requireOwner(owner, 'savedQueries');
+			const key = await core.keyOf(connId);
+			requireOwner(owner, 'savedQueries');
+			const prefs = await saved.accessor('savedQueries');
+			requireOwner(owner, 'savedQueries');
+			return { storage: saved.storage(), queries: savedQueriesIn(prefs, key) };
+		},
+		'sql.savedQueryEdit': async ({ connId, edit, owner }) => {
+			requireOwner(owner, 'savedQueryEdit');
+			const change = checkSavedQueryEdit(edit);
+			const key = await core.keyOf(connId);
+			requireOwner(owner, 'savedQueryEdit');
+			const prefs = await saved.accessor('savedQueryEdit');
+			// Again after the file's read: the change lands in its own account's file only.
+			requireOwner(owner, 'savedQueryEdit');
+			editSavedQueriesIn(prefs, key, change);
+			saved.changed();
+		},
 	};
 
 	// The channel first (the host's, or one per peer), then exactly one op
@@ -572,6 +621,10 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 	followHistoryOwner(core.identity.get());
 	const offHistoryOwner = core.identity.subscribe(followHistoryOwner);
 
+	// Saved-query revision: frames read a connection's list again when it moves.
+	publishSaved = (): void => state.publishState('savedQueries', { storage: saved.storage(), rev: saved.rev() });
+	publishSaved();
+
 	// ── Frame -> sidebar feeds (idempotent hints) ───────────────────────────
 
 	const activeSubs = new Set<(key: string | null) => void>();
@@ -619,6 +672,7 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 		bridge,
 		core,
 		history,
+		savedQueries: saved,
 		channel: attached.channel,
 		noteActiveDocKey: (key) => core.activation.noteActiveDocKey(key),
 		dispose() {
@@ -640,6 +694,7 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 			void prefs?.close();
 			void parked?.close();
 			parked = null;
+			saved.close();
 			offActive();
 			offError();
 			activeSubs.clear();

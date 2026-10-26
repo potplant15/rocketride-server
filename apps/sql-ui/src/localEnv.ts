@@ -39,6 +39,7 @@ import { APP_PRIVACY_NOTICE } from './history/api';
 import type { SqlHistoryApi } from './history/api';
 import { clearForKey, removeEntry, setNote, setRecording, togglePin, useHistory, useRecording } from './history/historyStore';
 import { emitRun } from './history/runEvents';
+import { createLocalSavedQueries } from './history/localSavedQueries';
 import { getActiveConnection, subscribeActiveConnection } from './navigation';
 import type { SqlSidebarBridge } from './sidebarBridge';
 import type { SqlCore } from './sqlCore';
@@ -99,6 +100,12 @@ export function createLocalSqlEnv(core: SqlCore, isConnected: boolean, serviceTi
 		getConnection: (connId) => core.connection(connId),
 		serviceTitle,
 		gridPersistence: APP_GRIDS,
+		// Beside history, in the same workspace preferences, for the account
+		// the core vouches for now.
+		savedQueries: createLocalSavedQueries(prefs, () => {
+			const now = core.identity.get();
+			return now.known ? now.fingerprint : null;
+		}),
 	};
 }
 
