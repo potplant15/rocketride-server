@@ -354,18 +354,22 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 	const statusListeners = new Set<() => void>();
 	const statusChanged = (): void => statusListeners.forEach((listener) => listener());
 	/**
-	 * Note how opening a connection ended (only for an account that is signed in).
+	 * Note how opening a connection ended, for the account that asked, and
+	 * only while it is still the one signed in (an open that outlived its
+	 * account says nothing to the next one).
 	 *
+	 * @param askedBy - The fingerprint signed in when the open began (null: nobody).
 	 * @param connId - The connection.
 	 * @param error - What it failed with, or null when it opened.
 	 */
-	const noteOpen = (connId: string, error: unknown): void => {
+	const noteOpen = (askedBy: string | null, connId: string, error: unknown): void => {
+		const now = identity.get();
+		if (askedBy === null || !now.known || now.fingerprint !== askedBy) return;
 		if (error === null) {
 			if (!(connId in openErrors)) return;
 			const { [connId]: _opened, ...rest } = openErrors;
 			openErrors = rest;
 		} else {
-			if (!identity.get().known) return;
 			openErrors = { ...openErrors, [connId]: error instanceof Error ? error.message : String(error) };
 		}
 		statusChanged();
@@ -576,18 +580,19 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		discovery,
 		endpoints,
 		async resolve(connId) {
+			const askedBy = identity.get().known ? identity.get().fingerprint : null;
 			try {
 				const record = await recordOf(connId, 'resolve');
 				const found = await locate(record, 'resolve');
 				const endpoint = endpointForConnection(record);
-				noteOpen(connId, null);
+				noteOpen(askedBy, connId, null);
 				// A pipeline connection is shown by its running pipeline's current
 				// name, not the one frozen into the record when it was saved; the
 				// key and everything else stay the record's.
 				return record.mode === 'pipeline' ? { ...endpoint, pipelineName: found.pipelineName } : endpoint;
 			} catch (error) {
 				// The sidebar's row says Unreachable, with this text, until it opens.
-				noteOpen(connId, error);
+				noteOpen(askedBy, connId, error);
 				throw error;
 			}
 		},

@@ -36,6 +36,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONTROLLER_STATE_TOPIC } from 'shared/explorer/devtool/realm';
+import { account, settle } from 'shared/explorer/devtool/testing';
 import { SQL_APP_ID } from '../src/appId';
 import { endpointKeyForConnection, getSavedConnections, resetSavedConnections } from '../src/connect';
 import { connectionStatus } from '../src/connectionStatus';
@@ -158,6 +159,33 @@ describe('the sidebar\'s status source: discovery and open failures, in the real
 			await until(() => sources.at(-1)!.openErrors['c-pipe'] !== undefined, 'the failure');
 			r.engine.realm.orgChanged('org-2');
 			await until(() => Object.keys(sources.at(-1)!.openErrors).length === 0, 'the failures to be forgotten');
+		} finally {
+			off();
+			r.dispose();
+		}
+	});
+
+	it('an open that began under one account and fails under the next records nothing for the next', async () => {
+		const r = await rig({ rows: [] });
+		const sources: ConnectionStatusSource[] = [];
+		const off = r.mount.bridge.subscribeStatus((source) => { sources.push(source); });
+		// Discovery answers only when released, so the open is still waiting when the account changes.
+		const waiting: Array<() => void> = [];
+		const getTasks = r.engine.script['client.getTasks']!;
+		r.engine.script['client.getTasks'] = (params) => new Promise((resolve) => { waiting.push(() => resolve(getTasks(params))); });
+		try {
+			await until(() => waiting.length > 0, 'the first discovery');
+			waiting.splice(0).forEach((go) => go());
+			const opening = r.env.resolveEndpoint(PIPELINE);
+			await until(() => waiting.length > 0, 'the open\'s discovery');
+			r.engine.realm.orgChanged('org-2');
+			r.engine.realm.accountUpdate(account('u1', 'org-2', 'team-2'));
+			await until(() => r.mount.core.identity.get().known && r.mount.core.identity.get().fingerprint === 'u1|org-2|team-2', 'the next account');
+			r.engine.script['client.getTasks'] = getTasks;
+			waiting.splice(0).forEach((go) => go());
+			await assert.rejects(opening);
+			await settle();
+			assert.deepEqual(sources.at(-1)!.openErrors, {}, 'the previous account\'s failure is not the next one\'s');
 		} finally {
 			off();
 			r.dispose();
