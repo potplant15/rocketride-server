@@ -23,27 +23,14 @@
 # SOFTWARE.
 # =============================================================================
 
-"""
-What a command's output streams are replaced with once the node stops keeping its output.
-
-The SDK keeps every chunk a command prints, in the ``ProcessStream`` behind ``Process.stdout`` and
-``Process.stderr``, until the command exits, with no limit of its own. Nothing in its public API stops
-that: ``ProcessStream.close`` only ends what a reader sees, and ``Process.kill`` only signals the
-process the sandbox started, while the run stream is held by the SDK's own thread (``Process._pump``,
-tenki 1.4.1, ``tenki_sandbox/process.py``). That thread does look the streams up on the process for
-every frame it receives (``self.stdout.push(...)``), so replacing them with streams that keep nothing
-is what stops the keeping, whatever the command does next.
-
-That lookup is SDK internals, which is why this lives in a module of its own, free of engine imports:
-test_tool_tenki_sdk.py drives a real ``Process`` through it against a data plane that floods it, and
-fails if the SDK keeps anything of what follows.
-
-The node calls this wherever it stops reading a process: at the output limit, and on every path that
-gives a process up before its result (a start or a result that never arrived in time, the kill command
-itself). The SDK's thread runs on after each of those, and must keep nothing it receives.
-"""
+"""The two places tool_tenki reaches into tenki SDK internals, kept engine-free so test_tool_tenki_sdk.py runs them."""
 
 from __future__ import annotations
+
+import functools
+
+# The file calls that return one answer. The streaming read and write are left alone: the node uses neither.
+UNARY_FILE_CALLS = frozenset({'stat', 'read_file', 'write_file', 'list', 'mkdir', 'remove'})
 
 
 class DiscardStream:
@@ -69,14 +56,30 @@ class DiscardStream:
 
 
 def stop_keeping_output(process) -> None:
-    """Replace ``process``'s output streams with ``DiscardStream`` and end the ones they replace.
-
-    From then on the SDK hands each chunk that arrives to a ``DiscardStream``, and its result carries no
-    output. Ending the replaced streams releases their readers, and once those finish nothing refers to
-    the streams any more, so what they hold is freed. The run itself goes on until the command exits:
-    the SDK still receives its output, and drops it.
-    """
+    """Make the SDK drop everything ``process`` prints from now on, and end the streams its readers block on."""
+    # The SDK keeps every chunk until the command exits, with no limit, but looks the streams up on the process for
+    # each frame (Process._pump, tenki 1.4.1), so swapping them is what stops the keeping.
     replaced = (process.stdout, process.stderr)
     process.stdout, process.stderr = DiscardStream(), DiscardStream()
     for stream in replaced:
         stream.close()
+
+
+class FileCallDeadline:
+    """Stands in for the object a session's file API sends its calls through, adding a gRPC deadline."""
+
+    def __init__(self, rpc, timeout: float) -> None:
+        self._rpc = rpc
+        self._timeout = timeout
+
+    def __getattr__(self, name: str):
+        call = getattr(self._rpc, name)
+        return functools.partial(call, timeout=self._timeout) if name in UNARY_FILE_CALLS else call
+
+
+def bound_file_calls(session, timeout: float) -> None:
+    """Send every unary file call of ``session`` with a deadline; raises AttributeError if the SDK changed shape."""
+    # The SDK sends file calls with no deadline (tenki 1.0.6 to 1.4.1) and its file API takes none, so one stalled
+    # connection would hang them for good; SandboxFS._rpc is the one object they all go out through.
+    files = session.fs
+    files._rpc = FileCallDeadline(files._rpc, timeout)
