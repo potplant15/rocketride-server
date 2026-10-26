@@ -55,7 +55,7 @@ import { createSessionGridPersistence } from 'shared/explorer/devtool/gridPersis
 import type { JsonValue } from 'shared/explorer/devtool/reply';
 import type { IDataGridPersistence } from 'shell';
 import type { SqlOps } from './ops';
-import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SqlSession, SavedSqlConnection, SqlDialect } from './connect';
+import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SqlSession, SavedSqlConnection, SqlDialect, SqlGetSqlResult } from './connect';
 import { SQL_OP_TIMEOUT_MS } from './sqlTimeouts';
 import type { IPrefsAccessor } from 'shared/explorer/history/types';
 import type { SqlHistoryApi } from './history/api';
@@ -202,7 +202,7 @@ async function underTicket<T>(ticket: IGenerationTicket | undefined, tool: strin
 }
 
 /**
- * An SqlSession whose four tools are controller ops. Stateless — the token
+ * An SqlSession whose tools are controller ops. Stateless — the token
  * vault, the retry rule and the waits live in the CONTROLLER's session.
  *
  * @param caller - The frame's caller.
@@ -224,6 +224,7 @@ function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint): Sql
 			caller.callReply('sql.getSchema', { connId, ...(table ? { table } : {}) }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.getSchema'] }),
 		refreshSchema: (): Promise<SqlSchemaResponse> => caller.callReply('sql.refreshSchema', { connId }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.refreshSchema'] }),
 		dialect: (): Promise<SqlDialect> => caller.callReply('sql.dialect', { connId }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.dialect'] }),
+		getSql: (question: string): Promise<SqlGetSqlResult> => caller.callReply('sql.getSql', { connId, question }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.getSql'] }),
 	};
 }
 

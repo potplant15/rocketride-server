@@ -130,6 +130,7 @@ import type { SqlCore, SqlCoreBus } from './sqlCore';
 import { sqlChannel } from './sqlFrame';
 import type { SqlToolProtocol } from './sqlFrame';
 import { SAVED_QUERIES_LOAD_WAIT_MS } from './sqlTimeouts';
+import { MAX_QUESTION_CHARS } from './connect/tools';
 
 /** What {@link attachSqlController} needs (DevToolProps plus the injected realm and factories). */
 export interface SqlControllerOptions {
@@ -236,6 +237,18 @@ export function checkExecuteInput(input: { sql: unknown; params?: unknown; idemp
  */
 export function checkSchemaInput(input: { table?: unknown }): void {
 	if (input.table !== undefined && typeof input.table !== 'string') throw invalidInput('get_schema', 'The table name must be text.');
+}
+
+/**
+ * Check `sql.getSql`'s input.
+ *
+ * @param input - The op params.
+ * @param input.question - The question.
+ * @throws ExplorerToolError `invalid` naming what is wrong.
+ */
+export function checkQuestionInput(input: { question: unknown }): void {
+	if (typeof input.question !== 'string' || input.question.trim() === '') throw invalidInput('get_sql', 'Write a question to ask.');
+	if (input.question.length > MAX_QUESTION_CHARS) throw invalidInput('get_sql', `A question holds at most ${MAX_QUESTION_CHARS.toLocaleString('en-US')} characters.`);
 }
 
 /**
@@ -570,6 +583,11 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 			requireOwner(owner, 'savedQueryEdit');
 			editSavedQueriesIn(prefs, key, change);
 			saved.changed();
+		},
+		'sql.getSql': ({ connId, question }) => {
+			// The node writes SQL and returns it; nothing is executed here or there.
+			checkQuestionInput({ question });
+			return core.withSession(connId, (session) => session.getSql(question), 'get_sql');
 		},
 	};
 

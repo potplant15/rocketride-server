@@ -521,6 +521,7 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 			getSchema: (table) => withSession(connId, (session) => session.getSchema(table), 'get_schema'),
 			refreshSchema: () => withSession(connId, (session) => session.refreshSchema(), 'refresh_schema'),
 			dialect: () => withSession(connId, (session) => session.dialect(), 'dialect'),
+			getSql: (question) => withSession(connId, (session) => session.getSql(question), 'get_sql'),
 		};
 	};
 

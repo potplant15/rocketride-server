@@ -62,7 +62,7 @@ import { setActiveConnection } from '../src/navigation';
 import { SUMMON_EVENT, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
 import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS, LIST_WAIT_MS, SAVED_QUERIES_LOAD_WAIT_MS } from '../src/sqlTimeouts';
-import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
+import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS, GET_SQL_WAIT_MS } from '../src/connect/tools';
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
 import { taskRow } from './support';
 import { DIRECT, PIPELINE, manualTimers, postgres, rig, toolRequests } from './devtoolRig';
@@ -249,6 +249,11 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			await r.frame.caller.callReply('sql.savedQueryEdit', { connId: 'c-pipe', edit: { action: 'add', query }, owner }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.savedQueryEdit'] });
 			results.savedQueries = await r.frame.caller.callReply('sql.savedQueries', { connId: 'c-pipe', owner }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.savedQueries'] });
 			assert.deepEqual(results.savedQueries, { storage: 'file', queries: [query] });
+			// Ask: the node writes SQL and it comes back as data, nothing executed.
+			const executes = toolRequests(r.engine, 'execute').length;
+			results.getSql = await session.getSql('orders from the last 7 days');
+			assert.deepEqual(results.getSql, { sql: 'SELECT * FROM orders', valid: true });
+			assert.equal(toolRequests(r.engine, 'execute').length, executes);
 			for (const [name, value] of Object.entries(results)) assertJsonSafe(value, name);
 			const ops = new Set(r.frameCalls.map((call) => call.op));
 			for (const op of Object.keys(SQL_OP_TIMEOUT_MS)) assert.ok(ops.has(op), `${op} was called`);
@@ -384,6 +389,21 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			// No file yet: the stat says so and nothing is read.
 			assert.equal(fileRequests[0]?.op, 'client.fsStat');
 			for (const q of fileRequests) assert.equal(q.timeoutMs, PREFS_FS_TIMEOUT_MS, q.op);
+		} finally {
+			r.dispose();
+		}
+	});
+
+	it('Ask\'s get_sql waits 120 s (+ SDK slack + bus margin) on the bus, and the frame waits for a resolve and that one call', async () => {
+		const clock = manualNow(Date.now());
+		const r = await rig({ now: clock.now });
+		try {
+			await r.env.getSession(await r.env.resolveEndpoint(PIPELINE)).getSql('orders this week');
+			assert.equal(GET_SQL_WAIT_MS, 120_000);
+			assert.equal(toolRequests(r.engine, 'get_sql').at(-1)?.timeoutMs, GET_SQL_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
+			const call = r.frameCalls.find((c) => c.op === 'sql.getSql');
+			assert.equal(call?.timeoutMs, SQL_OP_TIMEOUT_MS['sql.getSql']);
+			assert.equal(SQL_OP_TIMEOUT_MS['sql.getSql'], RESOLVE_BUDGET_MS + GET_SQL_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS + FRAME_OP_MARGIN_MS);
 		} finally {
 			r.dispose();
 		}

@@ -43,7 +43,7 @@
 
 import { DEFAULT_RETRY_WINDOW_MS } from 'shared/explorer/connect/session';
 import { GET_TASKS_TIMEOUT_MS, frameOpTimeoutMs, toolCallBudgetMs } from 'shared/explorer/devtool/timeouts';
-import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS } from './connect/tools';
+import { DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS, GET_SQL_WAIT_MS } from './connect/tools';
 
 // =============================================================================
 // CONTROLLER (engine requests)
@@ -134,4 +134,7 @@ export const SQL_OP_TIMEOUT_MS = {
 	// debounced.
 	'sql.savedQueries': frameOpTimeoutMs(LIST_WAIT_MS + SAVED_QUERIES_LOAD_WAIT_MS),
 	'sql.savedQueryEdit': frameOpTimeoutMs(LIST_WAIT_MS + SAVED_QUERIES_LOAD_WAIT_MS),
+	// Resolve, then one get_sql (its one retry after a TASK_STOPPED refusal
+	// stays inside the same wait).
+	'sql.getSql': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(GET_SQL_WAIT_MS)),
 } as const;

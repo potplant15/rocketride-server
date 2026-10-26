@@ -57,7 +57,7 @@ import type { ToolOpMap, ToolOpSpec, ToolStateMap, ToolEventMap } from 'shell';
 import type { IDeadline } from 'shared/explorer/devtool/deadline';
 import type { JsonValue, Reply } from 'shared/explorer/devtool/reply';
 import type { IIdentityState } from 'shared/explorer/devtool/frameIdentity';
-import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SavedConnectionsStatus, SqlDialect } from './connect';
+import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SavedConnectionsStatus, SqlDialect, SqlGetSqlResult } from './connect';
 import type { HistoryEdit, HistoryStorage } from './history/api';
 import type { HistoryEntry } from './history/types';
 import type { SavedQueriesStorage, SavedQuery, SavedQueryEdit } from './history/savedQueries';
@@ -125,6 +125,9 @@ export interface SqlOps extends ToolOpMap {
 	'sql.savedQueries': ToolOpSpec<IDeadline & IOwnedCall & { connId: string }, Reply<SavedQueriesRead>>;
 	/** Save, rename or delete one saved query; refused, changing nothing, past a cap. */
 	'sql.savedQueryEdit': ToolOpSpec<IDeadline & IOwnedCall & { connId: string; edit: SavedQueryEdit }, Reply<null>>;
+	// ── Ask ──────────────────────────────────────────────────────────────────
+	/** Ask the node to write SQL for a question (`get_sql`): nothing is executed. */
+	'sql.getSql': ToolOpSpec<IDeadline & { connId: string; question: string }, Reply<SqlGetSqlResult>>;
 }
 
 /** The saved-connection list as the controller publishes it. */

@@ -40,6 +40,10 @@
 //                    app offers "Stop waiting" instead. On the bus that is
 //                    carried as the dev-tool library's 24 h cap
 //                    (UNBOUNDED_TOOL_TIMEOUT_MS), never as the 120 s default.
+//   get_sql          120 s    (Ask: the node's LLM writes a query and the node
+//                             checks it with EXPLAIN, up to five drafts; it
+//                             executes nothing, so a TASK_STOPPED refusal may
+//                             be sent again)
 //
 // The waits for the shared tools come from the library's documented table
 // (shared/explorer/connect/session DEFAULT_TOOL_TIMEOUTS), so SQL and the
@@ -62,6 +66,16 @@ export const GET_SCHEMA_WAIT_MS = DEFAULT_TOOL_TIMEOUTS.get_schema as number;
 /** Client wait of the `refresh_schema` tool (ms). */
 export const REFRESH_SCHEMA_WAIT_MS = DEFAULT_TOOL_TIMEOUTS.refresh_schema as number;
 
+/**
+ * Client wait of the `get_sql` tool (ms): an LLM round trip per draft plus an
+ * EXPLAIN of each, the budget the shared library documents for `get_data`
+ * (which is `get_sql` and then the query).
+ */
+export const GET_SQL_WAIT_MS = 120_000;
+
+/** The longest question Ask sends (characters). */
+export const MAX_QUESTION_CHARS = 2_000;
+
 /** Added to a node's published statement deadline, so the node's own error arrives first. */
 export const STATEMENT_WAIT_PAD_MS = DEFAULT_TIMEOUT_PAD_MS;
 
@@ -73,6 +87,9 @@ export const SQL_TOOLS: IToolSessionOptions['tools'] = {
 	get_schema: { idempotent: true, timeoutMs: GET_SCHEMA_WAIT_MS, check: checkObject },
 	refresh_schema: { idempotent: true, timeoutMs: REFRESH_SCHEMA_WAIT_MS, check: checkObject },
 	dialect: { idempotent: true, timeoutMs: DIALECT_WAIT_MS, check: checkObject },
+	// Writes SQL without running it; every `valid: false` shape is the
+	// node's answer (data), so only the object floor applies.
+	get_sql: { idempotent: true, timeoutMs: GET_SQL_WAIT_MS, check: checkObject },
 };
 
 /**
