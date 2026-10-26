@@ -32,8 +32,8 @@
 //                     editor's "Generated preview" banner), the question as a
 //                     comment above it. Nothing runs until the user presses
 //                     Run, and Run applies the usual checks.
-//   anything else     the node's own text, verbatim: its refusal (a WITH
-//                     query, for one, is not a plain SELECT to it), the
+//   anything else     the node's own text, verbatim: its refusal (its
+//                     safety check refuses a query that starts with WITH), the
 //                     database's error, the model's answer in words, or the
 //                     node's MissingLlmError when no LLM is connected to it.
 //
@@ -63,7 +63,7 @@ export const ASK_DIRECT_TEXT = 'Ask needs a pipeline whose database node has an 
 export const ASK_CONTEXT_TEXT = 'Your question goes to the LLM connected to this pipeline\'s database node, through the node\'s get_sql tool, '
 	+ 'together with the node\'s schema (table and column names, their types, primary and foreign keys) and the database description set on the node, if any. '
 	+ 'No rows are sent. The node checks each draft with EXPLAIN, which does not run it; when the database rejects a draft, its error message goes back to the model for another try. '
-	+ 'Nothing runs until you press Run. The node only returns statements that start with SELECT or EXPLAIN, so it refuses a WITH query.';
+	+ 'Nothing runs until you press Run. The node\'s safety check refuses queries that start with WITH: it returns only statements that start with SELECT or EXPLAIN.';
 
 /** When the node answered with neither SQL nor text. */
 const NO_ANSWER_TEXT = 'The node returned no SQL and no answer.';

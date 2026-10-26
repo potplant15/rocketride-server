@@ -522,12 +522,12 @@ default). The bar says this too.
 
 When the node does not return SQL, the bar shows the node's own words: its
 refusal, the database's error, the model's answer when the question is not
-one for the database, or that no LLM is connected to the node. The node
-returns only statements that start with `SELECT` or `EXPLAIN`, so it
-refuses a `WITH` query. A direct connection's pipeline holds just the
-database node, so it has no LLM: there the bar is disabled and says `Ask
-needs a pipeline whose database node has an LLM connected.` Ask waits up to
-120 seconds for the node's answer.
+one for the database, or that no LLM is connected to the node. The node's
+safety check refuses queries that start with `WITH`: it returns only
+statements that start with `SELECT` or `EXPLAIN`. A direct connection's
+pipeline holds just the database node, so it has no LLM: there the bar is
+disabled and says `Ask needs a pipeline whose database node has an LLM
+connected.` Ask waits up to 120 seconds for the node's answer.
 
 ## Relationships
 

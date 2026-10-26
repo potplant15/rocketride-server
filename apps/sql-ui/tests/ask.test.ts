@@ -148,7 +148,8 @@ describe('Ask: what the bar shows for each answer', () => {
 		assert.match(ASK_CONTEXT_TEXT, /EXPLAIN/);
 		assert.match(ASK_CONTEXT_TEXT, /error message goes back to the model/);
 		assert.match(ASK_CONTEXT_TEXT, /Nothing runs until you press Run/);
-		assert.match(ASK_CONTEXT_TEXT, /WITH/);
+		// get_sql's safety check (is_sql_safe) rejects CTEs: say so, in those words.
+		assert.match(ASK_CONTEXT_TEXT, /The node's safety check refuses queries that start with WITH/);
 	});
 });
 
@@ -217,7 +218,7 @@ describe('Ask: the README says what the code does', () => {
 		assert.match(prose, /It sends the question to the database node's `get_sql` tool/);
 		assert.match(prose, /table and column names, their types, primary and foreign keys/);
 		assert.match(prose, /No rows are sent\./);
-		assert.match(prose, /so it refuses a `WITH` query/);
+		assert.match(prose, /The node's safety check refuses queries that start with `WITH`/);
 		assert.ok(prose.includes(`says \`${ASK_DIRECT_TEXT.replace(/\s+/g, ' ')}\``), 'the direct-connection reason, word for word');
 		assert.match(prose, new RegExp(`Ask waits up to ${GET_SQL_WAIT_MS / 1000} seconds`));
 		assert.match(prose, /Nothing runs until you press Run\./);
