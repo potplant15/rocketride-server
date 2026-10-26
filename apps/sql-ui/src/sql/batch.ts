@@ -94,6 +94,24 @@ export function leadingVerb(sql: string, dialect: SqlDialect = 'unknown'): strin
 }
 
 /**
+ * The one line a history row shows for a statement: its first line of CODE.
+ *
+ * Generated previews start with a comment (`-- Generated preview: review,
+ * then Run.`) that is part of what runs and is stored, so the first line of
+ * text would name every one of them the same. Comments are removed with the
+ * connection's own rules (`#` is a comment on MySQL and ClickHouse only), and
+ * text that is nothing but comments falls back to its raw first line.
+ *
+ * @param sql - The statement as stored.
+ * @param dialect - The engine dialect (comment syntax).
+ * @returns The title line.
+ */
+export function historyTitle(sql: string, dialect: SqlDialect = 'unknown'): string {
+	const firstLine = (text: string): string | undefined => text.split('\n').map((part) => part.trim()).find(Boolean);
+	return firstLine(stripSqlComments(sql, dialect)) ?? firstLine(sql) ?? sql.trim();
+}
+
+/**
  * The status strip's label for one statement, e.g.
  * `2 UPDATE · 3 affected · round trip 0.012 s`.
  *

@@ -50,8 +50,10 @@ import {
 	ToggleGroup,
 	useDebouncedValue,
 } from 'shell';
-import type { SqlEndpoint } from '../connect';
+import type { SqlDialect, SqlEndpoint } from '../connect';
 import type { HistoryEntry } from '../history/types';
+import { useSchema } from '../schema/schemaStore';
+import { historyTitle } from '../sql/batch';
 import { useSqlEnv } from '../sqlEnv';
 import { DEFAULT_HISTORY_LIMITS } from '../history/trim';
 import { getDocs, nextQueryDoc } from '../docs';
@@ -280,17 +282,6 @@ function outcomeBadge(entry: HistoryEntry): { variant: 'success' | 'info' | 'err
 }
 
 /**
- * The first non-empty line of a statement, for the collapsed row.
- *
- * @param sql - The statement text.
- * @returns The first line with meaning, or the whole text when there is none.
- */
-function firstLine(sql: string): string {
-	const line = sql.split('\n').map((part) => part.trim()).find(Boolean);
-	return line ?? sql.trim();
-}
-
-/**
  * Whether a statement changed data when it last ran, so a rerun needs
  * confirming. Judged from the entry's KIND, which came from a text pattern —
  * a lexical reading of the statement, not a promise from the database.
@@ -307,14 +298,15 @@ function changesData(entry: HistoryEntry): boolean {
  * the eye does: when, what kind, how it ended, and the statement itself.
  *
  * @param entry - The entry.
+ * @param dialect - The connection's dialect (comment syntax for the title).
  * @returns The row's accessible label.
  */
-function rowLabel(entry: HistoryEntry): string {
+function rowLabel(entry: HistoryEntry, dialect: SqlDialect): string {
 	const badge = outcomeBadge(entry);
 	const parts = [clock(entry.at), KIND_LABEL[entry.kind].toLowerCase(), badge.label];
 	if (entry.pinned) parts.push('pinned');
 	if (entry.note) parts.push(`note: ${entry.note}`);
-	parts.push(firstLine(entry.sql));
+	parts.push(historyTitle(entry.sql, dialect));
 	return parts.join(', ');
 }
 
@@ -341,6 +333,8 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 	const entries = history.useHistory(endpoint);
 	const isRecording = history.useRecording(endpoint);
 	const privacyNotice = history.usePrivacyNotice();
+	// Row titles skip leading comments by this connection's comment rules.
+	const dialect = useSchema(endpoint.key).dialect;
 
 	const [search, setSearch] = useState('');
 	const debouncedSearch = useDebouncedValue(search, 200);
@@ -441,7 +435,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 						type="button"
 						style={styles.row}
 						aria-expanded={expanded}
-						aria-label={rowLabel(entry)}
+						aria-label={rowLabel(entry, dialect)}
 						onClick={() => toggleExpanded(entry)}
 					>
 						<span style={styles.rowTop}>
@@ -451,7 +445,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 							{entry.pinned && <StatusBadge variant="info">Pinned</StatusBadge>}
 							{entry.truncated && <StatusBadge variant="muted">truncated</StatusBadge>}
 						</span>
-						<span style={styles.rowSql}>{firstLine(entry.sql)}</span>
+						<span style={styles.rowSql}>{historyTitle(entry.sql, dialect)}</span>
 						{entry.note && <span style={styles.rowNote}>{entry.note}</span>}
 					</button>
 
