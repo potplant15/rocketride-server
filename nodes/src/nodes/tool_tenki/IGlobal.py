@@ -486,6 +486,12 @@ def _int_or(value, default: int, *, lo: int, hi: int) -> int:
     return max(lo, min(n, hi))
 
 
+def _size(value, lo: int, hi: int) -> int:
+    """A sizing field, clamped to the SDK's range, or 0 when unset: Tenki's default then applies, or the image's own."""
+    n = _int_or(value, 0, lo=0, hi=hi)
+    return max(n, lo) if n else 0
+
+
 class IGlobal(IGlobalBase):
     """Global state for tool_tenki."""
 
@@ -547,9 +553,10 @@ class IGlobal(IGlobalBase):
     # secret holding the HTTP Basic credential for them. Both empty when the operator set no secret.
     git_auth_url: str = ''
     git_auth_secret: str = ''
-    cpu_cores: int = 2
-    memory_mb: int = 4096
-    disk_size_gb: int = 5
+    # 0 means not sent (see _size).
+    cpu_cores: int = 0
+    memory_mb: int = 0
+    disk_size_gb: int = 0
     max_duration_minutes: int = 60
     pause_retention_hours: int = 24
     exec_timeout_secs: int = 120
@@ -594,13 +601,13 @@ class IGlobal(IGlobalBase):
         self.label = _label(cfg)
         self.secret_policies, self.allow_domains = _secret_settings(cfg)
         self.git_auth_url, self.git_auth_secret = _git_auth_settings(cfg, self.secret_policies, self.allow_domains)
-        self.cpu_cores = _int_or(cfg.get('cpu_cores'), 2, lo=1, hi=16)
+        self.cpu_cores = _size(cfg.get('cpu_cores'), 1, 16)
         # Tenki rejects odd memory sizes (they must align to 2 MiB). Rounding down stays in
         # range because both bounds are even.
-        memory_mb = _int_or(cfg.get('memory_mb'), 4096, lo=512, hi=65536)
+        memory_mb = _size(cfg.get('memory_mb'), 512, 65536)
         self.memory_mb = memory_mb - memory_mb % 2
         # The SDK refuses a disk under 5 GB before sending the request.
-        self.disk_size_gb = _int_or(cfg.get('disk_size_gb'), 5, lo=5, hi=100)
+        self.disk_size_gb = _size(cfg.get('disk_size_gb'), 5, 100)
         # Pipelines saved before the idle-timeout field was retired may still carry it; it is not
         # read, so it never reaches Tenki, which ignored it anyway.
         self.max_duration_minutes = _int_or(cfg.get('max_duration_minutes'), 60, lo=1, hi=1440)
@@ -685,10 +692,10 @@ class IGlobal(IGlobalBase):
             stop_keeping_output(process)
 
     def _create_session(self) -> Sandbox:
+        sizing = {'cpu_cores': self.cpu_cores, 'memory_mb': self.memory_mb, 'disk_size_gb': self.disk_size_gb}
         create_kwargs = {
-            'cpu_cores': self.cpu_cores,
-            'memory_mb': self.memory_mb,
-            'disk_size_gb': self.disk_size_gb,
+            # Only what was set: with an image Tenki keeps the image's disk unless one is sent (tenki 1.4.1).
+            **{key: value for key, value in sizing.items() if value},
             # Tenki has no ephemeral flag and no idle timeout, so this is the one thing that
             # stops the compute of a session whose pipeline never reached endGlobal (a crashed
             # engine, or one that skips teardown): Tenki pauses it when this runs out. The SDK

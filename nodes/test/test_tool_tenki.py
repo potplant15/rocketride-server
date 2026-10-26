@@ -974,7 +974,8 @@ def test_config_mode_tolerates_a_missing_key(monkeypatch, logs):
 @pytest.mark.parametrize(
     ('field', 'configured', 'expected'),
     [
-        ('cpu_cores', 0, 1),
+        ('cpu_cores', 0, 0),  # 0 is not sent: Tenki's default, or the image's
+        ('cpu_cores', -3, 0),
         ('cpu_cores', 64, 16),
         ('memory_mb', 128, 512),
         ('memory_mb', 131072, 65536),
@@ -1009,7 +1010,7 @@ def test_unset_or_unparseable_integers_fall_back_to_defaults(monkeypatch, logs):
         glb.max_output_chars,
         glb.pause_retention_hours,
     )
-    assert settings == (2, 4096, 5, 60, 120, 50000, 24)
+    assert settings == (0, 0, 0, 60, 120, 50000, 24)
 
 
 @pytest.mark.parametrize(
@@ -1074,6 +1075,18 @@ def test_create_sends_sizing_a_lifetime_cap_in_seconds_and_no_inbound(monkeypatc
             'allow_outbound': True,
         }
     ]
+
+
+@pytest.mark.parametrize('image', ['', 'acme/node-env'])
+def test_unset_sizing_is_left_to_tenki_or_the_image(monkeypatch, logs, image):
+    # Dylan's review of 67a0b2f6: a create with an image inherits that image's disk unless disk_size_gb is sent
+    # (tenki 1.4.1, client.py), so an always-sent default of 5 GB overrode a larger template's disk. Without an image,
+    # Tenki's own defaults (2 vCPU, 4096 MB, 5 GB) are what the node used to send.
+    glb, client = _started(monkeypatch, _FakeSession('sb-1'), cfg={'image': image})
+    glb.get_session()
+    [call] = client.create_calls
+    assert not {'cpu_cores', 'memory_mb', 'disk_size_gb'} & set(call)
+    assert call.get('image', '') == image
 
 
 def test_create_sends_the_default_lifetime_cap_of_sixty_minutes(monkeypatch, logs):
@@ -1214,9 +1227,6 @@ def test_the_create_request_carries_exactly_the_options_the_node_means_to_send(m
     assert (
         set(kwargs)
         == {
-            'cpu_cores',
-            'memory_mb',
-            'disk_size_gb',
             'max_duration',
             'allow_inbound',
             'allow_outbound',
