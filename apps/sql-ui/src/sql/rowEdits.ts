@@ -463,6 +463,20 @@ export function unstage(edits: RowEdits, key: string): RowEdits {
 }
 
 /**
+ * Drop the changes an apply saved before it stopped: the first `committed`
+ * ones, since {@link buildRowStatements} sends one statement per change in
+ * staging order. After a transaction that rolled back, `committed` is 0 and
+ * every change stays staged.
+ *
+ * @param edits - The model the apply was built from.
+ * @param committed - How many statements are saved (SqlApplyFailure.committed).
+ * @returns The changes still to apply.
+ */
+export function dropApplied(edits: RowEdits, committed: number): RowEdits {
+	return committed <= 0 ? edits : { ...edits, entries: edits.entries.slice(committed) };
+}
+
+/**
  * How many rows each kind of change touches.
  *
  * @param edits - The model.

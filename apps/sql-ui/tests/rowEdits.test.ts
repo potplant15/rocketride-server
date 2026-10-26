@@ -37,6 +37,7 @@ import {
 	buildRowStatements,
 	coerceValue,
 	describeRowEdit,
+	dropApplied,
 	emptyRowEdits,
 	pendingOf,
 	rowEditCounts,
@@ -325,6 +326,16 @@ describe('the pending model: keyed by primary key, in staging order', () => {
 		assert.deepEqual(rowEditCounts(edits), { edited: 1, inserted: 2, deleted: 0, total: 3 });
 		edits = unstage(edits, edits.entries[0]!.key);
 		assert.deepEqual(rowEditCounts(edits), { edited: 1, inserted: 1, deleted: 0, total: 2 });
+	});
+
+	it('after an apply stopped part-way, only what it saved drops out; after a rollback everything stays', () => {
+		const target = pg();
+		let edits = stageUpdate(emptyRowEdits(), target, ROW, { status: 'paid' });
+		edits = stageInsert(edits, target, { status: 'a' });
+		edits = stageDelete(edits, target, { ...ROW, order_id: 14 });
+		assert.deepEqual(dropApplied(edits, 0), edits);
+		assert.deepEqual(dropApplied(edits, 2).entries.map((edit) => edit.kind), ['delete']);
+		assert.deepEqual(buildRowStatements(dropApplied(edits, 2), target).map((statement) => statement.sql), ['DELETE FROM "orders" WHERE "order_id" = $1']);
 	});
 
 	it('every function returns a new value and leaves its input alone', () => {
