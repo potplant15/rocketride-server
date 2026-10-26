@@ -173,10 +173,31 @@ not run`.
 
 For the same reason `BEGIN`, `COMMIT` and `ROLLBACK` are refused before
 anything is sent: `Transaction statements have no effect here: each
-statement runs and commits on its own.` The node does have a transaction
-surface (`begin` / `commit` / `rollback` with a session id), but SQL
-Explorer does not use it, and transaction control that quietly does nothing
-would be worse than a refusal.
+statement runs and commits on its own.` Transaction control you type would
+do nothing through `execute`, and a refusal is better than a statement that
+quietly does nothing.
+
+**Apply is the exception.** Staged row changes in the data browser, and a
+table designer plan on PostgreSQL (see [Changing a table](#changing-a-table)),
+run through the node's own transaction tools: `begin` opens a transaction
+that holds one connection, every statement runs on it, and `commit` saves
+them all at once. If a statement fails, if a row change touches a different
+number of rows than the one row it names, or if the database refuses the
+commit, the app sends `rollback` and nothing is saved. The statements are
+written by the app, one per change, with every value bound rather than
+written into the text. The whole list is checked before anything is sent:
+each entry must be exactly one statement, and transaction control inside it
+is refused. Nothing in an apply is ever sent twice, and the transaction
+never leaves the sidebar (as a dev tool) or the app's own engine connection.
+
+An apply's statements may take 5 minutes in all, the time the node keeps an
+idle transaction open. After that the app stops waiting and rolls back; a
+statement still running on the server keeps its locks until it ends. Where
+there is no transaction to have, each change commits on its own, the first
+failure stops the rest, and both the confirmation and the result say so:
+ClickHouse opens no transactions, and a node older than the transaction
+tools has none. A row change on MySQL rolls back only on a table whose
+engine has transactions (InnoDB, the default).
 
 A statement is sent a second time in one case only. When the pipeline task
 is stopping or restarting, the engine refuses a statement with
@@ -540,26 +561,35 @@ DDL it will run. Nothing reaches the database until you apply.
 
 The Apply confirmation names how many statements will run, lists the inbound
 foreign keys that reference any column you are dropping, renaming or
-retyping (`from schema snapshot HH:MM`), and carries the dialect's commit
-note. Those notes never say "rollback", because nothing here rolls back:
+retyping (`from schema snapshot HH:MM`), and carries the dialect's note on
+what happens to a plan that stops half-way:
 
+- **PostgreSQL** — Apply sends the whole plan as one transaction, so a
+  failure rolls back the whole plan and the plan stays as it was. The result
+  says `The plan runs as one transaction: a failure rolls back the whole
+  plan` only when the node confirms the plan ran as one. A node without the
+  transaction tools runs each statement on its own, and the result says that
+  instead. Every statement the designer writes (`ALTER TABLE`, `CREATE
+  TABLE`) can run inside a transaction on PostgreSQL.
 - **MySQL** — each DDL statement commits implicitly. A failure mid-plan
   leaves earlier statements applied. Nothing here can be rolled back.
-- **PostgreSQL** — each statement runs in its own autocommit transaction. A
-  failure mid-plan leaves earlier statements applied.
 - **ClickHouse** — some `ALTER` forms run as asynchronous mutations and may
   finish after the dialog closes.
 
-A batch that stops part-way reports what committed, which statement failed
-and what was not run, and the plan keeps the remaining statements.
+A plan that runs statement by statement and stops part-way reports what
+committed, which statement failed and what was not run, and the plan keeps
+the remaining statements. When the answer to a statement, or to the commit,
+never arrives, the result says the plan may or may not be applied, and the
+schema is read again.
 
 **After a successful apply**, what the app can tell you depends on the node.
 When the node offers a `refresh_schema` tool, the app re-reads the schema
-and says `Applied HH:MM · schema re-read from the database.` When it does
-not, the snapshot is still the one taken at task start, and the banner says
-so: `Applied HH:MM. The node reflected its schema at task start; the tree
-and diagram will not show this change until the pipeline restarts.` The
-statements ran either way; only the app's picture of the schema is behind.
+and says `Applied HH:MM · schema re-read from the database.` (`Applied HH:MM
+as one transaction · …` on PostgreSQL). When it does not, the snapshot is
+still the one taken at task start, and the banner says so: `Applied HH:MM.
+The node reflected its schema at task start; the tree and diagram will not
+show this change until the pipeline restarts.` The statements ran either
+way; only the app's picture of the schema is behind.
 
 ## As a dev tool
 
@@ -644,8 +674,9 @@ these differences:
   deadline: today's SQL nodes publish none and the engine sets none, so a
   long query is allowed to run until you stop waiting. Reading the schema
   waits up to 60 seconds, re-reading it 135, and the engine check 15.
-- **No transactions.** Every statement commits on its own, and transaction
-  control is refused.
+- **Transactions only through Apply.** A statement you run commits on its
+  own, and transaction control you type is refused. Only Apply (staged row
+  changes, and designer plans on PostgreSQL) runs as one transaction.
 - **No `EXPLAIN ANALYZE`.** Plan numbers are estimates, never measurements.
 - **No `DELIMITER`.** Buffers that change the terminator split wrongly.
 - **Declared foreign keys only.** Nothing is inferred from column names, and
