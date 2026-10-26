@@ -96,6 +96,16 @@ dropped connection alone closes nothing. The app never holds a connection
 string or a task token in anything it saves or shows: task tokens are kept in
 memory only, where the engine connection is.
 
+Each row also says how its connection stands, from what the app already
+knows (nothing is sent to find out): **Running** or **Stopped** for a
+pipeline connection, by whether your own run of that pipeline is running;
+**Direct** for a direct connection, or **Open** while its temporary pipeline
+runs; and **Unreachable** when the connection failed to open, until it next
+opens, or when its pipeline runs but the database node does not answer.
+Hovering the word gives the reason. The words follow pipelines starting and
+stopping as the engine reports them; until the app has first looked at your
+running pipelines, a pipeline row says nothing.
+
 Opening a connection gives it a workbench document and fills the sidebar
 with that database's tables. Everything else hangs off a connection: query
 documents, the data browser, the designer and the diagram are each pinned to
@@ -462,6 +472,62 @@ connection, and **Clear** empties one connection's list, pins included.
 
 Re-running an entry that changed data asks first and quotes what it did last
 time; the rerun is a fresh run with its own entry.
+
+## Saved queries
+
+A statement you want to keep can be saved under a name, for one connection.
+**Save as query** sits in the query header, for the editor's text, and on
+every History entry, for that statement; the name starts as the statement's
+leading `--` comment or its first line. **Saved**, also in the query header,
+opens the connection's saved queries, where you can search, open, rename and
+delete them. **Open** puts the statement into a new query and runs nothing:
+it waits there for Run.
+
+A saved query keeps the statement's text as typed, literal values included,
+never its results. Where it is kept follows the mount, and the drawer says
+which. In the app it goes to your RocketRide workspace preferences on the
+server, per account, not into the browser. As a dev tool it goes to
+`.workspace/rocketride.sql.queries.json` in your user storage on the server,
+beside the history file, one section per signed-in account. As with
+history, the dev tool reads that file before it shows or changes anything,
+never writes a file it could not read (saved queries are then kept for that
+session only), and two windows that change saved queries at the same time
+each write the file from what they read, so the last one to save wins.
+Saved queries belong to the account that saved them: signing out, or
+another account signing in, forgets them at once, and one account's saved
+queries are never shown to or written for another.
+
+Saving refuses rather than drops. A connection keeps up to 50 saved
+queries; a saved query holds up to 16,384 characters of statement and 120 of
+name; and all saved queries together stay within 256 KB. A save past one of
+these says which and saves nothing, and nothing already saved is removed to
+make room.
+
+## Ask
+
+**Ask**, above the query editor, turns a question in plain words into SQL
+for you to review. It sends the question to the database node's `get_sql`
+tool, which needs an LLM connected to that node in its pipeline. The node's
+LLM writes the query, the node checks it with `EXPLAIN` (which does not run
+it), and the SQL comes back unexecuted. It opens in a new query under the
+editor's `Generated preview: review, then Run` banner, with your question as
+a comment above it. Nothing runs until you press Run.
+
+What goes to the model: your question; the node's schema as the node
+reflects it (table and column names, their types, primary and foreign
+keys); and the database description set on the node, if any. No rows are
+sent. When the database rejects a draft, its error message goes back to the
+model for another try, up to the node's validation attempts (five by
+default). The bar says this too.
+
+When the node does not return SQL, the bar shows the node's own words: its
+refusal, the database's error, the model's answer when the question is not
+one for the database, or that no LLM is connected to the node. The node
+returns only statements that start with `SELECT` or `EXPLAIN`, so it
+refuses a `WITH` query. A direct connection's pipeline holds just the
+database node, so it has no LLM: there the bar is disabled and says `Ask
+needs a pipeline whose database node has an LLM connected.` Ask waits up to
+120 seconds for the node's answer.
 
 ## Relationships
 

@@ -538,3 +538,17 @@ describe('saved queries in the full app: the workspace preferences, through the 
 		}
 	});
 });
+
+describe('saved queries: the README says what the code does', () => {
+	it('names the dev tool\'s file, the caps, and that the last window to save wins', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const { MAX_SAVED_BAG_CHARS, MAX_SAVED_NAME_CHARS, MAX_SAVED_SQL_CHARS } = await import('../src/history/savedQueries');
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.ok(SAVED_QUERIES_PATH.endsWith('.workspace/rocketride.sql.queries.json'));
+		assert.match(prose, /`\.workspace\/rocketride\.sql\.queries\.json` in your user storage on the server/);
+		assert.match(prose, /so the last one to save wins\. Saved queries belong to the account that saved them/);
+		assert.match(prose, new RegExp(`A connection keeps up to ${MAX_SAVED_QUERIES} saved queries; a saved query holds up to ${MAX_SAVED_SQL_CHARS.toLocaleString('en-US')} characters of statement and ${MAX_SAVED_NAME_CHARS} of name; and all saved queries together stay within ${MAX_SAVED_BAG_CHARS / 1024} KB\\.`));
+		assert.match(prose, /\*\*Open\*\* puts the statement into a new query and runs nothing/);
+	});
+});

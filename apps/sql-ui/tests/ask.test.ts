@@ -210,3 +210,16 @@ describe('Ask never executes anything', () => {
 		}
 	});
 });
+
+describe('Ask: the README says what the code does', () => {
+	it('names the tool, what goes to the model, the WITH refusal, the direct-connection reason and the wait', () => {
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(prose, /It sends the question to the database node's `get_sql` tool/);
+		assert.match(prose, /table and column names, their types, primary and foreign keys/);
+		assert.match(prose, /No rows are sent\./);
+		assert.match(prose, /so it refuses a `WITH` query/);
+		assert.ok(prose.includes(`says \`${ASK_DIRECT_TEXT.replace(/\s+/g, ' ')}\``), 'the direct-connection reason, word for word');
+		assert.match(prose, new RegExp(`Ask waits up to ${GET_SQL_WAIT_MS / 1000} seconds`));
+		assert.match(prose, /Nothing runs until you press Run\./);
+	});
+});

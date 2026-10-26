@@ -188,3 +188,11 @@ describe('the sidebar\'s status source: discovery and open failures, in the real
 		assert.match(sidebar, /\{status\.label && <span style=\{styles\.status\(status\.kind\)\} title=\{status\.detail\}>\{status\.label\}<\/span>\}/);
 	});
 });
+
+describe('connection status: the README says what the rows say', () => {
+	it('names every word a row can carry', () => {
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		for (const word of ['Running', 'Stopped', 'Direct', 'Open', 'Unreachable']) assert.ok(prose.includes(`**${word}**`), word);
+		assert.match(prose, /from what the app already knows \(nothing is sent to find out\)/);
+	});
+});
