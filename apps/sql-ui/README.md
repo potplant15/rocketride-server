@@ -347,6 +347,13 @@ under **Safety level for this connection**:
   `SET`, `DO` and `VALUES`, because a procedure can change rows and the app
   cannot tell. `EXPLAIN ANALYZE` counts as the statement it runs.
 
+A write made inside a function or procedure is not seen at **Ask before
+risky writes**: `SELECT my_fn()`, `DO`, `CALL` and `COPY … PROGRAM` run
+without asking there, whatever they change. And a `SELECT` that calls a
+function counts as a read even at **Ask before every write**, so a function
+that writes (`SELECT pg_terminate_backend(…)`, `SELECT nextval('s')`) never
+asks.
+
 The level is stored on the saved connection, in the same per-user file on
 the server as the connection itself, so it is the same in the app and as a
 dev tool. A connection saved before levels existed reads as **Ask before
@@ -362,9 +369,16 @@ change**: `about N rows (planner estimate)` on PostgreSQL and MySQL, from a
 plain `EXPLAIN` (no `ANALYZE`, so nothing runs) of the statement. It reads
 `Estimating…` while that runs, and `No estimate` on ClickHouse, for a `WITH`
 chain, or when the plan gives no number; for `TRUNCATE` it reads `Every
-row`. **Cancel** works at any time, also
-while the estimate is still running. The estimate is not recorded in
-History.
+row`. Once an `UPDATE` or `DELETE` has an estimate, the title and the button
+name the rows: `Update about 20 rows in orders?` and **Update 20 rows**.
+**Cancel** works at any time, also while the estimate is still running. The
+estimate is not recorded in History.
+
+Until the connection's dialect is known (the schema is still being read), a
+statement is read with each engine's comment rules: `#` starts a comment on
+MySQL and ClickHouse, and `/*! … */` is code on MySQL. It asks if any of
+those readings says it should, so `# note` on the line above a `DELETE`
+cannot hide it.
 
 `DROP` and `TRUNCATE` ask for the name to be typed: `Type orders to
 confirm`. The name is the object's own name as the statement spells it,
@@ -464,9 +478,15 @@ order that statement returned them.
 **Export** on the results card offers **Download CSV**, **Download JSON**
 and **Copy as Markdown**, for the rows the statement returned under whatever
 limit was applied. In CSV a NULL is an empty field and an empty string is
-`""`, and objects are written as JSON text. In VS Code, which does not allow
-downloads from a tool panel, CSV and JSON are copied to the clipboard
-instead, and the menu says **Copy as CSV** and **Copy as JSON**.
+`""`, and objects are written as JSON text. A spreadsheet runs a CSV cell
+that starts with a formula character, and results can hold text anyone
+typed, so in CSV, text that starts with `=`, `+`, `-` or `@` (or a tab or a
+carriage return) gets a leading `'`. Numbers keep their sign, and JSON and
+Markdown keep the text as it is. In VS Code, which does not allow downloads
+from a tool panel, CSV and JSON are copied to the clipboard instead, and the
+menu says **Copy as CSV** and **Copy as JSON**. Elsewhere the app announces
+that the download started; a browser that blocks it quietly cannot be told
+apart.
 
 A precision note shows under a result when a value may not be the number the
 database holds: `Decimal values arrive as floating point; integers above

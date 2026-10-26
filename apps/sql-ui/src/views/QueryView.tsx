@@ -698,8 +698,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 
 	/**
 	 * Run one statement from the history drawer. The drawer has already
-	 * confirmed anything that changed data last time; the pattern check still
-	 * applies, because it is about this statement's text, not its past.
+	 * confirmed anything that changed data last time; the connection's safety
+	 * level still applies, because it is about this statement's text, not its
+	 * past.
 	 *
 	 * @param entry - The history entry to run again.
 	 */

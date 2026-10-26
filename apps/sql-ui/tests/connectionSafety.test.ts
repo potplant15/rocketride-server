@@ -144,6 +144,13 @@ describe('the connection editor carries the level', () => {
 	});
 
 	it('says what "every write" covers the way the classifier reads statements', () => {
-		assert.ok(editor.includes('Anything that is not SELECT, EXPLAIN, SHOW or DESCRIBE (a WITH … SELECT counts as SELECT).'));
+		assert.ok(editor.includes('Anything that is not SELECT, EXPLAIN, SHOW or DESCRIBE. A WITH … SELECT counts as SELECT, and so does a SELECT that calls a function.'));
+	});
+
+	it('says that a write inside a function or procedure is not seen at "Ask before risky writes"', () => {
+		assert.ok(editor.includes('A write inside a function or procedure (SELECT my_fn(), CALL, DO, COPY … PROGRAM) is not seen.'));
+		const readme = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(readme, /A write made inside a function or procedure is not seen at \*\*Ask before risky writes\*\*: `SELECT my_fn\(\)`, `DO`, `CALL` and `COPY … PROGRAM`/);
+		assert.match(readme, /a `SELECT` that calls a function counts as a read even at \*\*Ask before every write\*\*/);
 	});
 });

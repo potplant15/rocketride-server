@@ -207,6 +207,14 @@ describe('QueryView: the Export button', () => {
 	});
 });
 
+describe('the README on export', () => {
+	it('says CSV guards formula text, and that JSON and Markdown do not change it', () => {
+		const readme = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(readme, /text that starts with `=`, `\+`, `-` or `@` \(or a tab or a carriage return\) gets a leading `'`/);
+		assert.match(readme, /JSON and Markdown keep the text as it is/);
+	});
+});
+
 describe('browserDownload', () => {
 	const exportSource = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'sql', 'export.ts'), 'utf8');
 

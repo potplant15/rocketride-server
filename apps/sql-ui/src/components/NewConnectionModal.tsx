@@ -77,12 +77,12 @@ const SAFETY_OPTIONS: { id: SafetyLevel; label: string; detail: string }[] = [
 	{
 		id: 'risky',
 		label: 'Ask before risky writes',
-		detail: 'UPDATE or DELETE without WHERE, TRUNCATE, DROP and ALTER. DROP and TRUNCATE ask you to type the name.',
+		detail: 'UPDATE or DELETE without WHERE, TRUNCATE, DROP and ALTER. DROP and TRUNCATE ask you to type the name. A write inside a function or procedure (SELECT my_fn(), CALL, DO, COPY … PROGRAM) is not seen.',
 	},
 	{
 		id: 'every',
 		label: 'Ask before every write',
-		detail: 'Anything that is not SELECT, EXPLAIN, SHOW or DESCRIBE (a WITH … SELECT counts as SELECT). DROP and TRUNCATE ask you to type the name.',
+		detail: 'Anything that is not SELECT, EXPLAIN, SHOW or DESCRIBE. A WITH … SELECT counts as SELECT, and so does a SELECT that calls a function. DROP and TRUNCATE ask you to type the name.',
 	},
 ];
 
