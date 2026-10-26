@@ -119,6 +119,8 @@ export interface CountCache {
 	total: number | null;
 	/** Whether the cached total is an exact count (false = the catalog estimate). */
 	exact: boolean;
+	/** Bumped when a write invalidates the totals; a request counted before the bump cannot land its total. */
+	epoch: number;
 }
 
 /** One page request, as the planner sees it. */
@@ -153,7 +155,7 @@ export type CountPlan = 'none' | 'reuse' | 'probe' | 'estimate' | 'overfetch' | 
  * @returns The empty cache.
  */
 export function emptyCountCache(table: string): CountCache {
-	return { table, estimate: undefined, key: null, total: null, exact: false };
+	return { table, estimate: undefined, key: null, total: null, exact: false, epoch: 0 };
 }
 
 /**
@@ -181,6 +183,21 @@ export function applyTotal(cache: CountCache, key: string, total: number, exact:
 }
 
 /**
+ * Record the total a request counted, unless a write invalidated the cache
+ * after that request began (its total is then out of date).
+ *
+ * @param cache - The cache.
+ * @param epoch - The cache's epoch when the request began.
+ * @param key - The filter's key.
+ * @param total - The total.
+ * @param exact - Whether it is an exact count.
+ * @returns The updated cache, or the cache unchanged when the epoch moved on.
+ */
+export function applyTotalIfCurrent(cache: CountCache, epoch: number, key: string, total: number, exact: boolean): CountCache {
+	return cache.epoch === epoch ? applyTotal(cache, key, total, exact) : cache;
+}
+
+/**
  * Fold a probe's outcome into the cache. A probe the engine refused (a role
  * that cannot read the catalog) means "no estimate". A probe that failed only
  * because a newer request replaced it says nothing about the table, so
@@ -203,7 +220,7 @@ export function applyProbeResult(cache: CountCache, probe: { rows: readonly unkn
  * @returns The cache with no total.
  */
 export function invalidateTotals(cache: CountCache): CountCache {
-	return { ...cache, key: null, total: null, exact: false };
+	return { ...cache, key: null, total: null, exact: false, epoch: cache.epoch + 1 };
 }
 
 /**

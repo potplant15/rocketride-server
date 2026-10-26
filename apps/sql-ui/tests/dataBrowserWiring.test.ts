@@ -74,7 +74,7 @@ describe('TableDataView wiring', () => {
 		assert.match(view, /if \(!settled\) throw/);
 		// The flag is read without clearing it, and cleared where the exact total lands.
 		assert.match(view, /const forceExact = forceExactRef\.current;\n/);
-		assert.match(view, /forceExactRef\.current = false;\n\t\t\t\tcountRef\.current = applyTotal\(countRef\.current, key, total, true\)/);
+		assert.match(view, /forceExactRef\.current = false;\n\t\t\t\tcountRef\.current = applyTotalIfCurrent\(countRef\.current, epoch, key, total, true\)/);
 	});
 
 	it('forgets cached totals when the countEpoch prop changes', () => {

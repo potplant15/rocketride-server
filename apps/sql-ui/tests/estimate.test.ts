@@ -37,6 +37,7 @@ import {
 	ESTIMATE_THRESHOLD,
 	applyEstimate,
 	applyProbeResult,
+	applyTotalIfCurrent,
 	invalidateTotals,
 	applyTotal,
 	emptyCountCache,
@@ -224,6 +225,24 @@ describe('applyProbeResult', () => {
 		// Caching null here would make a 50M-row table count exactly forever.
 		assert.equal(applyProbeResult(fresh, { error: true, superseded: true }), null);
 		assert.equal(planCount(fresh, request()), 'probe');
+	});
+});
+
+describe('applyTotalIfCurrent', () => {
+	it('lands a total counted in the current epoch', () => {
+		const cache = emptyCountCache('orders');
+		assert.equal(applyTotalIfCurrent(cache, cache.epoch, 'k', 42, true).total, 42);
+	});
+
+	it('drops a total from a request that began before a write invalidated the cache', () => {
+		const cache = emptyCountCache('orders');
+		const startedAt = cache.epoch;
+		const afterWrite = invalidateTotals(cache);
+		const late = applyTotalIfCurrent(afterWrite, startedAt, 'k', 42, true);
+		assert.equal(late.total, null);
+		assert.equal(planCount(late, request()), 'probe');
+		// The newer request's own total still lands.
+		assert.equal(applyTotalIfCurrent(afterWrite, afterWrite.epoch, 'k', 43, true).total, 43);
 	});
 });
 

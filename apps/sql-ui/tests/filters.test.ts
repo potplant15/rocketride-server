@@ -181,6 +181,24 @@ describe('coerceChipValue', () => {
 		assert.strictEqual(coerceChipValue('NUMERIC', 'x'), 'x');
 	});
 
+	it('keeps text for an exact decimal a number cannot hold, so the database casts it exactly', () => {
+		assert.strictEqual(coerceChipValue('NUMERIC(30,2)', '12345678901234567890.12'), '12345678901234567890.12');
+		assert.strictEqual(coerceChipValue('Decimal(38, 4)', '0.1234567890123456'), '0.1234567890123456');
+		assert.strictEqual(coerceChipValue('DECIMAL', '1e5'), '1e5');
+	});
+
+	it('binds a short decimal as a number, trailing zeros and all', () => {
+		assert.strictEqual(coerceChipValue('NUMERIC(10,2)', '1.50'), 1.5);
+		assert.strictEqual(coerceChipValue('NUMERIC(10,2)', '-0.25'), -0.25);
+		assert.strictEqual(coerceChipValue('NUMERIC(10,2)', '007.10'), 7.1);
+		assert.strictEqual(coerceChipValue('NUMERIC', '100000000000000'), 100000000000000);
+	});
+
+	it('leaves float and double alone: they are inexact by definition', () => {
+		assert.strictEqual(coerceChipValue('DOUBLE PRECISION', '12345678901234567890.12'), 12345678901234567000);
+		assert.strictEqual(coerceChipValue('real', '1e5'), 100000);
+	});
+
 	it('binds a boolean for a boolean column, and keeps other text', () => {
 		assert.strictEqual(coerceChipValue('boolean', 'true'), true);
 		assert.strictEqual(coerceChipValue('BOOL', 'F'), false);

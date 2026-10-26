@@ -131,15 +131,37 @@ export function likePredicate(dialect: SqlDialect, column: string, placeholder: 
 /** Integer column types, with the wrappers ClickHouse puts around them. */
 const INTEGER_TYPE = /^(u?int\d*|tinyint|smallint|mediumint|bigint|integer|serial|smallserial|bigserial)\b/i;
 
-/** Decimal and floating-point column types. */
-const DECIMAL_TYPE = /^(numeric|decimal|real|double|float\d*|number)\b/i;
+/** Exact decimal column types. */
+const EXACT_TYPE = /^(numeric|decimal\d*|number)\b/i;
+
+/** Floating-point column types. */
+const FLOAT_TYPE = /^(real|double|float\d*)\b/i;
+
+/**
+ * A plain decimal as a number only when the number holds it exactly: at most
+ * 15 significant digits that read back unchanged (`1.50` is 1.5). Anything
+ * longer stays text, and the database casts text to an exact decimal.
+ *
+ * @param text - The trimmed text.
+ * @returns The number, or null when a number would round it.
+ */
+function exactDecimal(text: string): number | null {
+	const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text);
+	if (!m) return null;
+	const whole = m[2]!.replace(/^0+(?=\d)/, '');
+	const frac = (m[3] ?? '').replace(/0+$/, '');
+	const normal = `${m[1]}${whole}${frac ? `.${frac}` : ''}`;
+	const digits = (whole + frac).replace(/^0+/, '');
+	return digits.length <= 15 && String(Number(normal)) === normal ? Number(normal) : null;
+}
 
 /**
  * The value a comparison chip binds, by the column's type. A text value
  * against an integer column can be refused by Postgres and ClickHouse, so
  * numbers and booleans bind as such. Text that does not read as that type
- * stays text (the engine then says what is wrong), and an integer beyond
- * 2^53 stays text because a number would round it.
+ * stays text (the engine then says what is wrong). An integer beyond 2^53,
+ * or an exact decimal with more digits than a number holds, stays text
+ * because a number would round it.
  *
  * @param type - The column's reflected type, e.g. `NUMERIC(10,2)`.
  * @param value - What the user typed.
@@ -155,7 +177,8 @@ export function coerceChipValue(type: string, value: string): string | number | 
 	if (INTEGER_TYPE.test(inner)) {
 		return /^-?\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : value;
 	}
-	if (DECIMAL_TYPE.test(inner)) {
+	if (EXACT_TYPE.test(inner)) return exactDecimal(text) ?? value;
+	if (FLOAT_TYPE.test(inner)) {
 		return /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(text) ? Number(text) : value;
 	}
 	if (/^bool(ean)?\b/i.test(inner)) {

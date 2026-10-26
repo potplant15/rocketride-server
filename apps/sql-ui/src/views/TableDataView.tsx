@@ -37,7 +37,7 @@ import { useSqlEnv } from '../sqlEnv';
 import { buildPageStatements, countKey } from '../sql/paging';
 import {
 	applyProbeResult,
-	applyTotal,
+	applyTotalIfCurrent,
 	emptyCountCache,
 	estimateStatement,
 	invalidateTotals,
@@ -304,6 +304,9 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			// Read, not cleared: "Count exactly" survives a request that is
 			// replaced or fails, and is cleared where the exact total lands.
 			const forceExact = forceExactRef.current;
+			// A write after this point invalidates the totals; this request's
+			// total is then out of date and must not land (see applyTotalIfCurrent).
+			const epoch = countRef.current.epoch;
 			const probe = estimateStatement(dialect, table);
 			const countReq = { key, filtered: stmts.where !== '', executeAllowed, forceExact, canProbe: probe !== null };
 
@@ -355,10 +358,10 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			if (plan === 'count') {
 				total = Number((countResult?.rows[0] as { total?: unknown } | undefined)?.total ?? pageResult.rows.length);
 				forceExactRef.current = false;
-				countRef.current = applyTotal(countRef.current, key, total, true);
+				countRef.current = applyTotalIfCurrent(countRef.current, epoch, key, total, true);
 			} else if (plan === 'estimate') {
 				total = countRef.current.estimate ?? pageResult.rows.length;
-				countRef.current = applyTotal(countRef.current, key, total, false);
+				countRef.current = applyTotalIfCurrent(countRef.current, epoch, key, total, false);
 				note = { kind: 'estimate', rows: total };
 			} else {
 				// Another page of a filter already counted.
