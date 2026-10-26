@@ -31,7 +31,7 @@
 import { describe, expect, it } from '@jest/globals';
 import * as fs from 'fs';
 import * as path from 'path';
-import { CALLBACK_PALETTES, renderCallbackPage } from '../src/cli/commands/auth';
+import { CALLBACK_PALETTES, renderCallbackPage, webAppUrlFor } from '../src/cli/commands/auth';
 
 /** The inline script's body ('' when the page has none). */
 const scriptOf = (page: string): string => /<script>([\s\S]*)<\/script>/.exec(page)?.[1] ?? '';
@@ -76,6 +76,18 @@ describe('renderCallbackPage', () => {
 		expect(page).toContain('access_denied &lt;b&gt;by user&lt;/b&gt;');
 		expect(page).toContain('<span>RocketRide</span>');
 		expect(page).not.toContain('<script>');
+	});
+});
+
+describe('webAppUrlFor', () => {
+	it('sends the RocketRide cloud API to the cloud web app at rocketride.ai', () => {
+		expect(webAppUrlFor('https://api.rocketride.ai')).toBe('https://rocketride.ai/');
+		expect(webAppUrlFor('https://API.rocketride.ai/')).toBe('https://rocketride.ai/');
+	});
+
+	it('keeps any other server on its own origin', () => {
+		expect(webAppUrlFor('http://localhost:5565')).toBe('http://localhost:5565/');
+		expect(webAppUrlFor('https://rr.example.com/')).toBe('https://rr.example.com/');
 	});
 });
 

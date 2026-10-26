@@ -45,7 +45,7 @@ import * as path from 'path';
 import { spawn, execSync } from 'child_process';
 import { Command } from 'commander';
 import { RocketRideClient } from '../../client/client';
-import { CONST_DEFAULT_WEB_LOCAL } from '../../client/constants';
+import { CONST_DEFAULT_WEB_CLOUD, CONST_DEFAULT_WEB_LOCAL } from '../../client/constants';
 import { Output } from '../output';
 import { addConnectionOptions, connectClient, disconnectAll, promptHidden, promptLine, runCliCommand, ConnectionOptions } from '../common';
 import { ENV_DEV_URI, ENV_DEV_APIKEY, ENV_DEPLOY_URI, ENV_DEPLOY_APIKEY, writeDotEnv } from '../env';
@@ -154,6 +154,22 @@ const CALLBACK_FONT = "'Figtree Variable', 'Figtree', -apple-system, BlinkMacSys
 
 /** The RocketRide mark, as on the landing page (flame in brand red, body in text colour). */
 const CALLBACK_LOGO = '<svg class="logo" width="36" height="36" viewBox="0 0 191 192" fill="none" aria-hidden="true"><path d="M159.5 161.424L153.7 167.224C151.9 169.024 148.9 169.024 147 167.224L126.6 146.824C115.6 135.824 115.6 118.024 126.6 107.024C138.1 95.5245 138.1 76.9245 126.6 65.4245L125.1 63.9245C113.6 52.4245 95 52.4245 83.5 63.9245C72.5 74.9245 54.6 74.9245 43.6 63.9245L23.2 43.5245C21.4 41.7245 21.4 38.7245 23.2 36.8245L29 31.0245C37 23.0245 49.1 20.5245 59.6 24.9245L87.5 36.3245C97.3 40.1245 108.4 38.0245 116.3 31.1245L137 10.4245C138.6 8.92449 140.4 7.42449 142.5 6.22449C146.2 4.12449 150.3 3.02449 154.5 2.62449L185.4 0.0244895C188.3 -0.275511 190.8 2.22449 190.5 5.12449L187.8 36.4245C187.3 42.8245 184.5 48.8245 180.1 53.5245L160.5 73.1245C152.5 81.2245 150.1 93.3245 154.5 103.824L155.5 106.224L161.2 120.024L165.6 130.924C169.9 141.424 167.5 153.524 159.5 161.524V161.424Z" fill="currentColor" fill-opacity="0.85"/><path d="M0.799997 190.325C-0.200003 189.325 -0.300003 187.625 0.599997 186.425L21.1 162.024C31.1 150.024 37.9 137.725 41.3 125.325C43.6 116.625 44.6 108.525 44.1 101.225C44.1 100.325 44.4 99.4245 45.1 98.8245C45.8 98.2245 46.8 97.9245 47.7 98.1245C65 101.625 83.5 98.3245 98.5 88.9245C99.6 88.2245 101.1 88.4245 102 89.3245C102.9 90.2245 103.1 91.7245 102.4 92.8245C93 107.825 89.7 126.325 93.2 143.525C93.4 144.325 93.2 145.225 92.6 145.925C92 146.625 91 147.225 90.1 147.125C82.8 146.625 74.6 147.525 66 149.925C53.6 153.225 41.2 160.025 29.3 170.125L4.9 190.625C3.8 191.525 2.1 191.525 0.999997 190.425H0.799997V190.325Z" fill="#F93822"/></svg>';
+
+/** The RocketRide cloud's web app — where people use RocketRide in a browser. */
+const CLOUD_WEB_APP_URL = 'https://rocketride.ai/';
+
+/**
+ * The web app a signed-in user should land on for a server: the cloud API
+ * (CONST_DEFAULT_WEB_CLOUD) is fronted by the cloud web app at
+ * rocketride.ai; any other server serves its web app from its own origin.
+ *
+ * @param serverBase - The server's http(s) origin (toHttpBase of its URI).
+ * @returns The web app URL, with a trailing slash.
+ */
+export function webAppUrlFor(serverBase: string): string {
+	const origin = serverBase.replace(/\/+$/, '');
+	return origin.toLowerCase() === CONST_DEFAULT_WEB_CLOUD.toLowerCase() ? CLOUD_WEB_APP_URL : `${origin}/`;
+}
 
 /**
  * Escapes text for an HTML text node or attribute.
@@ -300,7 +316,7 @@ async function signInSaas(uri: string, out: Output): Promise<string> {
 
 	// step: browser authorization via the loopback redirect
 	// The browser continues to this server's web app once signed in
-	const { code, redirectUri } = await authorizeViaLoopback(DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, `${toHttpBase(uri)}/`, out);
+	const { code, redirectUri } = await authorizeViaLoopback(DEFAULT_ZITADEL_URL, DEFAULT_CLI_CLIENT_ID, challenge, webAppUrlFor(toHttpBase(uri)), out);
 
 	// step: exchange the code over a temporary DAP connection — the server
 	// consumes the Zitadel tokens and returns an rr_* session key
