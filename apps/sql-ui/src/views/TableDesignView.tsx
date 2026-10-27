@@ -37,7 +37,7 @@
 // The outcome says "one transaction" only when the reply does.
 // =============================================================================
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Banner, Button, Card, ConfirmDialog, ContentHeader, EmptyState, InputField, Section, StatusBadge, TabControl, TabPanel } from 'shell';
 import type { ViewMenu } from 'shell';
@@ -46,7 +46,9 @@ import { isTransactionsUnavailable } from '../connect';
 import type { SqlEndpoint, SqlSchemaColumn, SqlSchemaResponse, SqlDialect } from '../connect';
 import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, thrownApplyMayHaveRun } from '../sql/applyMode';
 import { buildRelationGraph, inboundReferences } from '../schema/relations';
-import { refreshSchema, useSchema } from '../schema/schemaStore';
+import { refreshSchema, useExecuteState, useSchema } from '../schema/schemaStore';
+import { executeGateReason } from '../executeGate';
+import GatedButton from '../components/GatedButton';
 import { useSqlEnv } from '../sqlEnv';
 import type { AlterOp, ColumnSpec } from '../sql/ddl';
 import { FK_ACTIONS, describeOp, generateAlterStatements, generateCreateTable } from '../sql/ddl';
@@ -594,6 +596,10 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 	const createMode = table === null;
+	// A schema-only node runs nothing: Apply is off, with the reason, and
+	// sends nothing (`unknown`, a probe in flight, leaves it on).
+	const applyGate = executeGateReason(useExecuteState(endpoint.key));
+	const applyGateId = useId();
 
 	// ── Designer state ───────────────────────────────────────────────────────
 
@@ -744,7 +750,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 	 * @param atomic - Ask for one transaction (false only after the user agreed to go without).
 	 */
 	const apply = useCallback(async (atomic: boolean): Promise<void> => {
-		if (!env.ready || statements.length === 0) return;
+		if (applyGate !== null || !env.ready || statements.length === 0) return;
 		const total = statements.length;
 		// The plan this apply sends: what it settled is dropped from THIS list.
 		const sent = ops;
@@ -801,7 +807,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 			setApplying(false);
 			setConfirmOpen(false);
 		}
-	}, [env, statements, endpoint, createMode, createName, table, ops, snapshot.refreshedAt]);
+	}, [env, statements, endpoint, createMode, createName, table, ops, snapshot.refreshedAt, applyGate]);
 
 	// ── Outcome banner (composed against the post-refresh snapshot) ──────────
 
@@ -883,18 +889,23 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 						>
 							Discard
 						</Button>
-						<Button
+						<GatedButton
 							variant="primary"
 							onClick={() => setConfirmOpen(true)}
 							disabled={pendingCount === 0 || applying || !env.ready}
+							gateReason={applyGate}
+							reasonId={applyGateId}
 						>
 							{applying ? 'Applying...' : 'Apply'}
-						</Button>
+						</GatedButton>
 					</>
 				}
 			/>
 
 			<div style={styles.body}>
+				{applyGate !== null && (
+					<div id={applyGateId} style={styles.cardGap}>{`Schema only: ${applyGate} Changes stay staged; Apply is off.`}</div>
+				)}
 				{applyOutcome && (
 					<div style={styles.cardGap}>
 						<Banner variant={applyOutcome.variant}>

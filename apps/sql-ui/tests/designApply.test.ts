@@ -191,3 +191,20 @@ describe('TableDesignView applies through applyBatch', () => {
 		assert.match(VIEW, /setOps\(\(prev\) => \[\.\.\.planAfterFailure\(sent, \w+\), \.\.\.prev\.slice\(sent\.length\)\]\)/);
 	});
 });
+
+describe('DA-R1 M2: the designer sends nothing on a schema-only node', () => {
+	it('Apply is a GatedButton with the schema-only reason, and apply() returns before applyBatch while the state is off', () => {
+		assert.match(VIEW, /const applyGate = executeGateReason\(useExecuteState\(endpoint\.key\)\);/);
+		assert.match(VIEW, /<GatedButton\s+variant="primary"[\s\S]*?gateReason=\{applyGate\}\s+reasonId=\{applyGateId\}[\s\S]*?\{applying \? 'Applying\.\.\.' : 'Apply'\}\s*<\/GatedButton>/);
+		assert.match(VIEW, /<div id=\{applyGateId\}[^>]*>\{`Schema only: \$\{applyGate\} Changes stay staged; Apply is off\.`\}<\/div>/);
+		const guard = VIEW.indexOf('if (applyGate !== null || !env.ready || statements.length === 0) return;');
+		assert.ok(guard > 0 && guard < VIEW.indexOf('.applyBatch(statements.map('), 'apply() returns before it sends');
+	});
+
+	it('only `off` gates it: `unknown` (a probe in flight) leaves Apply on', async () => {
+		const { executeGateReason } = await import('../src/executeGate');
+		assert.equal(executeGateReason('unknown'), null);
+		assert.equal(executeGateReason('on'), null);
+		assert.notEqual(executeGateReason('off'), null);
+	});
+});
