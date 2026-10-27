@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ExplorerToolError } from 'shared/explorer';
-import { GATE_BUSY_TEXT, createRequestGate } from '../src/graph/requestGate';
+import { GATE_BUSY_TEXT, createRequestGate, gateBusyText, gateRefusalNotice, isGateRefusal, isGateRefusalText } from '../src/graph/requestGate';
 
 /** A call that settles when told to. */
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
@@ -86,4 +86,40 @@ test('listeners hear when the gate becomes busy and free', async () => {
 	stop();
 	assert.deepEqual(heard, [GATE_BUSY_TEXT, null]);
 	assert.ok(GATE_BUSY_TEXT.startsWith('Not sent: '));
+});
+
+// A statement of a Run all can meet the gate taken by a graph action in the gap after the one before it. The node was
+// never asked, the pipeline is running: no "start the pipeline" hint, a warning, and no database text.
+test('a refusal by the gate is recognised, and its notice is a warning that names the gate, with no pipeline hint', async () => {
+	const gate = createRequestGate();
+	let refusal: unknown = null;
+	const held = gate.send('read_query', () => new Promise<number>(() => undefined));
+	await gate.send('read_query', async () => 1).catch((error: unknown) => {
+		refusal = error;
+	});
+	assert.equal(isGateRefusal(refusal), true);
+	assert.equal(isGateRefusal(new Error(GATE_BUSY_TEXT)), false, 'only the gate\'s own tool error');
+	assert.equal(isGateRefusal(new ExplorerToolError({ kind: 'unavailable', tool: 'read_query', message: 'This connection is not available.' })), false);
+	const notice = gateRefusalNotice();
+	assert.equal(notice.variant, 'warning');
+	assert.equal(notice.headline, 'Not sent: an earlier request from this workbench is still running on the database.');
+	assert.doesNotMatch(notice.hint ?? '', /pipeline/i);
+	assert.match(notice.hint ?? '', /Try again in a moment\.$/);
+	assert.equal(notice.verbatim, '', 'no "database said" text: the database was never asked');
+	assert.equal(notice.generic, false);
+	void held;
+});
+
+test('the write console\'s gate is its own, and its refusal names it', async () => {
+	const console1 = createRequestGate('write console');
+	const workbench = createRequestGate();
+	void console1.send('execute', () => new Promise<number>(() => undefined));
+	assert.equal(workbench.busy(), null, 'the workbench\'s gate is not held by the console');
+	assert.equal(console1.busy(), gateBusyText('write console'));
+	assert.match(gateBusyText('write console'), /^Not sent: an earlier request from this write console is still running on the database\. The write console sends one request at a time/);
+	await assert.rejects(console1.send('execute', async () => 1), (error: unknown) => isGateRefusal(error));
+	assert.equal(isGateRefusalText(gateBusyText('write console')), true);
+	assert.equal(isGateRefusalText(GATE_BUSY_TEXT), true);
+	assert.equal(isGateRefusalText('boom'), false);
+	assert.equal(gateRefusalNotice(gateBusyText('write console')).headline, 'Not sent: an earlier request from this write console is still running on the database.');
 });

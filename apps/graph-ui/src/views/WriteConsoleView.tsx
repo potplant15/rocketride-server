@@ -38,7 +38,10 @@
 //
 // The header says "Writes allowed" while the console can run. History is an
 // inline side panel (SidePanel, never a drawer); from it a statement is only put
-// in the editor, never sent. There are no query tabs here: one editor.
+// in the editor, never sent. There are no query tabs here: one editor. The
+// console has its own request gate (graph/requestGate.ts), not the workbench's:
+// a write you stopped waiting for keeps its database connection until the
+// database finishes it, so the next one waits rather than fill the node's pool.
 //
 // As a dev tool, where the console is unavailable Test connection shows the
 // connection details inline in this document, with a test (ConnectionDetailsPanel,
@@ -61,6 +64,7 @@ import HistoryPanel from '../components/HistoryPanel';
 import RunSurface, { NoticeBanner } from '../components/RunSurface';
 import SidePanel from '../components/SidePanel';
 import { createLoadSlot } from '../graph/loadSlot';
+import { createRequestGate } from '../graph/requestGate';
 
 /** Why the console is unavailable for a node, in words. */
 export function writeUnavailableText(allowExecute: boolean, graphShape: boolean): string {
@@ -102,6 +106,8 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 	// One slot for the life of the document: the surface takes each request once (see loadSlot.ts).
 	const [slot] = useState(createLoadSlot);
 	const [loadSeq, setLoadSeq] = useState(0);
+	// One request at a time from this console (its own gate; see the header).
+	const [requests] = useState(() => createRequestGate('write console'));
 	// From History a statement is only loaded here, never sent: it runs when Execute is pressed, after the confirmation
 	// when the text check flags it (rerunAnnouncement says which).
 	const put = useCallback((text: string) => {
@@ -144,7 +150,7 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 					</div>
 					<div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
 						<div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-							<RunSurface endpoint={endpoint} mode="write" paused={gate.paused} loadSlot={slot} loadSeq={loadSeq} onOpenHistory={() => setHistoryOpen((open) => !open)} historyOpen={historyOpen} />
+							<RunSurface endpoint={endpoint} mode="write" paused={gate.paused} loadSlot={slot} loadSeq={loadSeq} onOpenHistory={() => setHistoryOpen((open) => !open)} historyOpen={historyOpen} gate={requests} />
 						</div>
 						{historyOpen && (
 							<SidePanel title="History" subtitle={view.title} onClose={() => setHistoryOpen(false)}>

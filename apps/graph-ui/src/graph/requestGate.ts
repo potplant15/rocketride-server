@@ -36,13 +36,47 @@
 // SETTLES, not until the user stops waiting. A request asked for while one is in
 // flight is refused before anything is sent, with a sentence, as a tool error of
 // kind `unavailable` (so a write that was refused here is never reported as one
-// that may have been applied).
+// that may have been applied). The workbench has one gate for all its tabs; the
+// write console has its own.
+//
+// A refusal that reaches a failure banner (a statement of a batch that met the
+// gate taken in the gap before it) is told apart from a node that cannot be
+// reached: the node was never asked and the pipeline is running, so it is a
+// warning with no "start the pipeline" hint, and it is not a run to record.
 // =============================================================================
 
 import { ExplorerToolError } from 'shared/explorer';
+import type { IFailureNotice } from './failures';
+import { splitNotice } from './wording';
 
-/** What a refused request says. */
-export const GATE_BUSY_TEXT = 'Not sent: an earlier request from this workbench is still running on the database. A workbench sends one request at a time, and one you stopped waiting for counts until the database finishes it. Try again in a moment.';
+/** Which document a gate serves (each has its own). */
+export type GateHost = 'workbench' | 'write console';
+
+/**
+ * What a request refused by a host's gate says.
+ *
+ * @param host - The document.
+ * @returns The sentence.
+ */
+export function gateBusyText(host: GateHost): string {
+	return `Not sent: an earlier request from this ${host} is still running on the database. ${host === 'workbench' ? 'A workbench' : 'The write console'} sends one request at a time, and one you stopped waiting for counts until the database finishes it. Try again in a moment.`;
+}
+
+/** What a request refused by the workbench's gate says. */
+export const GATE_BUSY_TEXT = gateBusyText('workbench');
+
+/** The title of a Run button that waits for the gate. */
+export const GATE_WAITING_TITLE = 'An earlier request is still running on the database; Run is available again once it finishes.';
+
+/**
+ * Whether a sentence is a gate's refusal (a run that ended with it was never sent).
+ *
+ * @param text - A run's error text.
+ * @returns True for either host's refusal.
+ */
+export function isGateRefusalText(text: string | null | undefined): boolean {
+	return text === GATE_BUSY_TEXT || text === gateBusyText('write console');
+}
 
 /** The gate. */
 export interface IRequestGate {
@@ -61,18 +95,42 @@ export interface IRequestGate {
 }
 
 /**
+ * Whether an error is the gate's own refusal (nothing was sent).
+ *
+ * @param error - What a call rejected with.
+ * @returns True for the gate's "not sent" tool error.
+ */
+export function isGateRefusal(error: unknown): boolean {
+	return error instanceof ExplorerToolError && error.kind === 'unavailable' && isGateRefusalText(error.message);
+}
+
+/**
+ * The failure notice of a refusal by the gate: a warning whose headline says nothing was sent, the rest as its hint,
+ * and no database text (the database was never asked).
+ *
+ * @param text - The refusal's sentence (default: the workbench's).
+ * @returns The notice.
+ */
+export function gateRefusalNotice(text: string = GATE_BUSY_TEXT): IFailureNotice {
+	const { headline, details } = splitNotice(text);
+	return { variant: 'warning', headline, detail: '', verbatim: '', generic: false, hint: details, ignore: false };
+}
+
+/**
  * Create a gate.
  *
+ * @param host - The document it serves, named in its refusal (default: the workbench).
  * @returns A free gate.
  */
-export function createRequestGate(): IRequestGate {
+export function createRequestGate(host: GateHost = 'workbench'): IRequestGate {
+	const text = gateBusyText(host);
 	let inFlight = 0;
 	const listeners = new Set<() => void>();
 	const notify = (): void => listeners.forEach((listener) => listener());
 	return {
-		busy: () => (inFlight > 0 ? GATE_BUSY_TEXT : null),
+		busy: () => (inFlight > 0 ? text : null),
 		async send(tool, send) {
-			if (inFlight > 0) throw new ExplorerToolError({ kind: 'unavailable', tool, message: GATE_BUSY_TEXT });
+			if (inFlight > 0) throw new ExplorerToolError({ kind: 'unavailable', tool, message: text });
 			inFlight += 1;
 			notify();
 			try {

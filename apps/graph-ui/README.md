@@ -165,10 +165,11 @@ edited that tab's text, Explore opens a new one and runs the sample there.
   connection; the text of the other tabs lasts until the tab or the document is
   closed. Tabs are not restored when the document opens again.
 - **One request at a time.** A workbench sends one request at a time across
-  all its tabs: statements and the graph's actions alike. One asked for while
-  another is still on the database is not sent, and says so. A statement you
+  all its tabs: statements and the graph's actions alike. A statement you
   stopped waiting for counts until the database finishes it, because it still
-  holds a connection there (Apache AGE's node has four).
+  holds a connection there (Apache AGE's node has four). Meanwhile **Run** waits
+  and says so, and anything asked for is not sent and says why; a statement
+  that was not sent is not recorded in History.
 - **Room for the results.** The divider under the editor sets its height: drag
   it, or reach it with Tab and use ArrowUp and ArrowDown (24 px at a time) or
   Home to hide the editor; a double click hides it too, and so does **Hide
@@ -766,6 +767,9 @@ and it always says what it is:
   fails. The strip says how many ran and how many were not run, and the
   confirmation says so before anything is sent.
 - A write is never sent again by the app: no automatic retry.
+- The console sends one request at a time too, through its own gate (not the
+  workbench's): a write you stopped waiting for counts until the database
+  finishes it, and until then **Execute** waits and says so.
 - A failure that can come after the database ran the statement (the node could
   not return its answer, the answer was not understood, or the app stopped
   waiting) says **the write may have been applied**. Only a refusal before

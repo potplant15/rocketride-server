@@ -48,8 +48,10 @@
 //   - only the shown tab draws its results: a hidden tab keeps its runs, result
 //     and graph session, and draws the canvas or the grid again when shown.
 //
-// In the workbench every read goes through the workbench's gate
-// (graph/requestGate.ts): one request at a time across its tabs.
+// Every request goes through the host's gate (graph/requestGate.ts): the
+// workbench's, one at a time across its tabs, or the write console's own. While
+// it is held, Run waits and says why; a statement the gate refused was never
+// sent, so it is not recorded and its banner gives no pipeline hint.
 //
 // The statement runner and strip are the shared Explorer ones; this file only
 // configures them for Cypher. A row opens in an inline panel (RowPanel), not the
@@ -62,7 +64,7 @@
 // search and the editor stay HERE in every mount.
 // =============================================================================
 
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { Banner, Button, EmptyState, StatusBadge, ToggleGroup } from 'shell';
@@ -86,6 +88,7 @@ import { GRAPH_BATCH_WORDS, affectedNotReported, historySummaryOf, limitPatch, p
 import { chooseTab, summarizeResult } from '../graph/results';
 import type { ResultTab } from '../graph/results';
 import type { ILoadSlot } from '../graph/loadSlot';
+import { GATE_WAITING_TITLE, gateRefusalNotice, isGateRefusal, isGateRefusalText } from '../graph/requestGate';
 import type { IRequestGate } from '../graph/requestGate';
 import { inspectorTextOfRow } from '../graph/rowInspect';
 import { EDITOR_HEIGHT_PREF_KEY, clampEditorHeight, splitToggled, storedEditorHeight } from '../graph/splitPane';
@@ -152,7 +155,7 @@ export interface IRunSurfaceProps {
 	 * Absent: the bar sits under the editor (the write console).
 	 */
 	barHost?: HTMLElement | null;
-	/** The host's gate for reads: one request at a time across its tabs (the workbench). */
+	/** The host's gate: one request at a time (across the workbench's tabs, or the write console's). */
 	gate?: IRequestGate;
 }
 
@@ -183,6 +186,9 @@ const styles = {
 
 /** The row-limit choices as the toggle shows them. */
 const LIMIT_OPTIONS = ROW_LIMIT_CHOICES.map((choice) => ({ id: choice === null ? 'all' : String(choice), label: choice === null ? 'All' : choice.toLocaleString('en-US') }));
+
+/** A gate's subscription and state for a surface that has none. */
+const NO_GATE = { subscribe: (): (() => void) => () => undefined, busy: (): string | null => null };
 
 /** What is announced when the graph fills the document. */
 export const FULL_SCREEN_TEXT = 'Full screen · Esc to exit · the inspector stays open';
@@ -404,15 +410,17 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		execute: async (_run, send, ticket) => {
 			if (!session) throw new ExplorerToolError({ kind: 'unavailable', tool: mode === 'read' ? TOOL.readQuery : TOOL.execute, message: 'This connection is not available.' });
 			const read = (): Promise<ReadQueryResult> => session.invoke<ReadQueryResult>(TOOL.readQuery, { cypher: send.cypher, params: {}, limit: send.limit }, { generation: ticket });
+			const write = (): Promise<ReadQueryResult> => session.invoke<ReadQueryResult>(TOOL.execute, { query: send.cypher, shape: 'graph' }, { generation: ticket });
 			return mode === 'read'
 				? (gate ? gate.send(TOOL.readQuery, read) : read())
 				// Counted in the call (the dev-tool controller counts it itself), so a write that lands after this console
-				// closed still marks drawn graphs out of date.
-				: env.countWrite(endpoint.key, () => session.invoke<ReadQueryResult>(TOOL.execute, { query: send.cypher, shape: 'graph' }, { generation: ticket }));
+				// closed still marks drawn graphs out of date. The gate is inside the count: a write it refused was never
+				// sent, and changes nothing.
+				: env.countWrite(endpoint.key, () => (gate ? gate.send(TOOL.execute, write) : write()));
 		},
 		settle: (_run, result) => settleRun(mode, result, dialect?.dialect ?? null),
 		describeFailure: (message, error) => {
-			const notice = mode === 'write' ? describeWriteFailure(message, error) : describeFailureOf(message, error, writable);
+			const notice = isGateRefusal(error) ? gateRefusalNotice(message) : mode === 'write' ? describeWriteFailure(message, error) : describeFailureOf(message, error, writable);
 			failureNotes.current = notice;
 			return notice as IFailureNotice & { verbatim: string };
 		},
@@ -421,6 +429,8 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 			// A write is counted where it is sent (countWrite); one the user stopped waiting for may still complete, so it
 			// makes every graph drawn from this connection out of date now, in every document.
 			if (isAbandonedWrite(mode, run.outcome)) env.markAbandonedWrite(endpoint.key);
+			// A statement the gate refused was never sent: History keeps only what ran.
+			if (run.outcome === 'error' && isGateRefusalText(run.error)) return;
 			env.history.record(endpoint.key, toHistoryEntry(historySummaryOf(run, Date.now()), entryId()));
 		},
 		summarize: ({ shown, runs }) => {
@@ -466,7 +476,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 			const through = latest.current.gate;
 			return through ? through.send(TOOL.readQuery, read) : read();
 		},
-		describe: (error) => describeFailureOf(error instanceof Error ? error.message : String(error), error, latest.current.writable),
+		describe: (error) => (isGateRefusal(error) ? gateRefusalNotice((error as Error).message) : describeFailureOf(error instanceof Error ? error.message : String(error), error, latest.current.writable)),
 		announce: (text) => latest.current.announce(text),
 		captionChoice: (label) => captionsRef.current.get(label),
 		paused: () => latest.current.blocked,
@@ -512,12 +522,16 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	// ── Running ──────────────────────────────────────────────────────────────
 	// How the last batch was taken: the whole editor (Run all), part of it, or text from elsewhere (a rerun).
 	const lastBatch = useRef<'all' | 'editor' | 'other'>('other');
-	// Why the last press sent nothing, shown until the next one starts.
+	// Why the last press sent nothing, shown until the next one starts (a gate refusal: until the gate frees).
 	const [startRefusal, setStartRefusal] = useState<string | null>(null);
+	const gateBusy = useSyncExternalStore(gate ? gate.subscribe : NO_GATE.subscribe, gate ? gate.busy : NO_GATE.busy, gate ? gate.busy : NO_GATE.busy);
+	useEffect(() => {
+		if (gateBusy === null) setStartRefusal((current) => (isGateRefusalText(current) ? null : current));
+	}, [gateBusy]);
 	const startRun = useCallback((targets: IRunTarget[], fromEditor: boolean) => {
 		// A press while a batch runs (keyboard, History), while the surface is paused, or while another request of the
 		// workbench is still on the database is refused out loud, never dropped.
-		const refusal = runRefusal({ running: runner.running, blocked, busy: mode === 'read' ? gate?.busy() ?? null : null });
+		const refusal = runRefusal({ running: runner.running, blocked, busy: gate?.busy() ?? null });
 		setStartRefusal(refusal);
 		if (refusal !== null) {
 			announce(refusal);
@@ -618,6 +632,8 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const willRun = describeSnapshot(view ?? { text, start: 0, end: 0, caret: 0 });
 	const strip = runner.runs.length > 1;
 	const showNotices = blocked !== null || startRefusal !== null || runner.refusal !== null || runner.failure !== null || runner.abandonNotice !== null || strip;
+	// Run waits while the gate is held (another tab's request, or one this tab stopped waiting for), and says why.
+	const waiting = gateBusy !== null && !runner.running;
 
 	// How the result is shown, with its counts: one compact switch in the run bar.
 	const views: { id: ResultTab; label: string }[] = useMemo(() => [
@@ -650,10 +666,10 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 					{firstLineOf(text) || '(empty)'}
 				</button>
 			)}
-			<Button variant="primary" disabled={runner.running || blocked !== null} onClick={() => run(false)} small={inRow} title="Run the selection or the statement at the caret (Ctrl/Cmd+Enter)">
+			<Button variant="primary" disabled={runner.running || blocked !== null || gateBusy !== null} onClick={() => run(false)} small={inRow} title={waiting ? GATE_WAITING_TITLE : 'Run the selection or the statement at the caret (Ctrl/Cmd+Enter)'}>
 				{mode === 'read' ? 'Run' : 'Execute'}
 			</Button>
-			<Button variant="ghost" disabled={runner.running || blocked !== null} onClick={() => run(true)} small={inRow} title="Run every statement in order (Ctrl/Cmd+Shift+Enter)">
+			<Button variant="ghost" disabled={runner.running || blocked !== null || gateBusy !== null} onClick={() => run(true)} small={inRow} title={waiting ? GATE_WAITING_TITLE : 'Run every statement in order (Ctrl/Cmd+Shift+Enter)'}>
 				{mode === 'read' ? 'Run all' : 'Execute all'}
 			</Button>
 			{mode === 'read' && (
@@ -676,7 +692,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 				const chip = rowLimitChip(limitChoice, dialect);
 				return <span title={chip.title ?? undefined}><StatusBadge variant="muted">{chip.text}</StatusBadge></span>;
 			})()}
-			<span style={styles.willRun}>{runner.running ? 'Running…' : willRun}</span>
+			<span style={styles.willRun}>{runner.running ? 'Running…' : waiting ? 'Waiting for an earlier request to finish…' : willRun}</span>
 			<ToggleGroup options={views} value={tab} onChange={(id) => setTab(id)} aria-label="Show the result as" />
 			<Button variant="ghost" small ariaExpanded={!split.collapsed} title={split.collapsed ? 'Show the editor' : 'Hide the editor; the run bar stays'} onClick={() => (split.collapsed ? showEditor() : changeSplit(splitToggled(split)))}>
 				{split.collapsed ? 'Show editor' : 'Hide editor'}
@@ -766,7 +782,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 					onConfirm={() => {
 						const targets = confirm.targets;
 						setConfirm(null);
-						const refusal = runRefusal({ running: runner.running, blocked, busy: null });
+						const refusal = runRefusal({ running: runner.running, blocked, busy: gate?.busy() ?? null });
 						if (refusal !== null) {
 							announce(refusal);
 							return;

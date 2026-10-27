@@ -144,8 +144,9 @@ test('the results grid key includes the tab, and the graph full screen leaves wi
 });
 
 // Apache AGE's node has four database connections, and a request the user stopped waiting for keeps one until the
-// database finishes it: every read of every tab of a workbench goes through its one gate (graph/requestGate.ts).
-test('every read a workbench tab sends goes through the workbench\'s one request gate; writes and the write console do not', () => {
+// database finishes it: every request of every tab of a workbench goes through its one gate (graph/requestGate.ts),
+// and the write console's through its own.
+test('every request goes through its document\'s one request gate: the workbench\'s for all its tabs, the write console\'s own', () => {
 	const workbench = code(read('views', 'WorkbenchView.tsx'));
 	assert.ok(/const \[requests\] = useState\(createRequestGate\);/.test(workbench), 'one gate for the life of the document');
 	const tag = workbench.slice(workbench.indexOf('<RunSurface'), workbench.indexOf('/>', workbench.indexOf('<RunSurface')));
@@ -155,7 +156,24 @@ test('every read a workbench tab sends goes through the workbench\'s one request
 	assert.ok(/\? \(gate \? gate\.send\(TOOL\.readQuery, read\) : read\(\)\)/.test(execute), 'a statement read goes through it');
 	const factory = surface.slice(surface.indexOf('const graphSession = useMemo'), surface.indexOf('useEffect(() => () => graphSession.dispose()'));
 	assert.ok(/const through = latest\.current\.gate;\s*return through \? through\.send\(TOOL\.readQuery, read\) : read\(\);/.test(factory), 'and so does every graph action');
-	assert.doesNotMatch(code(read('views', 'WriteConsoleView.tsx')), /createRequestGate|gate=/, 'the write console has none');
+	const writeConsole = code(read('views', 'WriteConsoleView.tsx'));
+	assert.ok(/const \[requests\] = useState\(\(\) => createRequestGate\('write console'\)\);/.test(writeConsole), 'the write console has its own gate, not the workbench\'s');
+	assert.ok(/gate=\{requests\}/.test(writeConsole.slice(writeConsole.indexOf('<RunSurface'), writeConsole.indexOf('/>', writeConsole.indexOf('<RunSurface')))), 'and hands it to its surface');
+	// A write goes through the gate INSIDE countWrite: a write the gate refused was never sent and marks nothing out of date.
+	assert.ok(/: env\.countWrite\(endpoint\.key, \(\) => \(gate \? gate\.send\(TOOL\.execute, write\) : write\(\)\)\);/.test(execute), 'a write goes through it, inside the count');
+});
+
+// A statement of a batch can meet the gate taken in the gap after the one before it: it was never sent, the pipeline
+// is running. Its banner gives no "start the pipeline" hint, History does not record it, and Run says it is waiting.
+test('a gate refusal is a warning with no pipeline hint and no History entry, and Run waits on the gate with its reason', () => {
+	const surface = code(read('components', 'RunSurface.tsx'));
+	assert.ok(/const notice = isGateRefusal\(error\) \? gateRefusalNotice\(message\) : mode === 'write'/.test(surface), 'statements');
+	assert.ok(/describe: \(error\) => \(isGateRefusal\(error\) \? gateRefusalNotice\(/.test(surface), 'graph actions');
+	const record = surface.slice(surface.indexOf('record: (run) =>'), surface.indexOf('summarize:'));
+	assert.ok(/if \(run\.outcome === 'error' && isGateRefusalText\(run\.error\)\) return;\s*env\.history\.record\(/.test(record), 'a statement that was never sent is not recorded');
+	assert.ok(/const gateBusy = useSyncExternalStore\(gate \? gate\.subscribe : NO_GATE\.subscribe, gate \? gate\.busy : NO_GATE\.busy, gate \? gate\.busy : NO_GATE\.busy\);/.test(surface), 'the surface follows its gate');
+	assert.ok(/if \(gateBusy === null\) setStartRefusal\(\(current\) => \(isGateRefusalText\(current\) \? null : current\)\);/.test(surface), '"Try again in a moment" goes once the gate is free');
+	assert.ok(/waiting \? 'Waiting for an earlier request to finish…'/.test(surface) && /title=\{waiting \? GATE_WAITING_TITLE :/.test(surface), 'Run says it is waiting, and why');
 });
 
 // A hidden tab keeps its runs, result and graph session, but no canvas or grid (8 tabs x every open document).
@@ -208,7 +226,7 @@ test('no graph-ui view writes a \\u escape as JSX text', () => {
 test('the write console counts a write where it is sent, not in the record step a closed document skips', () => {
 	const surface = code(read('components', 'RunSurface.tsx'));
 	const execute = surface.slice(surface.indexOf('execute: async'), surface.indexOf('settle:'));
-	assert.ok(/env\.countWrite\(endpoint\.key, \(\) => session\.invoke<ReadQueryResult>\(TOOL\.execute/.test(execute), 'execute is sent through the env\'s countWrite');
+	assert.ok(/const write = \(\): Promise<ReadQueryResult> => session\.invoke<ReadQueryResult>\(TOOL\.execute, \{ query: send\.cypher, shape: 'graph' \}/.test(execute) && /env\.countWrite\(endpoint\.key, \(\) => \(gate \? gate\.send\(TOOL\.execute, write\) : write\(\)\)\)/.test(execute), 'execute is sent through the env\'s countWrite');
 	const record = surface.slice(surface.indexOf('record: (run) =>'), surface.indexOf('summarize:'));
 	assert.ok(/isAbandonedWrite\(mode, run\.outcome\)\) env\.markAbandonedWrite\(endpoint\.key\)/.test(record), 'record counts only a write the user stopped waiting for');
 	assert.ok(!/mayHaveChangedData/.test(surface));
@@ -246,12 +264,12 @@ test('Run is disabled for as long as a statement runs, and a run that cannot sta
 	const surface = code(read('components', 'RunSurface.tsx'));
 	const buttons = surface.match(/<Button variant="(primary|ghost)" disabled=\{[^}]*\} onClick=\{\(\) => run\((false|true)\)\}/g) ?? [];
 	assert.equal(buttons.length, 2, 'Run and Run all');
-	for (const button of buttons) assert.ok(button.includes('disabled={runner.running || blocked !== null}'), button);
+	for (const button of buttons) assert.ok(button.includes('disabled={runner.running || blocked !== null || gateBusy !== null}'), button);
 	const startRun = surface.slice(surface.indexOf('const startRun = useCallback'), surface.indexOf('const run = useCallback'));
-	assert.ok(/runRefusal\(\{ running: runner\.running, blocked, busy: mode === 'read' \? gate\?\.busy\(\) \?\? null : null \}\)/.test(startRun), 'startRun refuses with a sentence, the workbench\'s busy gate included');
+	assert.ok(/runRefusal\(\{ running: runner\.running, blocked, busy: gate\?\.busy\(\) \?\? null \}\)/.test(startRun), 'startRun refuses with a sentence, the document\'s busy gate included (both modes)');
 	assert.ok(/setStartRefusal\(refusal\);/.test(startRun), 'and the sentence stays on screen until the next press');
 	const confirm = surface.slice(surface.indexOf('onConfirm={'), surface.indexOf('onCancel={'));
-	assert.ok(/runRefusal\(/.test(confirm), 'so does confirming a write');
+	assert.ok(/runRefusal\(\{ running: runner\.running, blocked, busy: gate\?\.busy\(\) \?\? null \}\)/.test(confirm), 'so does confirming a write, the console\'s gate included');
 });
 
 // The write confirmation is the shell's ConfirmDialog, which focuses its confirm button when it mounts, so an Enter
