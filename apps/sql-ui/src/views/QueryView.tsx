@@ -72,6 +72,7 @@ import { SaveQueryButton, SavedQueriesButton } from '../components/SavedQueriesP
 import AskBar from '../components/AskBar';
 import ExplainPanel from '../components/ExplainPanel';
 import { announce } from '../a11y/announce';
+import { menuKeyTarget } from '../a11y/menuKeys';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
 import { liveBufferText, selectRunTargets } from '../sql/targets';
 import { classifyStatement } from '../sql/classify';
@@ -274,6 +275,32 @@ function resultCellEl(value: unknown): HTMLElement {
 }
 
 /**
+ * Move focus between the buttons of a popup menu with Up, Down, Home and End.
+ *
+ * @param event - The key event on the menu's container.
+ */
+function moveMenuFocus(event: React.KeyboardEvent<HTMLElement>): void {
+	const items = Array.from(event.currentTarget.querySelectorAll('button'));
+	const target = menuKeyTarget(event.key, items.indexOf(document.activeElement as HTMLButtonElement), items.length);
+	if (target === null) return;
+	event.preventDefault();
+	items[target]?.focus();
+}
+
+/**
+ * After a popup menu closes, give focus back to the button that opened it,
+ * but only when focus was lost with the menu: a click that put focus somewhere
+ * else (the editor, another control) keeps it there.
+ *
+ * @param anchor - The element holding the menu's button.
+ */
+function refocusIfLost(anchor: React.RefObject<HTMLElement | null>): void {
+	requestAnimationFrame(() => {
+		if (document.activeElement === null || document.activeElement === document.body) anchor.current?.querySelector('button')?.focus();
+	});
+}
+
+/**
  * Turn a finished statement into the history entry the drawer stores.
  *
  * @param run - The finished statement.
@@ -323,7 +350,13 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// same per-user record in both mounts. Until the record is known it reads
 	// as the default, which asks.
 	const { record: connectionRecord, status: connectionStatus } = useConnectionRecord(endpoint.connId ?? null);
-	const safety = safetyLevelOf(connectionRecord);
+	const recordSafety = safetyLevelOf(connectionRecord);
+	// The owner's answer, asked once when this realm's copy of the record is
+	// slow to show a saved level (see commitSafety). It gives way as soon as
+	// the copy changes.
+	const [askedSafety, setAskedSafety] = useState<SafetyLevel | null>(null);
+	useEffect(() => { setAskedSafety(null); }, [recordSafety]);
+	const safety = askedSafety ?? recordSafety;
 	// The runner copies its hooks once per batch; they read the level here,
 	// so each statement is checked at the level set when it is reached.
 	const safetyRef = useRef(safety);
@@ -348,7 +381,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	const safetyMenuRef = useRef<HTMLDivElement>(null);
 	const safetySyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	useEffect(() => {
-		if (pendingSafety !== null && pendingSafety === safety) setPendingSafety(null);
+		if (pendingSafety === null || pendingSafety !== safety) return;
+		setPendingSafety(null);
+		if (safetySyncTimerRef.current !== null) clearTimeout(safetySyncTimerRef.current);
 	}, [pendingSafety, safety]);
 	useEffect(() => {
 		return () => { if (safetySyncTimerRef.current !== null) clearTimeout(safetySyncTimerRef.current); };
@@ -380,7 +415,14 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			() => {
 				announce(`Safety level for this connection: ${SAFETY_CHOICES[next]}`);
 				if (safetySyncTimerRef.current !== null) clearTimeout(safetySyncTimerRef.current);
-				safetySyncTimerRef.current = setTimeout(() => setPendingSafety(null), SAFETY_SYNC_GRACE_MS);
+				// Still not in this realm's copy after the grace: ask the owner once,
+				// rather than fall back to showing the old level.
+				safetySyncTimerRef.current = setTimeout(() => {
+					void env.getConnection(connId).then(
+						(record) => setAskedSafety(record === null ? null : safetyLevelOf(record)),
+						() => undefined,
+					).finally(() => setPendingSafety(null));
+				}, SAFETY_SYNC_GRACE_MS);
 			},
 			(error: unknown) => {
 				setPendingSafety(null);
@@ -1091,7 +1133,16 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 							{`Safety: ${SAFETY_CHOICES[shownSafety]}`}{savingSafety ? ' (saving…)' : ''}
 						</GatedButton>
 					</span>
-					<AnchoredPopup anchorRef={safetyAnchorRef} open={safetyMenuOpen} onClose={() => setSafetyMenuOpen(false)} align="end" style={styles.popupMenu}>
+					<AnchoredPopup
+						anchorRef={safetyAnchorRef}
+						open={safetyMenuOpen}
+						onClose={() => {
+							setSafetyMenuOpen(false);
+							refocusIfLost(safetyAnchorRef);
+						}}
+						align="end"
+						style={styles.popupMenu}
+					>
 						<div
 							ref={safetyMenuRef}
 							role="group"
@@ -1100,6 +1151,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 							onKeyDown={(event) => {
 								// Escape closes the menu (the popup's own listener); focus goes back to the button.
 								if (event.key === 'Escape') focusSafetyButton();
+								else moveMenuFocus(event);
 							}}
 						>
 							{SAFETY_LEVELS.map((level) => (
@@ -1165,7 +1217,16 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 												Export
 											</Button>
 										</span>
-										<AnchoredPopup anchorRef={exportAnchorRef} open={exportOpen} onClose={() => setExportOpen(false)} align="end" style={styles.popupMenu}>
+										<AnchoredPopup
+											anchorRef={exportAnchorRef}
+											open={exportOpen}
+											onClose={() => {
+												setExportOpen(false);
+												refocusIfLost(exportAnchorRef);
+											}}
+											align="end"
+											style={styles.popupMenu}
+										>
 											<div
 												ref={exportMenuRef}
 												role="group"
@@ -1174,6 +1235,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 												onKeyDown={(event) => {
 													// Escape closes the menu (the popup's own listener); focus goes back to the button.
 													if (event.key === 'Escape') exportAnchorRef.current?.querySelector('button')?.focus();
+													else moveMenuFocus(event);
 												}}
 											>
 												<div style={styles.menuNote}>{`Rows this statement returned (${rows.length.toLocaleString()})`}</div>

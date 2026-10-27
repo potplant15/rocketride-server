@@ -210,9 +210,15 @@ describe('the Query page offers the level in place', () => {
 		assert.match(view, /if \(document\.activeElement === null \|\| document\.activeElement === document\.body\) focusSafetyButton\(\);/);
 	});
 
-	it('a pending level never sticks: it clears on failure, and after a short grace once the save succeeded', () => {
+	it('a pending level never sticks: it clears on failure, and after a short grace once the save succeeded, asking the owner once', () => {
 		assert.match(view, /setPendingSafety\(null\);\s*announce\(`The safety level was not changed/);
-		assert.match(view, /safetySyncTimerRef\.current = setTimeout\(\(\) => setPendingSafety\(null\), SAFETY_SYNC_GRACE_MS\);/);
+		assert.match(view, /safetySyncTimerRef\.current = setTimeout\(\(\) => \{\s*void env\.getConnection\(connId\)\.then\(/);
+		assert.match(view, /\(record\) => setAskedSafety\(record === null \? null : safetyLevelOf\(record\)\),/);
+		assert.match(view, /\.finally\(\(\) => setPendingSafety\(null\)\);/);
+		// The owner's answer is the level in force until the copy catches up, and
+		// the runner asks by it too.
+		assert.match(view, /const safety = askedSafety \?\? recordSafety;/);
+		assert.match(view, /useEffect\(\(\) => \{ setAskedSafety\(null\); \}, \[recordSafety\]\);/);
 		assert.match(view, /return \(\) => \{ if \(safetySyncTimerRef\.current !== null\) clearTimeout\(safetySyncTimerRef\.current\); \};/);
 	});
 
@@ -250,7 +256,7 @@ describe('isSafetyDowngrade and its question', () => {
 		});
 		assert.deepEqual(safetyDowngradeCopy('risky', 'Shop Postgres'), {
 			title: 'Ask only before risky writes on Shop Postgres?',
-			message: 'A bounded UPDATE or DELETE, an INSERT, a CALL and similar statements will run without asking, in every document of this connection.',
+			message: 'A bounded UPDATE or DELETE, an INSERT, a CALL and similar statements will run without asking, in every document of this connection. DROP, TRUNCATE, ALTER and an UPDATE or DELETE without WHERE still ask.',
 			confirmLabel: 'Ask before risky writes',
 		});
 	});

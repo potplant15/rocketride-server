@@ -237,7 +237,7 @@ export function safetyDowngradeCopy(to: SafetyLevel, connection: string): { titl
 	}
 	return {
 		title: `Ask only before risky writes on ${connection}?`,
-		message: 'A bounded UPDATE or DELETE, an INSERT, a CALL and similar statements will run without asking, in every document of this connection.',
+		message: 'A bounded UPDATE or DELETE, an INSERT, a CALL and similar statements will run without asking, in every document of this connection. DROP, TRUNCATE, ALTER and an UPDATE or DELETE without WHERE still ask.',
 		confirmLabel: 'Ask before risky writes',
 	};
 }
