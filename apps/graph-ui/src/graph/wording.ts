@@ -129,14 +129,21 @@ export function canvasBudgetText(model: Pick<IGraphModel, 'nodes' | 'resultNodes
  * @param incomplete - True when the node answered with more rows than were used (more neighbours exist).
  * @param budget - The canvas budget that stopped it, if any.
  * @param stuckAt - The node's row limit, when its cut answer held nothing new; otherwise null.
+ * @param about - The expanded node's caption, the captions of the nodes added (the first three are named) and, for
+ *   Expand by type, the relationship type: the status line sits away from the node, so the sentence names it.
  * @returns A sentence.
  */
-export function expandText(added: number, skipped: number, incomplete: boolean, budget: null | 'nodes' | 'relationships', stuckAt: number | null = null): string {
+export function expandText(added: number, skipped: number, incomplete: boolean, budget: null | 'nodes' | 'relationships', stuckAt: number | null = null, about?: { center: string; added: readonly string[]; type?: string }): string {
 	if (stuckAt !== null && added === 0 && skipped === 0 && budget === null) {
 		return `No new neighbours: the node stops at ${num(stuckAt)} rows and every row it returned is already drawn, so expanding again returns the same rows. Write a query by hand to see its other relationships.`;
 	}
-	if (added === 0 && skipped === 0 && !incomplete) return 'No new neighbours.';
-	const head = `Added ${num(added)} ${added === 1 ? 'neighbour' : 'neighbours'}.`;
+	const kind = about?.type ? `${about.type} ` : '';
+	const of = about ? ` of ${about.center}` : '';
+	if (added === 0 && skipped === 0 && !incomplete) return `No new ${kind}neighbours${of}.`;
+	const named = about ? about.added.slice(0, 3) : [];
+	const rest = about ? about.added.length - named.length : 0;
+	const names = named.length > 0 ? `: ${named.join(', ')}${rest > 0 ? ` and ${num(rest)} more` : ''}` : '';
+	const head = `Added ${num(added)} ${kind}${added === 1 ? 'neighbour' : 'neighbours'}${of}${names}.`;
 	if (budget === 'nodes') return `${head} The canvas holds its maximum of ${num(MAX_NODES)} nodes; dismiss some to make room.`;
 	if (budget === 'relationships') return `${head} The canvas holds its maximum relationships; dismiss some to make room.`;
 	if (skipped > 0) return `${head} ${num(skipped)} more were left out (at most 100 new neighbours per expansion); expand again to see more.`;

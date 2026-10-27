@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { KEY_HELP, handled, keyAction } from '../src/graph/keynav';
+import { KEY_HELP, handled, keyAction, nextRelationship } from '../src/graph/keynav';
 import type { IKeyContext, KeyAction } from '../src/graph/keynav';
 import { modelFromResult } from '../src/graph/model';
 import { NO_SCHEMA, ageText, countText, parseSchema, schemaStatusText, splitError } from '../src/graph/schema';
@@ -113,6 +113,34 @@ test('every key the model uses is reported as handled so the page does not also 
 	assert.equal(handled(press(c, 'Tab')), false);
 	assert.equal(handled(press(c, 'x')), false);
 	assert.equal(handled(press({ ...c, focusedId: 'n' }, 'ArrowUp')), false, 'an arrow with nowhere to go is left to the browser');
+});
+
+// Relationships are drawn by the edge layer and are not focusable, so R walks the focused node's relationships into the
+// inspector: they are reachable without a pointer.
+test('R picks the focused node\'s next drawn relationship, in drawn order, wrapping; none when it has none', () => {
+	const c = cross();
+	assert.deepEqual(press(c, 'r'), { type: 'next-relationship', id: 'c' });
+	assert.deepEqual(press(c, 'R'), { type: 'next-relationship', id: 'c' });
+	assert.deepEqual(press({ ...c, focusedId: null }, 'r'), { type: 'none' });
+	assert.equal(nextRelationship(c.model, 'c', null), '1', 'the first when none of its relationships is selected');
+	assert.equal(nextRelationship(c.model, 'c', '1'), '2');
+	assert.equal(nextRelationship(c.model, 'c', '4'), '1', 'wraps');
+	assert.equal(nextRelationship(c.model, 'c', 'unrelated'), '1', 'a selected relationship of another node starts over');
+	assert.equal(nextRelationship(c.model, 'n', null), '1');
+	assert.equal(nextRelationship(c.model, 'n', '1'), '1', 'a node with one relationship stays on it');
+	assert.equal(nextRelationship(c.model, 'far', null), null);
+	assert.equal(nextRelationship(c.model, 'gone', null), null);
+	assert.ok(KEY_HELP.some((k) => k.keys === 'R' && /relationship/.test(k.does)));
+});
+
+test('the Menu key and Shift+F10 open the focused node\'s menu; F10 alone does not', () => {
+	const c = cross();
+	assert.deepEqual(press(c, 'ContextMenu'), { type: 'context-menu', id: 'c' });
+	assert.deepEqual(press(c, 'F10', { shiftKey: true }), { type: 'context-menu', id: 'c' });
+	assert.deepEqual(press(c, 'F10'), { type: 'none' });
+	assert.deepEqual(press({ ...c, focusedId: null }, 'ContextMenu'), { type: 'none' });
+	assert.equal(handled(press(c, 'ContextMenu')), true, 'the browser does not also open its own menu');
+	assert.ok(KEY_HELP.some((k) => k.keys === 'Menu or Shift+F10' && /menu/i.test(k.does)));
 });
 
 // -----------------------------------------------------------------------------

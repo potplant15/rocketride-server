@@ -34,8 +34,15 @@
 //   E             expand                     C                   collapse
 //   Delete        dismiss from the canvas    P                   find path (two selected)
 //   (or Backspace: the key a Mac laptop labels "delete")
+//   R             the focused node's next relationship, into the inspector
+//   Menu key      the focused node's actions menu (also Shift+F10)
 //   Escape        clear the selection        ?                   show these keys
 //   Tab           leaves the canvas (focus is never trapped)
+//
+// Relationships are drawn by the edge layer and are not focusable: R is how a
+// keyboard reaches them. The Menu key and Shift+F10 make the browser fire a
+// context menu event at the focused element with no pointer position, so the
+// canvas opens its menu from the key instead, at the node.
 //
 // React Flow's own keyboard handling (arrow keys MOVE the selected node; Space
 // and Backspace are bound too) is turned off for this canvas (see flowProps.ts),
@@ -49,7 +56,7 @@
 
 import type { Point } from './geometry';
 import type { IGraphModel } from './model';
-import { neighborIds } from './model';
+import { neighborIds, relationshipsOf } from './model';
 import type { GraphId } from './types';
 
 // =============================================================================
@@ -64,6 +71,8 @@ export type KeyAction =
 	| { type: 'expand'; id: GraphId }
 	| { type: 'collapse'; id: GraphId }
 	| { type: 'dismiss'; id: GraphId }
+	| { type: 'next-relationship'; id: GraphId }
+	| { type: 'context-menu'; id: GraphId }
 	| { type: 'find-path' }
 	| { type: 'clear-selection' }
 	| { type: 'help' }
@@ -108,6 +117,8 @@ export const KEY_HELP: ReadonlyArray<{ keys: string; does: string }> = [
 	{ keys: 'C', does: 'Collapse the focused node' },
 	{ keys: 'Delete or Backspace', does: 'Dismiss the focused node from the canvas' },
 	{ keys: 'P', does: 'Find a path between the two selected nodes' },
+	{ keys: 'R', does: 'Show the focused node\'s next relationship in the inspector' },
+	{ keys: 'Menu or Shift+F10', does: 'Open the actions menu for the focused node' },
 	{ keys: 'Escape', does: 'Clear the selection' },
 	{ keys: '?', does: 'Show these keys' },
 	{ keys: 'Tab', does: 'Leave the canvas' },
@@ -167,9 +178,33 @@ export function keyAction(context: IKeyContext, input: IKeyInput): KeyAction {
 		case 'Delete':
 		case 'Backspace':
 			return { type: 'dismiss', id: current };
+		case 'r':
+		case 'R':
+			return { type: 'next-relationship', id: current };
+		case 'ContextMenu':
+			return { type: 'context-menu', id: current };
+		case 'F10':
+			return input.shiftKey ? { type: 'context-menu', id: current } : { type: 'none' };
 		default:
 			return { type: 'none' };
 	}
+}
+
+/**
+ * The relationship R moves to: the one after `current` among the node's drawn relationships (in drawn order,
+ * wrapping), or the first when `current` is not one of them.
+ *
+ * @param model - The model.
+ * @param id - The focused node.
+ * @param current - The selected relationship, if any.
+ * @returns A relationship id, or null when the node has none drawn.
+ */
+export function nextRelationship(model: IGraphModel, id: GraphId, current: GraphId | null): GraphId | null {
+	if (!model.nodes.has(id)) return null;
+	const ids = relationshipsOf(model, id).map((rel) => rel.id);
+	if (ids.length === 0) return null;
+	const at = current === null ? -1 : ids.indexOf(current);
+	return ids[(at + 1) % ids.length];
 }
 
 /**

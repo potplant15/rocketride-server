@@ -124,6 +124,12 @@ export function conflictText(conflicts: readonly IIdentityConflict[]): string {
 /** Said when a write ran on the connection after the graph was drawn. */
 export const DATA_CHANGED_TEXT = 'A statement that can change data ran on this connection after this graph was drawn, so the ids drawn here may now belong to other elements. Expand, Connect and Find path are off until you run the query again; the drawing and the Table still show the answer as it was.';
 
+/**
+ * Said when an action that would send a query is refused because a write ran after the graph was drawn. Short on
+ * purpose: the out-of-date line under the graph already says why (DATA_CHANGED_TEXT, shown once, from `stale`).
+ */
+export const STALE_REFUSAL_TEXT = 'Not sent: this drawing is out of date. Run the query again.';
+
 /** Said when an action is asked of an element already known to be out of date. */
 export const STALE_ELEMENT_TEXT = 'This element is out of date: the database now holds a different element under its id. Dismiss it, or run the query again.';
 
