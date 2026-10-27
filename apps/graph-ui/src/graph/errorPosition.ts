@@ -17,6 +17,8 @@
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 // AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 // =============================================================================
 // GRAPH - WHERE A FAILED STATEMENT WENT WRONG (pure)
@@ -30,7 +32,9 @@
 //   AGE       `Cypher syntax error: line 1:0 extraneous input ...`, only for a
 //             syntax error; the column is zero-based, and later positions in the
 //             same text are knock-on errors, so the first one is read.
-//   FalkorDB  none that is stable: nothing is marked.
+//   FalkorDB  4.22.2 (seen live): `errMsg: Invalid input 'R': ... line: 1, column: 10, offset: 9
+//             errCtx: ...`, one-based. The 6.0.1 fixtures carry no position, and a text
+//             without the form is null.
 //
 // The position is inside the statement that was sent, which is a statement of the
 // buffer (the splitter's trimmed text), so it is mapped to buffer offsets through
@@ -60,6 +64,9 @@ const NEO4J_POSITION = /\(line (\d+), column (\d+)(?: \(offset: \d+\))?\)/;
 /** AGE's translator: `line 1:7`, a zero-based column. */
 const AGE_POSITION = /\bline (\d+):(\d+)\b/;
 
+/** FalkorDB: `line: 1, column: 10, offset: 9` (one-based line and column), before its `errCtx:` echo of the query. */
+const FALKORDB_POSITION = /\bline: (\d+), column: (\d+), offset: \d+/;
+
 /** Past this a number is not a position (a hostile text must not make a huge loop or offset). */
 const MAX_COORDINATE = 1_000_000;
 
@@ -84,7 +91,6 @@ function position(line: string, column: number): IPosition | null {
  * @returns One-based line and column, or null when the text names none.
  */
 export function failurePosition(text: string, dialect: GraphDialect | null): IPosition | null {
-	if (dialect === 'falkordb') return null;
 	if (dialect === null || dialect === 'neo4j') {
 		const match = NEO4J_POSITION.exec(text);
 		if (match) {
@@ -92,6 +98,15 @@ export function failurePosition(text: string, dialect: GraphDialect | null): IPo
 			if (found) return found;
 		}
 		if (dialect === 'neo4j') return null;
+	}
+	if (dialect === null || dialect === 'falkordb') {
+		// Only what comes before the node's echo of the query (`errCtx:`), which is the user's own text.
+		const match = FALKORDB_POSITION.exec(text.split(' errCtx:')[0]);
+		if (match) {
+			const found = position(match[1], Number(match[2]));
+			if (found) return found;
+		}
+		if (dialect === 'falkordb') return null;
 	}
 	const match = AGE_POSITION.exec(text);
 	return match ? position(match[1], Number(match[2]) + 1) : null;
