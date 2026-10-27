@@ -58,14 +58,17 @@
 // may be transaction control, since the apply opens and ends its own. One
 // transaction needs the dialect: without it no entry can be split, so an
 // atomic apply is refused, and an apply without a transaction is sent entry
-// by entry, once each, as `execute` sends a statement.
+// by entry, once each, as `execute` sends a statement. One MySQL transaction
+// holds only INSERT, UPDATE, DELETE and REPLACE: MySQL commits implicitly
+// before DDL, TRUNCATE, LOCK TABLES and more, which would leave a committed
+// prefix behind a reply that says "one transaction".
 //
 // Pure (no engine), so it is tested directly.
 // =============================================================================
 
 import type { SqlDialect } from '../connect';
 import { classifyStatement } from './classify';
-import { splitStatements } from './split';
+import { splitStatements, stripSqlComments } from './split';
 import { TRANSACTION_REFUSAL_TEXT } from './failure';
 
 /** What the controller does with a statement a frame sent. */
@@ -92,6 +95,9 @@ export function gateStatement(sql: string, dialect: SqlDialect, idempotentReques
 	return { refusal: null, idempotent: idempotentRequested && kinds.every((kind) => kind === 'read') };
 }
 
+/** The statements one MySQL transaction may hold (none of them commits implicitly). */
+const MYSQL_IN_TRANSACTION = /^(?:insert|update|delete|replace)\b/i;
+
 /** Why an atomic apply is refused when the node did not report its dialect. */
 export const APPLY_UNKNOWN_DIALECT_TEXT = 'The database did not report its type, so these statements cannot be checked and run as one transaction. Nothing was applied.';
 
@@ -117,6 +123,9 @@ export function gateApplyStatements(sqls: readonly string[], dialect: SqlDialect
 		if (statements.length > 1) return `${which} holds more than one statement, so nothing was applied.`;
 		if (classifyStatement(statements[0]!.sql, dialect) === 'tx') {
 			return `${which} is transaction control. An apply opens and ends its own transaction, so nothing was applied.`;
+		}
+		if (atomic && dialect === 'mysql' && !MYSQL_IN_TRANSACTION.test(stripSqlComments(statements[0]!.sql, dialect).trim())) {
+			return `${which} is not INSERT, UPDATE, DELETE or REPLACE. On MySQL other statements can commit on their own, so they cannot run inside one transaction here. Nothing was applied.`;
 		}
 	}
 	return null;

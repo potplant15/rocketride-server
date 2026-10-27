@@ -83,7 +83,9 @@ describe('T10 — an Apply\'s list: one app-written statement each, never transa
 
 	it('passes app-written row edits and DDL in every dialect it knows', () => {
 		for (const dialect of ['postgres', 'mysql', 'clickhouse'] as const) {
-			assert.equal(gateApplyStatements([EDIT, 'DELETE FROM "orders" WHERE "order_id" = $1', 'ALTER TABLE "orders" ADD COLUMN "notes" text'], dialect, true), null, dialect);
+			assert.equal(gateApplyStatements([EDIT, 'DELETE FROM "orders" WHERE "order_id" = $1'], dialect, true), null, dialect);
+			// DDL: in one transaction on PostgreSQL (and ClickHouse's per-statement fallback); MySQL runs it per statement (I-3).
+			assert.equal(gateApplyStatements([EDIT, 'ALTER TABLE "orders" ADD COLUMN "notes" text'], dialect, dialect !== 'mysql'), null, dialect);
 		}
 	});
 
@@ -112,5 +114,24 @@ describe('T10 — an Apply\'s list: one app-written statement each, never transa
 	it('unknown dialect: one transaction is refused; without one, each entry is sent once and the node decides', () => {
 		assert.equal(gateApplyStatements([EDIT], 'unknown', true), APPLY_UNKNOWN_DIALECT_TEXT);
 		assert.equal(gateApplyStatements([EDIT, 'BEGIN'], 'unknown', false), null);
+	});
+});
+
+describe('I-3 — one MySQL transaction holds only INSERT, UPDATE, DELETE and REPLACE (anything else may commit implicitly)', () => {
+	const EDIT = 'UPDATE `orders` SET `status` = $1 WHERE `order_id` = $2';
+
+	it('refuses DDL, TRUNCATE, LOCK and the rest inside an atomic MySQL list, before anything is sent', () => {
+		for (const sql of ['ALTER TABLE `orders` ADD COLUMN `notes` text', 'CREATE TABLE `t` (`id` int)', 'TRUNCATE `orders`', 'LOCK TABLES `orders` WRITE', 'UNLOCK TABLES', 'DROP TABLE `t`', 'RENAME TABLE `a` TO `b`', 'SELECT 1', 'CALL p()', 'WITH x AS (SELECT 1) UPDATE `orders` SET `a` = 1']) {
+			assert.match(gateApplyStatements([EDIT, sql], 'mysql', true) ?? '', /^Statement 2 is not INSERT, UPDATE, DELETE or REPLACE\./, sql);
+		}
+	});
+
+	it('passes the four, behind comments too', () => {
+		assert.equal(gateApplyStatements([EDIT, 'INSERT INTO `orders` (`a`) VALUES ($1)', '/* x */ DELETE FROM `orders` WHERE `id` = $1', 'REPLACE INTO `orders` (`a`) VALUES ($1)', '-- note\nupdate `orders` set `a` = 1'], 'mysql', true), null);
+	});
+
+	it('only one MySQL transaction is restricted: per statement, and on PostgreSQL, DDL passes', () => {
+		assert.equal(gateApplyStatements(['ALTER TABLE `orders` ADD COLUMN `notes` text'], 'mysql', false), null);
+		assert.equal(gateApplyStatements(['ALTER TABLE "orders" ADD COLUMN "notes" text', 'TRUNCATE "t"'], 'postgres', true), null);
 	});
 });
