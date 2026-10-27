@@ -23,15 +23,31 @@
 // =============================================================================
 // SQL-UI — TABLE DATA VIEW (server-paged data browser for one table)
 // =============================================================================
+//
+// STAGED EDITS (sql/rowEdits.ts). The record drawer edits a row, deletes it,
+// or adds one, and the change is STAGED: nothing is written until Apply.
+// Staged rows are marked in the grid (a tint, plus "✎" on an edited value
+// and "Deleted" on a deleted row), read from the pristine fetched rows by
+// position, never from the objects the grid was handed. The bar above the
+// grid counts the changes; Review SQL shows the statements; Apply confirms
+// (with the words sql/applyMode.ts allows: one transaction, each on its own,
+// or hedged for a MySQL table whose engine could not be read), sends them in
+// one `applyBatch`, records each statement in history, drops what was
+// settled, and refetches the page. Editing is off, with the reason, on a
+// table without a primary key, on ClickHouse, on a schema-only node, and
+// while the engine (in the dev tool, the sidebar) is not reachable.
+// =============================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createGeneration } from 'shared/explorer/generation';
 import type { CSSProperties } from 'react';
 import type { GridCellComponent } from 'shell';
-import { Banner, Button, Card, ContentHeader, DataGrid, EmptyState, monoEl, mutedEl } from 'shell';
+import { Banner, Button, Card, ConfirmDialog, ContentHeader, DataGrid, EmptyState, monoEl, mutedEl } from 'shell';
 import type { GridColumnDefinition, IDataGridHandle, IDataGridPage, IDataGridPageRequest } from 'shell';
 import { commonStyles } from 'shell';
-import type { SqlEndpoint } from '../connect';
+import { isTransactionsUnavailable } from '../connect';
+import type { SqlApplyStatement, SqlEndpoint } from '../connect';
+import { announce } from '../a11y/announce';
 import { noteExecuteFailure, useExecuteState, useSchema } from '../schema/schemaStore';
 import { executeGateReason, schemaOnlyExplanation } from '../executeGate';
 import { useSqlEnv } from '../sqlEnv';
@@ -50,7 +66,35 @@ import type { FilterChip } from '../sql/filters';
 import { buildRelationGraph, fkMarker } from '../schema/relations';
 import { FilterChips } from '../components/FilterChips';
 import type { SortChip } from '../components/FilterChips';
-import { RecordDrawer } from '../components/RecordDrawer';
+import { RecordDrawer, RowEditForm } from '../components/RecordDrawer';
+import type { RecordEditingProps } from '../components/RecordDrawer';
+import { PendingChangesBar, discardConfirmText, discardNeedsConfirm, pendingCountText } from '../components/PendingChangesBar';
+import { ApplyConfirmDialog, ReviewSqlDialog, applyResultText, rowStatementLabels } from '../components/ReviewSqlDialog';
+import type { ApplyResultText } from '../components/ReviewSqlDialog';
+import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, readTableEngine, rowApplyMode } from '../sql/applyMode';
+import type { RowApplyMode } from '../sql/applyMode';
+import { applyHistoryEntries } from '../sql/applyHistory';
+import {
+	RowEditError,
+	buildRowStatements,
+	changesFromForm,
+	describeRowEdit,
+	dropApplied,
+	editFormFields,
+	emptyRowEdits,
+	pendingCell,
+	pendingOf,
+	rowEditCounts,
+	rowEditGate,
+	rowKey,
+	settledCount,
+	stageDelete,
+	stageInsert,
+	stageUpdate,
+	unstage,
+	valuesFromForm,
+} from '../sql/rowEdits';
+import type { FormField, PendingCell, RowEditTarget, RowEdits, RowValues } from '../sql/rowEdits';
 import { DatabaseIcon } from '../icons';
 
 // =============================================================================
@@ -82,6 +126,18 @@ export interface TableDataViewProps {
 
 /** What the count line says when the pager's total is not an exact count. */
 type CountNote = { kind: 'estimate'; rows: number } | { kind: 'more'; estimate: number | null } | null;
+
+/** An apply the user is about to confirm (or confirm again without a transaction). */
+interface ApplyAsk {
+	/** The statements, built when Apply was chosen. */
+	statements: SqlApplyStatement[];
+	/** What the confirmation may promise, and what Apply asks for. */
+	mode: RowApplyMode;
+	/** One line per change, for the confirmation. */
+	lines: string[];
+	/** How many of the changes are deletes. */
+	deletes: number;
+}
 
 /** The row drawer's state: a snapshot of the page the row was clicked on. */
 interface OpenRow {
@@ -132,6 +188,15 @@ const styles = {
 	banner: {
 		marginBottom: 8,
 	} as CSSProperties,
+
+	// The database's own words under an apply's outcome.
+	said: {
+		fontFamily: 'var(--rr-font-mono, monospace)',
+		fontSize: 11.5,
+		whiteSpace: 'pre-wrap',
+		wordBreak: 'break-word',
+		margin: '6px 0 0',
+	} as CSSProperties,
 };
 
 // =============================================================================
@@ -148,6 +213,53 @@ function dataCellEl(value: unknown): HTMLElement {
 	if (value === null || value === undefined) return mutedEl('NULL');
 	if (typeof value === 'object') return monoEl(JSON.stringify(value));
 	return monoEl(String(value));
+}
+
+/**
+ * Render a cell of a staged row: a tint, plus a mark that does not rely on
+ * colour (an edited value leads with "✎" and says what it was; a deleted row
+ * is struck through and says "Deleted" in its first column).
+ *
+ * @param mark - What is staged for the cell's row (sql/rowEdits.ts pendingCell).
+ * @param value - The value the database returned.
+ * @param first - Whether this is the row's first column.
+ * @returns The cell element.
+ */
+function pendingCellEl(mark: PendingCell | null, value: unknown, first: boolean): HTMLElement {
+	if (mark === null) return dataCellEl(value);
+	const el = document.createElement('span');
+	el.style.display = 'block';
+	el.style.background = 'var(--rr-bg-list-active)';
+	if (mark.kind === 'deleted') {
+		el.style.textDecoration = 'line-through';
+		el.title = 'Deleted (not saved until Apply)';
+		el.setAttribute('aria-description', 'Staged for deletion');
+		if (first) el.append('Deleted · ');
+		el.append(dataCellEl(value));
+	} else if (mark.kind === 'edited') {
+		const was = mark.was === null || mark.was === undefined ? 'NULL' : typeof mark.was === 'object' ? JSON.stringify(mark.was) : String(mark.was);
+		el.title = `Edited, was ${was} (not saved until Apply)`;
+		el.setAttribute('aria-description', `Edited, was ${was}`);
+		el.append('✎ ', dataCellEl(mark.value));
+	} else {
+		el.append(dataCellEl(value));
+	}
+	return el;
+}
+
+/**
+ * A row's key, or null when it cannot be read exactly (sql/rowEdits.ts rowKey).
+ *
+ * @param target - The table.
+ * @param row - The pristine row.
+ * @returns The key, or null.
+ */
+function keyOrNull(target: RowEditTarget, row: RowValues): string | null {
+	try {
+		return rowKey(target, row);
+	} catch {
+		return null;
+	}
 }
 
 // =============================================================================
@@ -212,6 +324,15 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 		gridRef.current?.refetch();
 	}, [countEpoch]);
 
+	// This page's own Apply is a write too: it bumps its own epoch, and the
+	// same happens.
+	const [writeEpoch, setWriteEpoch] = useState(0);
+	useEffect(() => {
+		if (writeEpoch === 0) return;
+		countRef.current = invalidateTotals(countRef.current);
+		gridRef.current?.refetch();
+	}, [writeEpoch]);
+
 	// The page the grid shows, for the row drawer: the rows as fetched, and
 	// the copies the grid was handed (Tabulator writes into those).
 	const pageRef = useRef<{ rows: Record<string, unknown>[]; gridRows: Record<string, unknown>[]; offset: number }>({ rows: [], gridRows: [], offset: 0 });
@@ -245,10 +366,63 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 
 	const graph = useMemo(() => buildRelationGraph(snapshot.schema), [snapshot.schema]);
 
+	// ── Staged edits ─────────────────────────────────────────────────────────
+
+	const editTarget = useMemo<RowEditTarget | null>(() => (tableDef ? { dialect, table, def: tableDef } : null), [dialect, table, tableDef]);
+	const editGate = rowEditGate({ dialect, def: tableDef, table, executeState, ready: env.ready });
+	const [edits, setEdits] = useState<RowEdits>(emptyRowEdits);
+	const counts = rowEditCounts(edits);
+	// The formatter reads these (its identity must not change, or the grid rebuilds).
+	const editsRef = useRef<RowEdits>(edits);
+	const targetRef = useRef<RowEditTarget | null>(editTarget);
+	// The new-row form (its fields), an apply being confirmed, the per-statement
+	// question after a refusal for want of transactions, Discard's question,
+	// Review SQL, and the last apply's outcome.
+	const [newRow, setNewRow] = useState<{ fields: readonly FormField[]; error: string | null } | null>(null);
+	const [applyAsk, setApplyAsk] = useState<ApplyAsk | null>(null);
+	const [noTransactionAsk, setNoTransactionAsk] = useState<{ reason: string; ask: ApplyAsk } | null>(null);
+	const [discardAsk, setDiscardAsk] = useState(false);
+	const [review, setReview] = useState<{ statements: SqlApplyStatement[]; mode: RowApplyMode } | null>(null);
+	const [applying, setApplying] = useState(false);
+	const [applyOutcome, setApplyOutcome] = useState<ApplyResultText | null>(null);
+	const [editProblem, setEditProblem] = useState<string | null>(null);
+	// A MySQL table's storage engine, read once (undefined: not read yet).
+	const engineRef = useRef<string | null | undefined>(undefined);
+
+	/**
+	 * Mark one grid cell. The grid's row object is matched by position to the
+	 * pristine row it was copied from (Tabulator writes into its own copies).
+	 *
+	 * @param cell - The cell.
+	 * @param column - Its column.
+	 * @param first - Whether it is the row's first column.
+	 * @returns The cell element.
+	 */
+	const markCell = useCallback((cell: GridCellComponent, column: string, first: boolean): HTMLElement => {
+		const { rows, gridRows } = pageRef.current;
+		const position = gridRows.indexOf(cell.getRow().getData() as Record<string, unknown>);
+		const source = position >= 0 ? rows[position] : undefined;
+		const target = targetRef.current;
+		const mark = source && target ? pendingCell(editsRef.current, target, source, column) : null;
+		return pendingCellEl(mark, cell.getValue(), first);
+	}, []);
+
+	// The marks follow the staged changes: re-run the formatters.
+	useEffect(() => {
+		editsRef.current = edits;
+		targetRef.current = editTarget;
+		try {
+			gridRef.current?.table?.getRows().forEach((row) => row.reformat());
+		} catch {
+			// Not rendered yet: the first render formats with these refs.
+		}
+	}, [edits, editTarget]);
+
 	// Grid columns straight from the reflected schema.
 	const columns = useMemo<GridColumnDefinition[]>(() => {
 		if (!tableDef) return [];
 		const pk = new Set(tableDef.primary_key ?? []);
+		const firstColumn = tableDef.columns[0]?.column;
 		return tableDef.columns.map((col) => {
 			const fk = fkMarker(graph, table, col.column);
 			return {
@@ -258,10 +432,10 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 				rrDefault: true,
 				rrDescription: `${col.type}${pk.has(col.column) ? ' - primary key' : ''}${fk ? ` ${fk}` : ''}`,
 				headerSort: true,
-				formatter: (cell: GridCellComponent) => dataCellEl(cell.getValue()),
+				formatter: (cell: GridCellComponent) => markCell(cell, col.column, col.column === firstColumn),
 			} satisfies GridColumnDefinition;
 		});
-	}, [tableDef, graph, table]);
+	}, [tableDef, graph, table, markCell]);
 
 	/**
 	 * Run a bound SELECT for the row drawer's foreign-key links, on the
@@ -446,6 +620,158 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 		noteExecuteFailure(endpoint.key, error.message || String(error));
 	}, [endpoint.key]);
 
+	// ── Staging (nothing is written until Apply) ─────────────────────────────
+
+	/**
+	 * Stage a change, or say why it was refused.
+	 *
+	 * @param change - Builds the next staged changes (throws RowEditError with the reason).
+	 * @returns The reason it was refused, or null.
+	 */
+	const stage = (change: () => RowEdits): string | null => {
+		try {
+			const next = change();
+			setEdits(next);
+			setApplyOutcome(null);
+			announce(`Staged. ${pendingCountText(rowEditCounts(next).total)}.`);
+			return null;
+		} catch (error) {
+			if (error instanceof RowEditError) return error.message;
+			throw error;
+		}
+	};
+
+	const pendingOfRow = (row: Record<string, unknown>) => {
+		const key = editTarget ? keyOrNull(editTarget, row) : null;
+		return key === null ? undefined : pendingOf(edits, key);
+	};
+
+	const editing: RecordEditingProps | null = editTarget ? {
+		disabledReason: applying ? 'An apply is running.' : editGate,
+		formFor: (row) => editFormFields(editTarget, row, pendingOfRow(row)),
+		stagedLine: (row) => {
+			const edit = pendingOfRow(row);
+			return edit ? describeRowEdit(edit, editTarget) : null;
+		},
+		isDeleted: (row) => pendingOfRow(row)?.kind === 'delete',
+		stage: (row, before, after) => stage(() => stageUpdate(edits, editTarget, row, changesFromForm(before, after))),
+		remove: (row) => stage(() => stageDelete(edits, editTarget, row)),
+		undo: (row) => {
+			const key = keyOrNull(editTarget, row);
+			if (key !== null) setEdits(unstage(edits, key));
+		},
+	} : null;
+
+	/**
+	 * What an apply may promise here: reads a MySQL table's storage engine
+	 * once (as a read), then asks sql/applyMode.ts.
+	 *
+	 * @returns The mode.
+	 */
+	const applyMode = async (): Promise<RowApplyMode> => {
+		if (dialect === 'mysql' && engineRef.current === undefined) engineRef.current = await readTableEngine(env.getSession(endpoint), table);
+		return rowApplyMode(dialect, { engine: engineRef.current ?? null, noTransactions: knownNoTransactions(endpoint.key) });
+	};
+
+	/**
+	 * The statements for the staged changes, or null (the reason is shown).
+	 *
+	 * @returns The statements.
+	 */
+	const statementsNow = (): SqlApplyStatement[] | null => {
+		if (!editTarget) return null;
+		try {
+			setEditProblem(null);
+			return buildRowStatements(edits, editTarget);
+		} catch (error) {
+			if (!(error instanceof RowEditError)) throw error;
+			setEditProblem(error.message);
+			return null;
+		}
+	};
+
+	const openReview = async (): Promise<void> => {
+		const statements = statementsNow();
+		if (statements) setReview({ statements, mode: await applyMode() });
+	};
+
+	const askApply = async (): Promise<void> => {
+		const statements = statementsNow();
+		if (!statements || !editTarget) return;
+		const mode = await applyMode();
+		setApplyAsk({ statements, mode, lines: edits.entries.map((edit) => describeRowEdit(edit, editTarget)), deletes: counts.deleted });
+	};
+
+	/**
+	 * Send the confirmed apply, record each statement in history, drop what
+	 * was settled, and refetch. A refusal for want of transactions applied
+	 * nothing: it asks again in the per-statement words.
+	 *
+	 * @param ask - What was confirmed.
+	 * @param atomic - Ask for one transaction.
+	 */
+	const runApply = async (ask: ApplyAsk, atomic: boolean): Promise<void> => {
+		setApplying(true);
+		setApplyOutcome(null);
+		const startedAt = Date.now();
+		try {
+			let result;
+			try {
+				result = await env.getSession(endpoint).applyBatch(ask.statements, { atomic });
+			} catch (error) {
+				if (isTransactionsUnavailable(error)) {
+					noteNoTransactions(endpoint.key);
+					setNoTransactionAsk({ reason: error instanceof Error ? error.message : String(error), ask: { ...ask, mode: { atomic: false, wording: 'each' } } });
+					return;
+				}
+				const message = error instanceof Error ? error.message : String(error);
+				setApplyOutcome({ variant: 'error', title: 'Nothing was applied.', detail: 'Your edits are still staged.', message });
+				announce(`Apply failed: ${message}`);
+				return;
+			}
+			const total = ask.statements.length;
+			for (const entry of applyHistoryEntries(ask.statements, result, { dialect, at: startedAt, ms: Date.now() - startedAt })) env.history.record(endpoint, entry);
+			// Only what was settled leaves the staged changes (a rolled-back
+			// transaction leaves them all; a change that may have run never stays).
+			const settled = settledCount(result, total);
+			setEdits((current) => dropApplied(current, settled));
+			const outcome = applyResultText(result, { total, table, at: Date.now(), wording: ask.mode.wording });
+			setApplyOutcome(outcome);
+			announce(outcome.title);
+			if (result.failure === null || settled > 0 || result.failure.unknown) {
+				// The table changed (or may have): the open row is stale, and the
+				// page and its total are read again.
+				setOpenRow(null);
+				setWriteEpoch((n) => n + 1);
+			}
+		} finally {
+			setApplying(false);
+			setApplyAsk(null);
+			setReview(null);
+		}
+	};
+
+	const discardAll = (): void => {
+		setEdits(emptyRowEdits());
+		setDiscardAsk(false);
+		setReview(null);
+		setEditProblem(null);
+		announce('All pending changes discarded.');
+	};
+
+	const askDiscard = (): void => {
+		if (discardNeedsConfirm(counts.total)) setDiscardAsk(true);
+		else discardAll();
+	};
+
+	const copySql = (script: string): void => {
+		if (!navigator.clipboard) {
+			announce('Could not copy the SQL');
+			return;
+		}
+		void navigator.clipboard.writeText(script).then(() => announce('Copied the SQL'), () => announce('Could not copy the SQL'));
+	};
+
 	// ── Framing states ───────────────────────────────────────────────────────
 
 	if (snapshot.status !== 'ready') {
@@ -500,6 +826,18 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			<ContentHeader
 				title={table}
 				subtitle={`${snapshot.schema?.database ?? ''} - browsing via ${endpoint.pipelineName} / ${endpoint.nodeId}`}
+				actions={
+					editTarget ? (
+						<Button
+							variant="secondary"
+							disabled={editGate !== null || applying}
+							{...(editGate !== null ? { title: editGate } : {})}
+							onClick={() => setNewRow({ fields: editFormFields(editTarget, null, undefined), error: null })}
+						>
+							Insert row
+						</Button>
+					) : undefined
+				}
 			/>
 
 			<div style={styles.body}>
@@ -529,6 +867,28 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 						<Button variant="ghost" small onClick={countExactly}>Count exactly</Button>
 					</div>
 				)}
+				{editProblem && (
+					<div style={styles.banner}>
+						<Banner variant="error">{editProblem}</Banner>
+					</div>
+				)}
+				{applyOutcome && (
+					<div style={styles.banner} role={applyOutcome.variant === 'error' ? 'alert' : 'status'}>
+						<Banner variant={applyOutcome.variant}>
+							<strong>{applyOutcome.title}</strong> {applyOutcome.detail}
+							{applyOutcome.message && <pre style={styles.said}>{applyOutcome.message}</pre>}
+						</Banner>
+					</div>
+				)}
+				<PendingChangesBar
+					table={table}
+					counts={counts}
+					busy={applying}
+					applyDisabledReason={editGate}
+					onDiscard={askDiscard}
+					onReview={() => { void openReview(); }}
+					onApply={() => { void askApply(); }}
+				/>
 				<Card noBodyPadding fill>
 					<DataGrid<Record<string, unknown>>
 						ref={gridRef}
@@ -559,7 +919,85 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 				onClose={() => setOpenRow(null)}
 				lookup={env.ready && sendAllowed ? lookup : null}
 				onShowRows={onOpenTable}
+				editing={editing}
 			/>
+
+			{newRow && editTarget && (
+				<RowEditForm
+					title="New row"
+					subtitle={table}
+					fields={newRow.fields}
+					lockKeys={false}
+					submitLabel="Stage new row"
+					error={newRow.error}
+					onSubmit={(after) => {
+						const refused = stage(() => stageInsert(edits, editTarget, valuesFromForm(after)));
+						setNewRow(refused === null ? null : { fields: after, error: refused });
+					}}
+					onCancel={() => setNewRow(null)}
+				/>
+			)}
+
+			{review && (
+				<ReviewSqlDialog
+					table={table}
+					connectionName={endpoint.nodeName}
+					dialect={dialect}
+					statements={review.statements}
+					labels={rowStatementLabels(edits)}
+					wording={review.mode.wording}
+					busy={applying}
+					applyDisabledReason={editGate}
+					onClose={() => setReview(null)}
+					onApply={() => { void askApply(); }}
+					onDiscardAll={askDiscard}
+					onCopySql={copySql}
+				/>
+			)}
+
+			{applyAsk && (
+				<ApplyConfirmDialog
+					total={applyAsk.statements.length}
+					table={table}
+					connection={endpoint.nodeName}
+					wording={applyAsk.mode.wording}
+					deletes={applyAsk.deletes}
+					lines={applyAsk.lines}
+					busy={applying}
+					onConfirm={() => { void runApply(applyAsk, applyAsk.mode.atomic); }}
+					onCancel={() => setApplyAsk(null)}
+				/>
+			)}
+
+			{noTransactionAsk && (() => {
+				const words = perStatementConfirmText(noTransactionAsk.reason);
+				return (
+					<ConfirmDialog
+						title={words.title}
+						message={<div>{words.text}</div>}
+						confirmLabel={applying ? 'Applying...' : words.confirmLabel}
+						destructive
+						confirmDisabled={applying}
+						onConfirm={() => {
+							const { ask } = noTransactionAsk;
+							setNoTransactionAsk(null);
+							void runApply(ask, false);
+						}}
+						onCancel={() => setNoTransactionAsk(null)}
+					/>
+				);
+			})()}
+
+			{discardAsk && (
+				<ConfirmDialog
+					title="Discard pending changes?"
+					message={discardConfirmText(counts.total)}
+					confirmLabel="Discard"
+					destructive
+					onConfirm={discardAll}
+					onCancel={() => setDiscardAsk(false)}
+				/>
+			)}
 		</div>
 	);
 };

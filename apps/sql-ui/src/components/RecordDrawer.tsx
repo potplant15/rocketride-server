@@ -33,16 +33,24 @@
 // LIMIT 2) and opens it in a drawer stacked on this one; the shell's back
 // arrow, or Back, returns. "Rows that reference this one" lists the child
 // tables, and Show rows opens a child's Data page with filter chips preset.
+//
+// EDITING (staged; sql/rowEdits.ts): with `editing`, the open row offers
+// Edit (a form with one input and a NULL toggle per field, key columns read
+// only), Delete (marks the row) and Undo. Nothing is written: the data page
+// stages the change, and Apply sends it. The same form, empty, adds a new
+// row (RowEditForm). Where rows cannot be changed, the buttons are off and
+// the drawer says why.
 // =============================================================================
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { inspectorText } from 'shared/explorer/components/RowInspector';
-import { Banner, Button, DetailPanel, LabelValue, Section, StatusBadge } from 'shell';
+import { Banner, Button, DetailPanel, InputField, LabelValue, Section, StatusBadge } from 'shell';
 import { announce } from '../a11y/announce';
 import type { SqlDialect, SqlSchemaTable } from '../connect';
 import type { RelationEdge, RelationGraph } from '../schema/relations';
 import type { FilterChip } from '../sql/filters';
+import type { FormField } from '../sql/rowEdits';
 import { childRowsPreset, fallbackDef, hasKeyValues, recordFields, recordJson, referencedRowStatement, referencingEdges } from '../sql/record';
 
 /** What a row of SQL values loses on the way to the browser. */
@@ -72,6 +80,26 @@ export interface RecordDrawerProps {
 	lookup: ((sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>) | null;
 	/** Opens a table's Data page with these chips preset; absent = no Show rows. */
 	onShowRows?: (table: string, chips: FilterChip[]) => void;
+	/** Staged editing of the open row; absent = the drawer only reads. */
+	editing?: RecordEditingProps | null;
+}
+
+/** What the drawer needs to stage changes to the open row (the data page holds the staged changes). */
+export interface RecordEditingProps {
+	/** Why rows cannot be changed now, or null (sql/rowEdits.ts rowEditGate). */
+	disabledReason: string | null;
+	/** The form's fields for a row, with any staged edit showing through. */
+	formFor: (row: Record<string, unknown>) => readonly FormField[];
+	/** The row's staged change in one line, or null when nothing is staged. */
+	stagedLine: (row: Record<string, unknown>) => string | null;
+	/** Whether the row is staged for deletion. */
+	isDeleted: (row: Record<string, unknown>) => boolean;
+	/** Stage the user's changes; returns why they were refused, or null. */
+	stage: (row: Record<string, unknown>, before: readonly FormField[], after: readonly FormField[]) => string | null;
+	/** Stage the row's deletion; returns why it was refused, or null. */
+	remove: (row: Record<string, unknown>) => string | null;
+	/** Undo the row's staged change. */
+	undo: (row: Record<string, unknown>) => void;
 }
 
 /** One row opened by following a foreign key. */
@@ -137,6 +165,122 @@ const styles = {
 	status: {
 		marginBottom: 8,
 	} as CSSProperties,
+
+	formRow: {
+		marginBottom: 10,
+	} as CSSProperties,
+
+	formLabel: {
+		display: 'block',
+		fontSize: 12,
+		fontWeight: 600,
+		marginBottom: 4,
+	} as CSSProperties,
+
+	formInput: {
+		flex: 1,
+		minWidth: 0,
+	} as CSSProperties,
+
+	nullToggle: {
+		display: 'flex',
+		alignItems: 'center',
+		gap: 4,
+		fontSize: 12,
+		whiteSpace: 'nowrap',
+	} as CSSProperties,
+
+	formNote: {
+		fontSize: 12,
+		color: 'var(--rr-text-secondary)',
+		marginBottom: 10,
+	} as CSSProperties,
+};
+
+// =============================================================================
+// THE EDIT FORM
+// =============================================================================
+
+/** Props for the {@link RowEditForm} component. */
+export interface RowEditFormProps {
+	/** Drawer title ("Edit row 12", "New row"). */
+	title: string;
+	/** Drawer subtitle (the table). */
+	subtitle: string;
+	/** The fields the form opens with (sql/rowEdits.ts editFormFields). */
+	fields: readonly FormField[];
+	/** Key columns are read only (an existing row); a new row may set them. */
+	lockKeys: boolean;
+	/** The submit button's label. */
+	submitLabel: string;
+	/** Why the last submit was refused (a value the column cannot take), or null. */
+	error: string | null;
+	/** Submit: the fields as the user left them. */
+	onSubmit: (fields: FormField[]) => void;
+	/** Cancel: nothing is staged. */
+	onCancel: () => void;
+}
+
+/**
+ * The edit form: one input and a NULL toggle per field, in table order.
+ * Submitting stages the change; nothing is written until Apply.
+ *
+ * @param props - {@link RowEditFormProps}.
+ * @returns The drawer.
+ */
+export const RowEditForm: React.FC<RowEditFormProps> = ({ title, subtitle, fields, lockKeys, submitLabel, error, onSubmit, onCancel }) => {
+	const [values, setValues] = useState<FormField[]>(() => fields.map((field) => ({ ...field })));
+	const set = (index: number, patch: Partial<FormField>): void => {
+		setValues((current) => current.map((field, i) => (i === index ? { ...field, ...patch } : field)));
+	};
+	return (
+		<DetailPanel
+			open
+			onClose={onCancel}
+			title={title}
+			subtitle={subtitle}
+			modeless
+			width={460}
+			footer={
+				<>
+					<Button variant="primary" onClick={() => onSubmit(values)}>{submitLabel}</Button>
+					<Button variant="ghost" onClick={onCancel}>Cancel</Button>
+				</>
+			}
+		>
+			{error && <div style={styles.status} role="alert"><Banner variant="error">{error}</Banner></div>}
+			<div style={styles.formNote}>
+				Nothing is saved until you apply.{lockKeys ? ' Key columns cannot be changed here.' : ' An empty field takes the column\'s default.'} Tick NULL to store NULL.
+			</div>
+			<Section label={`Fields (${values.length})`}>
+				{values.map((field, index) => {
+					const locked = lockKeys && field.key;
+					const id = `rr-sql-edit-${index}`;
+					return (
+						<div key={field.column} style={styles.formRow}>
+							<label htmlFor={id} style={styles.formLabel}>{field.column}{field.key ? ' (key)' : ''}</label>
+							<div style={styles.valueRow}>
+								<InputField
+									id={id}
+									style={styles.formInput}
+									value={field.isNull ? '' : field.text}
+									placeholder={field.isNull ? 'NULL' : ''}
+									disabled={locked || field.isNull}
+									aria-describedby={`${id}-type`}
+									onChange={(event) => set(index, { text: event.target.value })}
+								/>
+								<label style={styles.nullToggle}>
+									<input type="checkbox" checked={field.isNull} disabled={locked} onChange={(event) => set(index, { isNull: event.target.checked })} />
+									NULL
+								</label>
+							</div>
+							<div id={`${id}-type`} style={styles.type}>{field.type}{locked ? ' · key column, read only' : ''}</div>
+						</div>
+					);
+				})}
+			</Section>
+		</DetailPanel>
+	);
 };
 
 /**
@@ -268,18 +412,23 @@ const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, cl
  * @param props - {@link RecordDrawerProps}.
  * @returns The drawer stack, or null when closed.
  */
-export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tables, table, rows, index, offset, onIndexChange, onClose, lookup, onShowRows }) => {
+export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tables, table, rows, index, offset, onIndexChange, onClose, lookup, onShowRows, editing }) => {
 	// Rows reached by following keys, outermost first.
 	const [followed, setFollowed] = useState<Followed[]>([]);
 	// The lookup in flight or its failure, shown on the level it was started from.
 	const [status, setStatus] = useState<{ depth: number; kind: 'busy' | 'none' | 'error'; text: string } | null>(null);
 	const seqRef = useRef(0);
+	// The open row's edit form (the fields it opened with), and why staging was refused.
+	const [form, setForm] = useState<readonly FormField[] | null>(null);
+	const [editError, setEditError] = useState<string | null>(null);
 
 	// Another row (or closing) drops the stack: it belonged to the previous row.
 	useEffect(() => {
 		seqRef.current++;
 		setFollowed([]);
 		setStatus(null);
+		setForm(null);
+		setEditError(null);
 	}, [index, table]);
 
 	const follow = useCallback((depth: number) => (edge: RelationEdge, row: Record<string, unknown>, fromTable: string): void => {
@@ -318,18 +467,59 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 		return <Banner variant={status.kind === 'error' ? 'error' : status.kind === 'none' ? 'warning' : 'info'}>{status.text}</Banner>;
 	};
 
+	const rowTitle = `Row ${(offset + index + 1).toLocaleString()}`;
+	if (editing && form) {
+		return (
+			<RowEditForm
+				key={`${table}-${index}`}
+				title={`Edit ${rowTitle.toLowerCase()}`}
+				subtitle={table}
+				fields={form}
+				lockKeys
+				submitLabel="Stage changes"
+				error={editError}
+				onSubmit={(after) => {
+					const refused = editing.stage(row, form, after);
+					setEditError(refused);
+					if (refused === null) setForm(null);
+				}}
+				onCancel={() => { setForm(null); setEditError(null); }}
+			/>
+		);
+	}
+
+	// The open row's staged change, and its buttons (Edit, Delete, Undo).
+	const staged = editing ? editing.stagedLine(row) : null;
+	const deleted = editing ? editing.isDeleted(row) : false;
+	const off = editing?.disabledReason ?? null;
+	const editStatus = editing ? (
+		<>
+			{statusFor(0)}
+			{staged !== null && <Banner variant="info">Staged, not saved yet: {staged}</Banner>}
+			{editError !== null && <Banner variant="error">{editError}</Banner>}
+			{off !== null && <div style={styles.type}>Editing is off: {off}</div>}
+		</>
+	) : statusFor(0);
+
 	return (
 		<>
 			<Level
 				def={def}
 				table={table}
 				row={row}
-				title={`Row ${(offset + index + 1).toLocaleString()}`}
+				title={rowTitle}
 				subtitle={table}
 				nav={
 					<>
 						<Button variant="ghost" disabled={index <= 0} onClick={() => onIndexChange(index - 1)}>Prev</Button>
 						<Button variant="ghost" disabled={index >= rows.length - 1} onClick={() => onIndexChange(index + 1)}>Next</Button>
+						{editing && staged !== null && <Button variant="secondary" onClick={() => { editing.undo(row); setEditError(null); }}>Undo</Button>}
+						{editing && !deleted && (
+							<>
+								<Button variant="secondary" disabled={off !== null} {...(off !== null ? { title: off } : {})} onClick={() => { setEditError(null); setForm(editing.formFor(row)); }}>Edit</Button>
+								<Button variant="danger" disabled={off !== null} {...(off !== null ? { title: off } : {})} onClick={() => setEditError(editing.remove(row))}>Delete</Button>
+							</>
+						)}
 					</>
 				}
 				closeLabel="Close"
@@ -337,7 +527,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 				onFollow={lookup ? follow(0) : null}
 				graph={graph}
 				onShowRows={onShowRows}
-				status={statusFor(0)}
+				status={editStatus}
 			/>
 			{followed.map((level, depth) => {
 				return (
