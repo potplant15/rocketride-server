@@ -673,12 +673,10 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 				{mode === 'read' ? 'Run all' : 'Execute all'}
 			</Button>
 			{mode === 'read' && (
-				<ToggleGroup
-					options={LIMIT_OPTIONS}
-					value={limitId}
-					onChange={(id) => setLimitId(id)}
-					aria-label="Row limit"
-				/>
+				// The shell's ToggleGroup drops aria-label, so the group's name is on a wrapper.
+				<span role="group" aria-label="Row limit">
+					<ToggleGroup options={LIMIT_OPTIONS} value={limitId} onChange={(id) => setLimitId(id)} />
+				</span>
 			)}
 			{runner.canStop && <Button variant="ghost" small={inRow} title={STOP_WAITING_NOTE} onClick={() => runner.stopWaiting()}>Stop waiting</Button>}
 			{onOpenHistory && <Button variant="ghost" small={inRow} ariaExpanded={historyOpen === true} onClick={onOpenHistory}>History</Button>}
@@ -693,7 +691,9 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 				return <span title={chip.title ?? undefined}><StatusBadge variant="muted">{chip.text}</StatusBadge></span>;
 			})()}
 			<span style={styles.willRun}>{runner.running ? 'Running…' : waiting ? 'Waiting for an earlier request to finish…' : willRun}</span>
-			<ToggleGroup options={views} value={tab} onChange={(id) => setTab(id)} aria-label="Show the result as" />
+			<span role="group" aria-label="Show the result as">
+				<ToggleGroup options={views} value={tab} onChange={(id) => setTab(id)} />
+			</span>
 			<Button variant="ghost" small ariaExpanded={!split.collapsed} title={split.collapsed ? 'Show the editor' : 'Hide the editor; the run bar stays'} onClick={() => (split.collapsed ? showEditor() : changeSplit(splitToggled(split)))}>
 				{split.collapsed ? 'Show editor' : 'Hide editor'}
 			</Button>

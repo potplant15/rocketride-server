@@ -187,10 +187,33 @@ test('only the shown tab draws its results, puts its run bar in the tab row, and
 	// I5: the results have no row of their own for Graph / Table / Raw; the switch is a compact toggle in the run bar.
 	assert.doesNotMatch(surface, /TabControl/, 'no results tab row');
 	const bar = surface.slice(surface.indexOf('const runBar = ('), surface.indexOf('return (', surface.indexOf('const runBar = (')));
-	assert.ok(/<ToggleGroup options=\{views\} value=\{tab\} onChange=\{\(id\) => setTab\(id\)\} aria-label="Show the result as" \/>/.test(bar), 'the switch is in the run bar');
+	assert.ok(/<span role="group" aria-label="Show the result as">\s*<ToggleGroup options=\{views\} value=\{tab\} onChange=\{\(id\) => setTab\(id\)\} \/>\s*<\/span>/.test(bar), 'the switch is in the run bar, named by its group');
 	// Query 1's draft is written when its tab closes right after typing, not dropped with the timer.
 	assert.ok(/if \(draftTimer\.current\) clearTimeout\(draftTimer\.current\);\s*pendingDraft\.current\?\.\(\);/.test(surface), 'a pending draft is flushed on unmount');
 	assert.ok(/onRunFrom=\{mode === 'read' \? runFrom : undefined\}/.test(surface), 'Run from statement N only in the read workbench: a write that may have been applied is never re-sent from the banner');
+});
+
+// The shell's ToggleGroup drops aria-label, so a toggle's name lives on a group wrapper (the attribute alone names nothing).
+test('every toggle is named by a group wrapper, and none passes the aria-label the shell drops', () => {
+	const surface = code(read('components', 'RunSurface.tsx'));
+	assert.ok(/<span role="group" aria-label="Row limit">\s*<ToggleGroup options=\{LIMIT_OPTIONS\}/.test(surface), 'the row limit');
+	assert.ok(/<span role="group" aria-label="Show the result as">\s*<ToggleGroup options=\{views\}/.test(surface), 'the result view');
+	const workbench = code(read('views', 'WorkbenchView.tsx'));
+	assert.ok(/<span role="group" aria-label="Show history or saved queries">\s*<ToggleGroup options=\{SIDE_OPTIONS\}/.test(workbench), 'History or Saved');
+	for (const text of [surface, workbench]) assert.doesNotMatch(text, /<ToggleGroup[^>]*aria-label=/, 'no aria-label on the toggle itself');
+});
+
+// After a close confirmed in a dialog the focus would fall to the page; the shown tab takes it, as after a mouse close.
+test('the tab shown after a confirmed close takes the focus, and a flagged Ask draft says so without opening Details', () => {
+	const workbench = code(read('views', 'WorkbenchView.tsx'));
+	const confirm = workbench.slice(workbench.indexOf('title={`Close '), workbench.indexOf('/>', workbench.indexOf('title={`Close ')));
+	assert.ok(/closeNow\(id\);\s*setFocusTabs\(\(n\) => n \+ 1\);/.test(confirm), 'confirming moves the focus to the shown tab');
+	assert.ok(/focusRequest=\{focusTabs\}/.test(workbench));
+	const tabs = code(read('components', 'QueryTabs.tsx'));
+	assert.ok(/if \(focusRequest > 0\) buttons\.current\.get\(active\)\?\.focus\(\);/.test(tabs));
+	assert.ok(/\{note\.check !== null && \(\s*<>\s*(\{\}\s*)?<StatusBadge variant="warning">Check before running<\/StatusBadge>/.test(workbench), 'a visible cue beside Details');
+	// A run bar that wraps under the tabs stays right-aligned.
+	assert.ok(/barHost: \{[^}]*marginLeft: 'auto'/.test(workbench));
 });
 
 // F3: rocket-ui keeps hidden documents mounted, so a modal drawer left open in a background document would trap Tab and

@@ -64,7 +64,7 @@
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Banner, Button, ConfirmDialog, ContentHeader, EmptyState, ToggleGroup } from 'shell';
+import { Banner, Button, ConfirmDialog, ContentHeader, EmptyState, StatusBadge, ToggleGroup } from 'shell';
 import type { IExplorerEndpoint } from 'shared/explorer';
 import { announcer } from '../adapters/explorer';
 import { patternCheck } from '../cypher/classify';
@@ -105,7 +105,8 @@ const SIDE_OPTIONS: { id: SideView; label: string }[] = [
 const styles = {
 	// The tab row: the tabs, then the shown tab's run bar (or Overview's actions).
 	tabRow: { flex: '0 0 auto', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, minHeight: 38, padding: '0 24px', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
-	barHost: { flex: '0 1 auto', minWidth: 0, display: 'flex', justifyContent: 'flex-end', padding: '4px 0' } as CSSProperties,
+	// marginLeft auto: right of the tabs, and right-aligned on a line of its own when the row wraps.
+	barHost: { flex: '0 1 auto', minWidth: 0, marginLeft: 'auto', display: 'flex', justifyContent: 'flex-end', padding: '4px 0' } as CSSProperties,
 	notice: { padding: '8px 24px 0' } as CSSProperties,
 	body: { flex: 1, minHeight: 0, display: 'flex' } as CSSProperties,
 	panes: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } as CSSProperties,
@@ -113,10 +114,10 @@ const styles = {
 	hidden: { display: 'none' } as CSSProperties,
 	surface: { flex: 1, minHeight: 0 } as CSSProperties,
 	overview: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } as CSSProperties,
-	overviewActions: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 0' } as CSSProperties,
+	overviewActions: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 0', marginLeft: 'auto' } as CSSProperties,
 	overviewBody: { flex: 1, minHeight: 0, overflowY: 'auto' } as CSSProperties,
 	askNote: { marginTop: 4, fontSize: 12 } as CSSProperties,
-	askActions: { display: 'flex', gap: 6, marginTop: 6 } as CSSProperties,
+	askActions: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 } as CSSProperties,
 };
 
 /** Props. */
@@ -172,8 +173,9 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const texts = useRef(new Map<string, string>());
 	// The text each tab was opened with, so closing one that was edited can ask first.
 	const opening = useRef(new Map<string, string>());
-	// The tab whose close waits for a confirmation.
+	// The tab whose close waits for a confirmation, and a request for the tab shown next to take the focus after it.
 	const [closing, setClosing] = useState<string | null>(null);
+	const [focusTabs, setFocusTabs] = useState(0);
 	// The shown tab's run bar goes into the tab row (an element of this document).
 	const [barHost, setBarHost] = useState<HTMLElement | null>(null);
 	// One request at a time across the tabs (graph/requestGate.ts).
@@ -367,6 +369,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 							onActivate={activate}
 							onClose={close}
 							onNew={newQuery}
+							focusRequest={focusTabs}
 						/>
 						<div ref={setBarHost} style={styles.barHost} />
 						{tabs.active === OVERVIEW_TAB && (
@@ -422,9 +425,13 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 													{note.check !== null && askCheckOpen === tab.id && <div style={styles.askNote}>{note.check}</div>}
 													<div style={styles.askActions}>
 														{note.check !== null && (
-															<Button variant="ghost" small ariaExpanded={askCheckOpen === tab.id} onClick={() => setAskCheckOpen(askCheckOpen === tab.id ? null : tab.id)}>
-																{askCheckOpen === tab.id ? 'Hide details' : 'Details'}
-															</Button>
+															<>
+																{/* Visible without opening Details: the text check flagged this draft. */}
+																<StatusBadge variant="warning">Check before running</StatusBadge>
+																<Button variant="ghost" small ariaExpanded={askCheckOpen === tab.id} onClick={() => setAskCheckOpen(askCheckOpen === tab.id ? null : tab.id)}>
+																	{askCheckOpen === tab.id ? 'Hide details' : 'Details'}
+																</Button>
+															</>
 														)}
 														{from && (
 															<Button variant="ghost" small onClick={() => activate(from.id)}>
@@ -469,7 +476,12 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 							<SidePanel
 								title={side === 'history' ? 'History' : 'Saved queries'}
 								subtitle={view.title}
-								switcher={<ToggleGroup options={SIDE_OPTIONS} value={side} onChange={(id) => setSide(id)} aria-label="Show history or saved queries" />}
+								switcher={
+									// The shell's ToggleGroup drops aria-label, so the group's name is on a wrapper.
+									<span role="group" aria-label="Show history or saved queries">
+										<ToggleGroup options={SIDE_OPTIONS} value={side} onChange={(id) => setSide(id)} />
+									</span>
+								}
 								onClose={() => setSide(null)}
 							>
 								{side === 'history' ? (
@@ -512,8 +524,12 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 								const id = closing;
 								setClosing(null);
 								closeNow(id);
+								setFocusTabs((n) => n + 1);
 							}}
-							onCancel={() => setClosing(null)}
+							onCancel={() => {
+								setClosing(null);
+								setFocusTabs((n) => n + 1);
+							}}
 						/>
 					)}
 				</>

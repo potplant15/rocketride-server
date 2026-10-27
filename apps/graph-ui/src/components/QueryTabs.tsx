@@ -56,6 +56,8 @@ export interface IQueryTabsProps {
 	onClose(id: string): void;
 	/** Open an empty query tab (past the limit, the workbench says why it did not). */
 	onNew(): void;
+	/** Changes when the shown tab should take the focus (a close the workbench confirmed first). */
+	focusRequest?: number;
 }
 
 /**
@@ -115,7 +117,7 @@ const styles = {
  * @param props - See {@link IQueryTabsProps}.
  * @returns The tab list and its New query button.
  */
-export const QueryTabs: React.FC<IQueryTabsProps> = ({ tabs, active, idPrefix, onActivate, onClose, onNew }) => {
+export const QueryTabs: React.FC<IQueryTabsProps> = ({ tabs, active, idPrefix, onActivate, onClose, onNew, focusRequest = 0 }) => {
 	const buttons = useRef(new Map<string, HTMLButtonElement>());
 	// Set when a key moved the selection, so the shown tab takes the focus once it is rendered.
 	const follow = useRef(false);
@@ -124,6 +126,11 @@ export const QueryTabs: React.FC<IQueryTabsProps> = ({ tabs, active, idPrefix, o
 		follow.current = false;
 		buttons.current.get(active)?.focus();
 	}, [active, tabs]);
+	// A close confirmed in a dialog: the focus would fall to the page when the dialog goes, so the shown tab takes it.
+	useEffect(() => {
+		if (focusRequest > 0) buttons.current.get(active)?.focus();
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- once per request, on the tab shown then
+	}, [focusRequest]);
 
 	const order = tabs.map((tab) => tab.id);
 	return (
