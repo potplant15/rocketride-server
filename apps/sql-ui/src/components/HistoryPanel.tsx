@@ -54,7 +54,7 @@ import type { SqlDialect, SqlEndpoint } from '../connect';
 import type { HistoryEntry } from '../history/types';
 import { useExecuteState, useSchema } from '../schema/schemaStore';
 import { SCHEMA_ONLY_REASON, executeGateReason } from '../executeGate';
-import { historyTitle } from '../sql/batch';
+import { CANCELLED_NOTHING_SENT, historyTitle } from '../sql/batch';
 import { useSqlEnv } from '../sqlEnv';
 import { DEFAULT_HISTORY_LIMITS } from '../history/trim';
 import { getDocs, nextQueryDoc } from '../docs';
@@ -595,7 +595,11 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 					message={rerunMessage(confirmRerun)}
 					confirmLabel="Run again"
 					destructive
-					onCancel={() => setConfirmRerun(null)}
+					onCancel={() => {
+						setConfirmRerun(null);
+						// The live region keeps its last sentence; say this one ran nothing.
+						announce(CANCELLED_NOTHING_SENT);
+					}}
 					onConfirm={() => {
 						const entry = confirmRerun;
 						setConfirmRerun(null);

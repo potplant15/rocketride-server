@@ -79,7 +79,7 @@ import type { RowEstimate } from '../sql/safety';
 import { safetyLevelOf } from '../connect/savedConnections';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { useConnectionRecord } from '../connectionRecord';
-import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, settleStatement } from '../sql/batch';
+import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, runSummary, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
 import {
 	ALLOW_EXECUTE_OFF_TEXT,
@@ -489,13 +489,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		},
 		// Only outcomes that have NO live region of their own are announced. A
 		// failure is not one: the error Banner is an assertive alert already
-		// (Banner.tsx:75-76), so announcing it here would read it twice.
-		summarize: ({ runs: finished, shown, failedAt }) => {
-			if (finished.length > 1) return `${finished.length} statements: ${formatBatchOutcome(finished)}`;
-			if (failedAt < 0 && shown?.outcome === 'rows') return `Statement returned ${(shown.rows?.length ?? 0).toLocaleString()} rows`;
-			if (failedAt < 0 && shown?.outcome === 'affected') return `Statement affected ${(shown.affected ?? 0).toLocaleString()} rows`;
-			return null;
-		},
+		// (Banner.tsx:75-76), so announcing it here would read it twice. A
+		// declined confirmation is announced, or the last run's sentence stays.
+		summarize: (info) => runSummary(info),
 		announce,
 		// The warning Banner carries the notice; it is a live region already.
 		onStopped: () => {

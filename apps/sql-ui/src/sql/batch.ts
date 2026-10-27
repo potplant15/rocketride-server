@@ -140,6 +140,36 @@ export function formatRunLabel(run: StatementRun): string {
 	return formatSharedRunLabel({ ...run, rowCount: run.rows?.length ?? run.rowCount });
 }
 
+/** What a declined confirmation announces when nothing was sent. */
+export const CANCELLED_NOTHING_SENT = 'Cancelled; nothing was sent.';
+
+/**
+ * The sentence a finished batch announces, or null for none.
+ *
+ * Only outcomes with no live region of their own are announced: a failure's
+ * error banner is an assertive alert already. A CANCELLED batch (the user
+ * declined a confirmation, the typed-name one included) is announced too:
+ * the live region keeps its last sentence, so saying nothing left the previous
+ * run's "Statement returned 10 rows" standing. A batch is cancelled when it
+ * ended without a failure and some statement was not run, which only a
+ * declined confirmation does.
+ *
+ * @param info - The finished batch, as the runner reports it.
+ * @param info.runs - Its statements, in order.
+ * @param info.shown - The statement whose result is shown, if any.
+ * @param info.failedAt - The index that failed, or -1.
+ * @returns The sentence, or null.
+ */
+export function runSummary({ runs, shown, failedAt }: { runs: StatementRun[]; shown: StatementRun | null; failedAt: number }): string | null {
+	const cancelledAt = failedAt < 0 ? runs.findIndex((run) => run.outcome === 'skipped') : -1;
+	if (cancelledAt === 0) return CANCELLED_NOTHING_SENT;
+	if (cancelledAt > 0) return `Cancelled at statement ${cancelledAt + 1}. ${formatBatchOutcome(runs)}`;
+	if (runs.length > 1) return `${runs.length} statements: ${formatBatchOutcome(runs)}`;
+	if (failedAt < 0 && shown?.outcome === 'rows') return `Statement returned ${(shown.rows?.length ?? 0).toLocaleString()} rows`;
+	if (failedAt < 0 && shown?.outcome === 'affected') return `Statement affected ${(shown.affected ?? 0).toLocaleString()} rows`;
+	return null;
+}
+
 // =============================================================================
 // RESULTS
 // =============================================================================
