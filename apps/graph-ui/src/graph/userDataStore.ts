@@ -577,8 +577,9 @@ export function withLegacyCaptions(style: IConnectionStyle, captions: Readonly<R
 }
 
 /**
- * Move the older caption choices of every connection into the styles (only for labels with no caption yet), then
- * clear the older key, so it happens once.
+ * Move the older caption choices of every connection into the styles (only for labels with no caption yet). A choice
+ * that does not fit a full styles bag stays under the older key (still shown, and tried again with a later change);
+ * the key is removed once nothing is left in it.
  *
  * @param prefs - The accessor (both keys).
  * @param legacyPref - The older key.
@@ -587,20 +588,29 @@ export function withLegacyCaptions(style: IConnectionStyle, captions: Readonly<R
 export function moveLegacyCaptions(prefs: IPrefsAccessor, legacyPref: string): boolean {
 	const raw = prefs.getPref(legacyPref);
 	if (raw === undefined) return false;
+	const left: Record<string, Record<string, string>> = {};
+	let moved = 0;
 	if (isPlainObject(raw)) {
 		for (const key of Object.keys(raw)) {
 			const style = styleIn(prefs, key);
 			for (const [label, caption] of Object.entries(legacyCaptionsIn(raw, key))) {
+				// The style's own caption wins: that choice is done.
 				if (Object.hasOwn(style.labels, label) && style.labels[label].caption !== undefined) continue;
 				try {
 					editStyleIn(prefs, key, { kind: 'label', label, patch: { caption } });
+					moved += 1;
 				} catch {
-					// Styles are full: that choice is not moved (the label shows its automatic caption).
+					// Styles are full: kept where it was, never lost.
+					if (!Object.hasOwn(left, key)) setOwn(left, key, {});
+					setOwn(left[key], label, caption);
 				}
 			}
 		}
 	}
-	prefs.setPref(legacyPref, undefined);
+	const remaining = Object.keys(left).length > 0;
+	// Nothing could be moved: leave the older key exactly as it was (no write at all).
+	if (moved === 0 && remaining) return false;
+	prefs.setPref(legacyPref, remaining ? left : undefined);
 	return true;
 }
 
