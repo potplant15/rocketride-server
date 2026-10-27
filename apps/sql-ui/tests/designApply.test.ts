@@ -183,7 +183,8 @@ describe('C-1: TableDesignView asks again before it applies without a transactio
 
 describe('TableDesignView applies through applyBatch', () => {
 	it('sends the plan in one call, atomic by the dialect, and no longer runs statements one execute at a time', () => {
-		assert.match(VIEW, /\.applyBatch\(statements\.map\(\(sql\) => \(\{ sql \}\)\), \{ atomic \}\)/);
+		assert.match(VIEW, /const sentStatements = statements\.map\(\(sql\) => \(\{ sql \}\)\);/);
+		assert.match(VIEW, /\.applyBatch\(sentStatements, \{ atomic \}\)/);
 		assert.match(VIEW, /const mode = designApplyMode\(snapshot\.dialect, knownNoTransactions\(endpoint\.key, snapshot\.refreshedAt\)\)/);
 		assert.doesNotMatch(VIEW, /for \(const sql of statements\)/);
 		assert.doesNotMatch(VIEW, /prev\.slice\(done\)/);
@@ -198,7 +199,7 @@ describe('DA-R1 M2: the designer sends nothing on a schema-only node', () => {
 		assert.match(VIEW, /<GatedButton\s+variant="primary"[\s\S]*?gateReason=\{applyGate\}\s+reasonId=\{applyGateId\}[\s\S]*?\{applying \? 'Applying\.\.\.' : 'Apply'\}\s*<\/GatedButton>/);
 		assert.match(VIEW, /<div id=\{applyGateId\}[^>]*>\{`Schema only: \$\{applyGate\} Changes stay staged; Apply is off\.`\}<\/div>/);
 		const guard = VIEW.indexOf('if (applyGate !== null || !env.ready || statements.length === 0) return;');
-		assert.ok(guard > 0 && guard < VIEW.indexOf('.applyBatch(statements.map('), 'apply() returns before it sends');
+		assert.ok(guard > 0 && guard < VIEW.indexOf('.applyBatch(sentStatements'), 'apply() returns before it sends');
 	});
 
 	it('only `off` gates it: `unknown` (a probe in flight) leaves Apply on', async () => {
@@ -206,5 +207,34 @@ describe('DA-R1 M2: the designer sends nothing on a schema-only node', () => {
 		assert.equal(executeGateReason('unknown'), null);
 		assert.equal(executeGateReason('on'), null);
 		assert.notEqual(executeGateReason('off'), null);
+	});
+});
+
+// =============================================================================
+// DA-R2 M5: THE DESIGNER'S STATEMENTS GO INTO HISTORY, LIKE THE GRID'S
+// =============================================================================
+//
+// The grid's Apply records every statement it ran (applyHistoryEntries); the
+// designer's recorded nothing, so two Apply buttons in one app disagreed
+// about what History holds. The designer now records through the same
+// helper, with the same outcomes, only once a reply came back (as the grid:
+// a thrown apply records nothing).
+// =============================================================================
+
+describe('DA-R2 M5: the designer\'s Apply records its statements in History', () => {
+	it('records each entry of the reply with the grid\'s helper and the promise its confirmation made', () => {
+		assert.match(VIEW, /import \{ applyHistoryEntries \} from '\.\.\/sql\/applyHistory';/);
+		assert.match(VIEW, /const sentStatements = statements\.map\(\(sql\) => \(\{ sql \}\)\);/);
+		assert.match(VIEW, /const result = await env\.getSession\(endpoint\)\.applyBatch\(sentStatements, \{ atomic \}\);\s*for \(const entry of applyHistoryEntries\(sentStatements, result, \{ dialect: snapshot\.dialect, at: startedAt, ms: Date\.now\(\) - startedAt, wording: atomic \? 'transaction' : 'each' \}\)\) env\.history\.record\(endpoint, entry\);/);
+	});
+
+	it('a designer plan\'s entries are schema changes, with the grid\'s outcomes', async () => {
+		const { applyHistoryEntries } = await import('../src/sql/applyHistory');
+		const statements = generateAlterStatements('postgres', 'orders', EVERY_OP.slice(0, 2)).map((sql) => ({ sql }));
+		const ok = applyHistoryEntries(statements, { transactional: true, results: statements.map(() => ({ affected_rows: 0 })), failure: null }, { dialect: 'postgres', at: 1, ms: 5, wording: 'transaction' });
+		assert.deepEqual(ok.map((e) => [e.kind, e.outcome]), [['ddl', 'affected'], ['ddl', 'affected']]);
+		const rolledBack = applyHistoryEntries(statements, { transactional: true, results: [{ affected_rows: 0 }], failure: { index: 1, stage: 'statement', message: 'column "legacy" does not exist', committed: 0, unknown: false, rollbackConfirmed: true } }, { dialect: 'postgres', at: 1, ms: 5, wording: 'transaction' });
+		assert.deepEqual(rolledBack.map((e) => e.outcome), ['error', 'error']);
+		assert.match(rolledBack[0]!.error ?? '', /^Rolled back/);
 	});
 });

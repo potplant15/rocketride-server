@@ -45,6 +45,7 @@ import { commonStyles } from 'shell';
 import { isTransactionsUnavailable } from '../connect';
 import type { SqlEndpoint, SqlSchemaColumn, SqlSchemaResponse, SqlDialect } from '../connect';
 import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, thrownApplyMayHaveRun } from '../sql/applyMode';
+import { applyHistoryEntries } from '../sql/applyHistory';
 import { buildRelationGraph, inboundReferences } from '../schema/relations';
 import { refreshSchema, useExecuteState, useSchema } from '../schema/schemaStore';
 import { executeGateReason } from '../executeGate';
@@ -760,9 +761,15 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 		setShowVerbatim(false);
 		let failure: DesignApplyFailure | null = null;
 		let transactional = false;
+		const startedAt = Date.now();
+		const sentStatements = statements.map((sql) => ({ sql }));
 		try {
 			try {
-				const result = await env.getSession(endpoint).applyBatch(statements.map((sql) => ({ sql })), { atomic });
+				// Every statement that ran goes into History, as the grid's Apply
+				// records its own: same helper, same outcomes. A thrown apply
+				// records nothing, as there.
+				const result = await env.getSession(endpoint).applyBatch(sentStatements, { atomic });
+				for (const entry of applyHistoryEntries(sentStatements, result, { dialect: snapshot.dialect, at: startedAt, ms: Date.now() - startedAt, wording: atomic ? 'transaction' : 'each' })) env.history.record(endpoint, entry);
 				transactional = result.transactional;
 				if (result.failure !== null) {
 					const { index, stage, message, committed, unknown, rollbackConfirmed } = result.failure;
@@ -807,7 +814,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 			setApplying(false);
 			setConfirmOpen(false);
 		}
-	}, [env, statements, endpoint, createMode, createName, table, ops, snapshot.refreshedAt, applyGate]);
+	}, [env, statements, endpoint, createMode, createName, table, ops, snapshot.refreshedAt, snapshot.dialect, applyGate]);
 
 	// ── Outcome banner (composed against the post-refresh snapshot) ──────────
 
