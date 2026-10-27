@@ -527,10 +527,11 @@ after another account signs in without a reload the app shows that account no
 history, records none of its statements, and saves nothing to the workspace
 preferences (no history, saved query, grid layout or drawer width) until the
 page is reloaded. The History drawer says `Signed in as a different account:
-reload the page to see your history.` A setting the shell itself saves in that
-time, such as a theme change, still writes the preferences it holds, the first
-account's history among them, into the signed-in account's file, so reload the
-page before working as another account.
+reload the page to see your history.` A write the shell itself makes in that
+time, such as switching to another app or changing the theme, still writes the
+preferences it holds, the first account's history and saved queries among
+them, into the signed-in account's file, so reload the page before working as
+another account.
 
 ## Saved queries
 
@@ -687,9 +688,10 @@ there, with these differences:
 - **The plan drawer never runs `EXPLAIN ANALYZE`.** Its numbers are estimates,
   never measurements. An `EXPLAIN ANALYZE` typed into a query runs like any
   statement, and is checked as the statement it runs.
-- **Accounts in the full app.** A write the shell makes itself, such as a
-  theme change, can still copy the previous account's history into a new
-  account's file until you reload (see [Query history](#query-history)).
+- **Accounts in the full app.** A write the shell makes itself, such as
+  switching to another app or changing the theme, can still copy the previous
+  account's history and saved queries into a new account's file until you
+  reload (see [Query history](#query-history)).
 - **A pipeline connection needs its pipeline running**, and opens your own
   development run: a team deployment of the same pipeline cannot be saved or
   opened as a connection. A direct connection's temporary pipeline is the app's
