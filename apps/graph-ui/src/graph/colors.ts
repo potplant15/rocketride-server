@@ -142,7 +142,8 @@ export function nextAssignments(assigned: Readonly<Record<string, number>>, labe
 	for (const label of fresh) {
 		while (slot < CHART_COLOR_VARS.length && held.has(slot)) slot += 1;
 		if (slot >= CHART_COLOR_VARS.length) break;
-		out[label] = slot;
+		// An own entry: a label may be named `__proto__`, and is just another key here.
+		Object.defineProperty(out, label, { value: slot, enumerable: true, writable: true, configurable: true });
 		held.add(slot);
 	}
 	return out;

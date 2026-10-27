@@ -220,7 +220,8 @@ export function createRemoteUserData(opts: IRemoteUserDataOptions): IRemoteUserD
 							const entry = { fn: listener };
 							listeners.add(entry);
 							created.watchers += 1;
-							if (created.watchers === 1 && created.rev === null) fetch(key);
+							// Watched again: read it unless it is current (it may have changed while nobody watched it).
+							if (created.watchers === 1 && (created.rev === null || created.rev !== revs[part.rev] || part.retry(created.value))) fetch(key);
 							return () => {
 								if (listeners.delete(entry)) created.watchers -= 1;
 							};

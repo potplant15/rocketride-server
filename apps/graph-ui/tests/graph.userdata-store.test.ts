@@ -83,7 +83,7 @@ describe('saved queries: save, rename, delete', () => {
 		assert.deepEqual(bag[OTHER], [query('x')]);
 	});
 
-	it('a save that repeats an id replaces that query in place (a call sent twice saves once)', () => {
+	it('applySavedEdit: a save with an id already listed replaces that query in place', () => {
 		let bag = save({}, KEY, query('a'));
 		bag = save(bag, KEY, query('b'));
 		bag = save(bag, KEY, query('a', 'Renamed', 'RETURN 2'));
@@ -276,7 +276,7 @@ describe('styles: field-level edits, and the colour slots', () => {
 			try {
 				bag = applyStyleChange(bag, KEY, { kind: 'label', label: `${long}${i}`, patch: { slot: 1 } });
 			} catch (error) {
-				assert.ok(refused(/styles are full \(64 KB across all connections\)\. Reset the styles of a connection to make room\./)(error));
+				assert.ok(refused(/styles are full \(64 KB across all connections\)\. Resetting a connection's styles frees what its own choices take\./)(error));
 				refusedAt = i;
 				break;
 			}
@@ -327,5 +327,31 @@ describe('user data: what may cross from a frame', () => {
 		for (const bad of [null, {}, { kind: 'assign', add: { A: 0 }, release: [] }, { kind: 'label', patch: {} }, { kind: 'label', label: 'P', patch: { slot: 6 } }, { kind: 'label', label: 'P', patch: { size: 'XL' } }, { kind: 'label', label: 'P', patch: { badge: 'star' } }, { kind: 'label', label: 'P', patch: { caption: '' } }, { kind: 'label', label: 'P', patch: { caption: 'x'.repeat(257) } }, { kind: 'label', label: 'P', patch: { glow: true } }, { kind: 'label', label: 'P', clear: ['glow'] }, { kind: 'label', label: 'P', clear: 'slot' }, { kind: 'type', type: 'T', patch: { slot: 1.5 } }, { kind: 'type', type: 'T', patch: { size: 'S' } }, { kind: 'label', label: 'P', patch: 'red' }]) {
 			assert.throws(() => checkStyleEdit(bad), refused(/not one this app makes/), JSON.stringify(bad));
 		}
+	});
+});
+
+describe('labels named like Object members are just labels', () => {
+	const odd = ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'];
+
+	it('they take free slots, wait for one, and are released like any other label', () => {
+		assert.deepEqual(assignmentFor({}, odd, true).add, Object.fromEntries([['__proto__', 0], ['constructor', 1], ['hasOwnProperty', 2], ['toString', 3], ['valueOf', 4]]));
+		const six = { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5 };
+		const { add, release } = assignmentFor(six, ['A', 'B', 'C', 'D', 'E', 'constructor'], true);
+		assert.deepEqual({ ...add }, { constructor: 5 }, 'constructor waits for a slot, and F (gone) gives one back');
+		assert.deepEqual(release, ['F']);
+	});
+
+	it('they round-trip through the stored bag and the reader', () => {
+		let bag: Record<string, unknown> = {};
+		bag = applyStyleChange(bag, KEY, { kind: 'assign', ...assignmentFor({}, odd, true) });
+		bag = applyStyleChange(bag, KEY, { kind: 'label', label: '__proto__', patch: { slot: 5, size: 'L' } });
+		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'constructor', patch: { badge: 'dot' } });
+		const read = readConnectionStyle(JSON.parse(JSON.stringify(bag))[KEY]);
+		assert.deepEqual(Object.keys(read.assigned).sort(), [...odd].sort());
+		assert.ok(Object.hasOwn(read.labels, '__proto__'), 'an own entry, not the prototype');
+		assert.deepEqual(Object.getOwnPropertyDescriptor(read.labels, '__proto__')?.value, { slot: 5, size: 'L' });
+		assert.deepEqual(Object.getOwnPropertyDescriptor(read.labels, 'constructor')?.value, { badge: 'dot' });
+		assert.equal(Object.getPrototypeOf(read.labels), Object.prototype, 'still a plain object');
+		assert.equal(Object.hasOwn(read.labels, 'toString'), false, 'an inherited member is not a label');
 	});
 });

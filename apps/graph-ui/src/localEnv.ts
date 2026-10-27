@@ -67,7 +67,8 @@ export interface ILocalGraphEnvOptions {
 	activeConnection: IReadable<string | null>;
 	openDocument(target: DocTarget): void;
 	prefs: IPrefsAccessor;
-	historyPrivacyNote: string;
+	/** What the History panel says about where history is kept (read each time: it can follow the account). */
+	historyPrivacyNote: string | (() => string);
 	/** Override discovery (the controller gates it on identity and activation). */
 	refresh?: IGraphEnv['refresh'];
 	/** Styles and saved queries (default: kept in memory for the session, one store per set of stores). */
@@ -230,7 +231,10 @@ export function createLocalGraphEnv(opts: ILocalGraphEnvOptions): IGraphEnv {
 		gridPersistence: opts.gridPersistence ?? (opts.mount === 'app' ? APP_GRIDS : CONTROLLER_GRIDS),
 		openDocument: opts.openDocument,
 		prefs: opts.prefs,
-		historyPrivacyNote: opts.historyPrivacyNote,
+		get historyPrivacyNote() {
+			const note = opts.historyPrivacyNote;
+			return typeof note === 'function' ? note() : note;
+		},
 		userData: opts.userData ?? sessionUserData(stores),
 	};
 }

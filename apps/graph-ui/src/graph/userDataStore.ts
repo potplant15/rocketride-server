@@ -143,6 +143,18 @@ function refuse(message: string): ExplorerToolError {
 const writtenChars = (value: unknown): number => JSON.stringify(value, null, 2).length;
 
 /**
+ * Set an entry of a record keyed by labels or types. A label may be named `__proto__`, `constructor` or `toString`:
+ * it is set as an own entry (never the prototype), and it is read with Object.hasOwn (never an inherited member).
+ *
+ * @param record - The record.
+ * @param key - The label or type.
+ * @param value - Its value.
+ */
+export function setOwn<T>(record: Record<string, T>, key: string, value: T): void {
+	Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
  * Whether a value is a chart colour slot.
  *
  * @param value - Anything.
@@ -357,19 +369,19 @@ function readTypeStyle(value: unknown): ITypeStyle | null {
 export function readConnectionStyle(raw: unknown): IConnectionStyle {
 	if (!isPlainObject(raw)) return EMPTY_STYLE;
 	const assigned: Record<string, number> = {};
-	if (isPlainObject(raw.assigned)) for (const [label, slot] of Object.entries(raw.assigned)) if (isSlot(slot)) assigned[label] = slot;
+	if (isPlainObject(raw.assigned)) for (const [label, slot] of Object.entries(raw.assigned)) if (isSlot(slot)) setOwn(assigned, label, slot);
 	const labels: Record<string, ILabelStyle> = {};
 	if (isPlainObject(raw.labels)) {
 		for (const [label, value] of Object.entries(raw.labels)) {
 			const style = readLabelStyle(value);
-			if (style) labels[label] = style;
+			if (style) setOwn(labels, label, style);
 		}
 	}
 	const types: Record<string, ITypeStyle> = {};
 	if (isPlainObject(raw.types)) {
 		for (const [type, value] of Object.entries(raw.types)) {
 			const style = readTypeStyle(value);
-			if (style) types[type] = style;
+			if (style) setOwn(types, type, style);
 		}
 	}
 	return { assigned, labels, types };
@@ -407,11 +419,11 @@ export function applyStyleChange(bag: StoredBag, key: string, change: StyleChang
 	switch (change.kind) {
 		case 'assign': {
 			const assigned = entry.assigned as Record<string, unknown>;
-			const released = change.release.filter((label) => label in assigned);
+			const released = change.release.filter((label) => Object.hasOwn(assigned, label));
 			const fresh = Object.entries(change.add).filter(([label, slot]) => isSlot(slot) && (!isSlot(assigned[label]) || released.includes(label)));
 			if (fresh.length === 0 && released.length === 0) return bag;
 			for (const label of released) delete assigned[label];
-			for (const [label, slot] of fresh) assigned[label] = slot;
+			for (const [label, slot] of fresh) setOwn(assigned, label, slot);
 			break;
 		}
 		case 'reset':
@@ -422,23 +434,23 @@ export function applyStyleChange(bag: StoredBag, key: string, change: StyleChang
 			break;
 		case 'label': {
 			const labels = entry.labels as Record<string, unknown>;
-			const next = patched(labels[change.label], change.patch, change.clear);
+			const next = patched(Object.hasOwn(labels, change.label) ? labels[change.label] : undefined, change.patch, change.clear);
 			if (next === null) delete labels[change.label];
-			else labels[change.label] = next;
+			else setOwn(labels, change.label, next);
 			break;
 		}
 		case 'type': {
 			const types = entry.types as Record<string, unknown>;
-			const next = patched(types[change.type], change.patch, change.clear);
+			const next = patched(Object.hasOwn(types, change.type) ? types[change.type] : undefined, change.patch, change.clear);
 			if (next === null) delete types[change.type];
-			else types[change.type] = next;
+			else setOwn(types, change.type, next);
 			break;
 		}
 	}
 	const result: StoredBag = { ...bag, [key]: entry };
 	if (change.kind !== 'reset' && writtenChars(result) > MAX_STYLES_BAG_CHARS) {
 		if (change.kind === 'assign') return bag;
-		throw refuse(`The style was not changed: styles are full (${MAX_STYLES_BAG_CHARS / 1024} KB across all connections). Reset the styles of a connection to make room.`);
+		throw refuse(`The style was not changed: styles are full (${MAX_STYLES_BAG_CHARS / 1024} KB across all connections). Resetting a connection's styles frees what its own choices take.`);
 	}
 	return result;
 }
@@ -456,12 +468,12 @@ export function applyStyleChange(bag: StoredBag, key: string, change: StyleChang
 export function assignmentFor(assigned: Readonly<Record<string, number>>, labels: Iterable<string>, complete: boolean): IAssignment {
 	const listed = Array.from(new Set(labels)).filter((label) => label !== '');
 	const add = nextAssignments(assigned, listed);
-	const waiting = listed.filter((label) => !(label in assigned) && !(label in add));
+	const waiting = listed.filter((label) => !Object.hasOwn(assigned, label) && !Object.hasOwn(add, label));
 	if (!complete || waiting.length === 0) return { add, release: [] };
 	const gone = Object.keys(assigned).filter((label) => !listed.includes(label));
 	if (gone.length === 0) return { add, release: [] };
 	const kept: Record<string, number> = {};
-	for (const [label, slot] of Object.entries(assigned)) if (!gone.includes(label)) kept[label] = slot;
+	for (const [label, slot] of Object.entries(assigned)) if (!gone.includes(label)) setOwn(kept, label, slot);
 	return { add: nextAssignments(kept, listed), release: gone };
 }
 
@@ -474,8 +486,9 @@ export function assignmentFor(assigned: Readonly<Record<string, number>>, labels
  */
 export function withAssignment(style: IConnectionStyle, delta: IAssignment): IConnectionStyle {
 	const assigned: Record<string, number> = {};
-	for (const [label, slot] of Object.entries(style.assigned)) if (!delta.release.includes(label)) assigned[label] = slot;
-	return { ...style, assigned: { ...assigned, ...delta.add } };
+	for (const [label, slot] of Object.entries(style.assigned)) if (!delta.release.includes(label)) setOwn(assigned, label, slot);
+	for (const [label, slot] of Object.entries(delta.add)) setOwn(assigned, label, slot);
+	return { ...style, assigned };
 }
 
 /** Styles read per stored entry object, so a style read twice is the same object. */
@@ -562,7 +575,7 @@ function checkedPatch(value: unknown, fields: Record<string, (v: unknown) => boo
 	if (!isPlainObject(value)) return null;
 	const out: Record<string, unknown> = {};
 	for (const [field, v] of Object.entries(value)) {
-		if (!(field in fields) || !fields[field](v)) return null;
+		if (!Object.hasOwn(fields, field) || !fields[field](v)) return null;
 		out[field] = v;
 	}
 	return out;

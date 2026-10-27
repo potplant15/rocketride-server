@@ -453,7 +453,9 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 	offs.push(connected.subscribe(readViews));
 
 	// ── User data: styles and saved queries, the frame's account's, over ops ─────────────────────
-	const userData = createRemoteUserData({ caller, channel, owner: () => guard.first(), connected: () => connected.get() === true });
+	// The account comes from the identity guard below, once it exists (nothing asks for it before then).
+	let guardRef: IFrameIdentityGuard | null = null;
+	const userData = createRemoteUserData({ caller, channel, owner: () => guardRef?.first() ?? null, connected: () => connected.get() === true });
 	offs.push(connected.subscribe(() => userData.retry()));
 	offs.push(() => userData.dispose());
 
@@ -474,6 +476,8 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 			userData.reset();
 		},
 	});
+	guardRef = guard;
+
 
 	// ── `active` (R8): the fronted document, the fallback while activeDocKey is undefined ───────
 	function sendActive(consumed?: string): void {

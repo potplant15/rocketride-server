@@ -49,7 +49,7 @@ import type { IDataGridPersistence } from 'shell';
 import { ExplorerToolError } from 'shared/explorer';
 import type { IPrefsAccessor } from 'shared/explorer';
 import type { IPrefsAttachable } from 'shared/explorer/react';
-import { memoryPrefs } from '../env';
+import { APP_HISTORY_PRIVACY_NOTE, memoryPrefs } from '../env';
 import { APP_USER_DATA_NOTE, createStoredUserData } from './userData';
 import type { IOwnedUserData, IStoredUserDataOptions, IUserDataSource } from './userData';
 
@@ -70,6 +70,32 @@ export interface IWorkspacePin {
 /** What a view says instead of another account's styles and saved queries. */
 export const ANOTHER_ACCOUNT_USER_DATA = 'Signed in as a different account: reload the page to see your saved queries and styles.';
 
+/** Said where nothing is saved because nobody is signed in. */
+const NOBODY_NOTE = 'Not saved: nobody is signed in to a RocketRide server.';
+
+/**
+ * Where the full app keeps styles and saved queries, for the account signed in now.
+ *
+ * @param access - Where that account stands against the page's pin.
+ * @returns The sentence.
+ */
+export function appUserDataNote(access: WorkspaceAccess): string {
+	if (access === 'owner') return APP_USER_DATA_NOTE;
+	return access === 'another' ? 'Not saved: you are signed in as a different account. Reload the page to save to your own workspace file.' : NOBODY_NOTE;
+}
+
+/**
+ * Where the full app keeps history, for the account signed in now: another account's runs are kept in memory for the
+ * session (pinHistory gives it a throwaway accessor), never in the workspace file.
+ *
+ * @param access - Where that account stands against the page's pin.
+ * @returns The sentence.
+ */
+export function appHistoryNote(access: WorkspaceAccess): string {
+	if (access === 'owner') return APP_HISTORY_PRIVACY_NOTE;
+	return access === 'another' ? 'Signed in as a different account: statements run now are kept for this session only. Reload the page to see your history.' : NOBODY_NOTE;
+}
+
 /**
  * Make a pin. The full app has one, {@link APP_WORKSPACE_PIN}; tests make their own.
  *
@@ -88,6 +114,45 @@ export function createWorkspacePin(): IWorkspacePin {
 
 /** The full app's pin: one per page, as the shell reads the preferences once per page. */
 export const APP_WORKSPACE_PIN: IWorkspacePin = createWorkspacePin();
+
+/** The full app's workspace preferences with one stable identity, pointed at the shell's latest accessor. */
+export interface IForwardingPrefs extends IPrefsAccessor {
+	/**
+	 * Point at the shell's accessor of this render.
+	 *
+	 * @param api - The accessor `usePrefs()` handed out.
+	 * @returns True when it is a new one (a reader told about a write before it existed should read again).
+	 */
+	bind(api: IPrefsAccessor): boolean;
+}
+
+/**
+ * Workspace prefs with one stable identity. The shell hands out a new accessor whenever any preference changes, and
+ * each one is a SNAPSHOT of one render (its getPref reads the bag as it was), so a value just written is not in it
+ * until the shell renders again. What was set since the last bind is therefore read back from here (read your own
+ * writes): a reader told about a change sees it, and a second change made before the next render builds on the
+ * first instead of replacing it. A new accessor already holds those writes, so binding one clears them.
+ *
+ * @returns The accessor and its binder.
+ */
+export function createForwardingPrefs(): IForwardingPrefs {
+	let current: IPrefsAccessor | null = null;
+	const written = new Map<string, unknown>();
+	return {
+		bind(api) {
+			if (api === current) return false;
+			current = api;
+			written.clear();
+			return true;
+		},
+		getPref: (key) => (written.has(key) ? written.get(key) : current?.getPref(key)),
+		setPref: (key, value) => {
+			if (!current) return;
+			written.set(key, value);
+			current.setPref(key, value);
+		},
+	};
+}
 
 /**
  * Preferences that read and write through only for the pinned account.
@@ -159,7 +224,7 @@ export function createAppUserData(prefs: IPrefsAccessor, ownerNow: () => string 
 			return pinned;
 		},
 	};
-	return createStoredUserData({ styles: source, saved: source, privacyNote: () => APP_USER_DATA_NOTE }, opts);
+	return createStoredUserData({ styles: source, saved: source, owner: ownerNow, privacyNote: () => appUserDataNote(pin.access(ownerNow())) }, opts);
 }
 
 /** A history store's attach, through the page's pin. */

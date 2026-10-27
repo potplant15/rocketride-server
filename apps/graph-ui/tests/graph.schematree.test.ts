@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseSchema } from '../src/graph/schema';
-import { buildSchemaList, listKeyAction, menuItemsFor, menuKeyAction, patternText, shown, visibleItems } from '../src/graph/schemaTree';
+import { buildSchemaList, countsNote, listKeyAction, menuItemsFor, menuKeyAction, patternText, shown, visibleItems } from '../src/graph/schemaTree';
 import type { ISchemaRow } from '../src/graph/schemaTree';
 import { fixture } from './support/builders';
 
@@ -142,4 +142,12 @@ test('menu keys: Up and Down wrap past an item that cannot be chosen; Enter and 
 	assert.deepEqual(menuKeyAction('Escape', 1, items), { close: 'escape' });
 	assert.deepEqual(menuKeyAction('Tab', 1, items), { close: 'tab' });
 	assert.equal(menuKeyAction('x', 1, items), null);
+});
+
+test('a missing count is said under the list, never read as zero', () => {
+	const at = (count: number | null) => ({ name: 'A', count, countEstimated: false, properties: [] });
+	assert.equal(countsNote({ ...v2, labels: [at(3)], relationshipTypes: [] }), null);
+	assert.equal(countsNote({ ...v2, labels: [at(null), at(3)], relationshipTypes: [] }), 'Some counts not reported.');
+	assert.equal(countsNote({ ...v2, labels: [at(null)], relationshipTypes: [{ type: 'R', endpoints: [], properties: [], count: null, countEstimated: false }] }), 'Counts not reported.');
+	assert.equal(countsNote({ ...v2, labels: [], relationshipTypes: [] }), null);
 });

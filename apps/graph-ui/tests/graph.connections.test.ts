@@ -351,6 +351,7 @@ test('counts: exact sums; "about" on an estimate; "not reported" for a part whos
 	assert.equal(countsText(view({ labels: [], relationshipTypes: [] })), '', 'an empty graph says so with its chip');
 	assert.equal(countsText(null), '', 'not read in this session: no counts, and no request for them');
 	assert.equal(countsText(view({ labels: [label('A', 1_234_567)], relationshipTypes: [] })), '1,234,567 nodes (per label)');
+	assert.equal(countsText(view({ truncated: true, labels: [label('A', 1)], relationshipTypes: [type('R', 1, true)] })), 'at least 1 node (per label) \u00b7 at least about 1 relationship', 'a listing cut short: the sums are lower bounds');
 });
 
 test('the drawer\'s size and schema lines', () => {

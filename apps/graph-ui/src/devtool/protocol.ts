@@ -325,8 +325,9 @@ export const SCHEMAS_STATE_BYTES = 48 * 1024;
 
 /**
  * Budget of the data-versions snapshot. With the endpoints and schemas budgets this leaves about 3 KiB of the base's
- * 128 KiB total (MAX_RETAINED_TOTAL_BYTES) for identity, history, previews and the readiness topic, so the fixed
- * topics always fit together and the guard never has to degrade or withhold one of them.
+ * 128 KiB total (MAX_RETAINED_TOTAL_BYTES) for identity, history, previews, user data ({styleRev, savedRev}, about 30
+ * bytes) and the readiness topic, so the fixed topics always fit together and the guard never has to degrade or
+ * withhold one of them.
  */
 export const VERSIONS_STATE_BYTES = 16 * 1024;
 

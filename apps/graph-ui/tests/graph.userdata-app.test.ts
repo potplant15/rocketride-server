@@ -20,7 +20,7 @@ import { makeGraphHistory } from '../src/adapters/explorer';
 import { createSchemaStore } from '../src/graph/schemaStore';
 import { APP_USER_DATA_NOTE, EMPTY_STYLE, SESSION_USER_DATA_NOTE, createMemoryUserData, devToolUserDataNote, followAssignments } from '../src/graph/userData';
 import { SAVED_QUERIES_PREF, STYLES_PREF } from '../src/graph/userDataStore';
-import { ANOTHER_ACCOUNT_USER_DATA, createAppUserData, createWorkspacePin, pinHistory, pinnedGrids, pinnedPrefs } from '../src/graph/workspacePin';
+import { ANOTHER_ACCOUNT_USER_DATA, appHistoryNote, appUserDataNote, createAppUserData, createForwardingPrefs, createWorkspacePin, pinHistory, pinnedGrids, pinnedPrefs } from '../src/graph/workspacePin';
 import { fixture } from './support/builders';
 import { manualTimers } from './support/devtool';
 
@@ -68,7 +68,7 @@ describe('full app: A, then B without a reload', () => {
 		assert.deepEqual(data.style(KEY).get(), { ready: true, style: EMPTY_STYLE }, 'or A\'s styles');
 		await assert.rejects(data.editSaved(KEY, { action: 'save', name: 'B query', cypher: 'RETURN 2' }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale' && /different account/.test(error.message));
 		await assert.rejects(data.editStyle(KEY, { kind: 'reset' }), (error: unknown) => error instanceof ExplorerToolError && /different account/.test(error.message));
-		data.assign(KEY, ['Company'], true);
+		data.want([{ key: KEY, labels: ['Company'], complete: true }]);
 		assert.equal(shell.files.has(FP_B), false, 'nothing was written while B is signed in');
 		assert.deepEqual(shell.files, filesBefore);
 	});
@@ -287,12 +287,96 @@ describe('the full app routes every preference it keeps through the one page pin
 	it('the env\'s prefs (drafts, captions, the editor height), the grid layouts, the styles, the saved queries and history', () => {
 		const app = read('GraphApp.tsx');
 		assert.match(app, /prefs: pinnedPrefs\(APP_WORKSPACE_PIN, prefs, ownerNow\), grids: pinnedGrids\(APP_WORKSPACE_PIN, APP_GRIDS, ownerNow\), userData: createAppUserData\(prefs, ownerNow, \(\) => prefsLoaded\.current\)/);
-		assert.match(app, /createLocalGraphEnv\(\{ mount: 'app', ready: isConnected, client, stores: APP_STORES, activeConnection, openDocument: openAppDocument, prefs: pinned\.prefs, historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE, userData: pinned\.userData, gridPersistence: pinned\.grids \}\)/);
+		assert.match(app, /createLocalGraphEnv\(\{ mount: 'app', ready: isConnected, client, stores: APP_STORES, activeConnection, openDocument: openAppDocument, prefs: pinned\.prefs, historyPrivacyNote: \(\) => appHistoryNote\(APP_WORKSPACE_PIN\.access\(owner\.current\)\), userData: pinned\.userData, gridPersistence: pinned\.grids \}\)/);
+		assert.match(app, /const \[prefs\] = useState\(createForwardingPrefs\);/, 'one accessor that reads its own writes');
+		assert.match(app, /<AppPrefsBinding prefs=\{prefs\} onBound=\{pinned\.userData\.notify\} \/>/, 'readers read again once the shell hands out the new accessor');
 		assert.match(app, /const \{ loaded \} = useWorkspace\(\);/, 'styles and saved queries wait for the shell to load the prefs');
 		assert.doesNotMatch(app, /prefs: prefs[,\s}]/, 'the bare accessor never reaches the env');
 		const bridge = read('adapters', 'react.ts');
 		assert.match(bridge, /export const pinnedGraphHistory = pinHistory\(graphHistory\);/);
 		assert.match(bridge, /createHistoryPrefsBridge\(pinnedGraphHistory\)/);
 		assert.doesNotMatch(bridge, /createHistoryPrefsBridge\(graphHistory\)/);
+	});
+});
+
+describe('review P5: the full app across accounts, and the shell\'s snapshot accessor', () => {
+	const schemaOf = (names: string[]) => ({ schema: { version: 2, labels: names.map((name) => ({ name, properties: [] })), relationship_types: [], sampled: true, truncated: false, refreshed_at: null, source: 'startup', stale: false, error: null, capable: true } });
+
+	it('C-1 (T7): A, then B, then A again without a reload: B\'s labels never reach A\'s bag, and a slot write pending at a switch is dropped', async () => {
+		let owner: string | null = FP_A;
+		const bag = new Map<string, unknown>();
+		const prefs: IPrefsAccessor = { getPref: (k) => bag.get(k), setPref: (k, v) => void bag.set(k, v) };
+		const timers = manualTimers();
+		const pin = createWorkspacePin();
+		const data = createAppUserData(prefs, () => owner, LOADED, pin, { schedule: timers.schedule });
+		const schemas = createSchemaStore(() => 1);
+		const off = followAssignments(schemas, data);
+		pin.access(FP_A);
+		// A loads a schema; before the pause ends, B signs in (GraphApp: forgetConnections clears the schemas, then forget()).
+		await schemas.load('k1|dev|user|uA|K_A0', async () => schemaOf(['APending']), failure);
+		owner = FP_B;
+		schemas.clear();
+		data.forget();
+		data.notify();
+		await schemas.load('k1|dev|user|uB|K_B', async () => schemaOf(['BSecretLabel']), failure);
+		timers.advance(5_000);
+		assert.equal(bag.get(STYLES_PREF), undefined, 'nothing written for B, and the write pending for A was dropped');
+		// A is back without a reload, and loads a connection of A's.
+		owner = FP_A;
+		schemas.clear();
+		data.forget();
+		data.notify();
+		await schemas.load('k1|dev|user|uA|K_A', async () => schemaOf(['Person']), failure);
+		timers.advance(1_000);
+		const written = bag.get(STYLES_PREF) as Record<string, unknown>;
+		assert.deepEqual(Object.keys(written), ['k1|dev|user|uA|K_A'], 'A\'s own connection only');
+		assert.equal(JSON.stringify(written).includes('BSecretLabel'), false);
+		off();
+	});
+
+	it('C-1: a slot write computed for one account is dropped when the account is another one by the time it is due', async () => {
+		let owner: string | null = FP_A;
+		const bag = new Map<string, unknown>();
+		const prefs: IPrefsAccessor = { getPref: (k) => bag.get(k), setPref: (k, v) => void bag.set(k, v) };
+		const timers = manualTimers();
+		const data = createAppUserData(prefs, () => owner, LOADED, createWorkspacePin(), { schedule: timers.schedule });
+		data.want([{ key: 'k1|dev|user|uA|K', labels: ['Person'], complete: true }]);
+		owner = FP_B;
+		timers.advance(1_000);
+		assert.equal(bag.get(STYLES_PREF), undefined, 'even without forget(): never written under another account');
+	});
+
+	it('I-1: the shell hands out a snapshot accessor per render; a reader told about an edit sees it, two quick edits both keep, and a re-bind changes nothing', async () => {
+		let state: Record<string, unknown> = {};
+		const snapshotApi = (): IPrefsAccessor => {
+			const snap = state;
+			return { getPref: (k) => snap[k], setPref: (k, v) => { state = { ...state, [k]: v }; } };
+		};
+		const forwarding = createForwardingPrefs();
+		forwarding.bind(snapshotApi());
+		const data = createAppUserData(forwarding, () => FP_A, LOADED, createWorkspacePin());
+		const view = data.style('K');
+		const seen: unknown[] = [];
+		const off = view.subscribe(() => seen.push(view.get().style.labels));
+		await data.editStyle('K', { kind: 'label', label: 'Person', patch: { slot: 4 } });
+		await data.editStyle('K', { kind: 'label', label: 'Person', patch: { size: 'L' } });
+		assert.deepEqual(seen.at(-1), { Person: { slot: 4, size: 'L' } }, 'told, and reads what was written; the second edit kept the first');
+		await data.editSaved('K', { action: 'save', name: 'one', cypher: 'RETURN 1' });
+		await data.editSaved('K', { action: 'save', name: 'two', cypher: 'RETURN 2' });
+		const next = snapshotApi();
+		assert.equal(forwarding.bind(next), true, 'the shell renders: a new accessor');
+		assert.equal(forwarding.bind(next), false, 'the same accessor again is not news');
+		data.notify();
+		assert.deepEqual(((state[SAVED_QUERIES_PREF] as Record<string, Array<{ name: string }>>).K).map((q) => q.name), ['two', 'one'], 'both saves are in the shell\'s prefs');
+		assert.deepEqual(view.get().style.labels, { Person: { slot: 4, size: 'L' } });
+		off();
+	});
+
+	it('m-1: the notes follow the account signed in now', () => {
+		assert.equal(appUserDataNote('owner'), APP_USER_DATA_NOTE);
+		assert.match(appUserDataNote('another'), /^Not saved: you are signed in as a different account/);
+		assert.match(appHistoryNote('another'), /kept for this session only/);
+		assert.match(appHistoryNote('nobody'), /nobody is signed in/);
+		for (const note of [appUserDataNote('another'), appUserDataNote('nobody'), appHistoryNote('another'), appHistoryNote('nobody')]) assert.ok(note.length <= 160, note);
 	});
 });

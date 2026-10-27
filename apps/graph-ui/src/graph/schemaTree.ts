@@ -138,6 +138,20 @@ export function buildSchemaList(view: ISchemaView): ISchemaList {
 	};
 }
 
+/**
+ * What the sidebar says when counts are missing (Apache AGE reports none for a table that was never analysed), so a
+ * row without a count never reads as zero.
+ *
+ * @param view - The parsed schema.
+ * @returns `Counts not reported.`, `Some counts not reported.`, or null when every label and type has one.
+ */
+export function countsNote(view: ISchemaView): string | null {
+	const items = [...view.labels, ...view.relationshipTypes];
+	const missing = items.filter((item) => item.count === null).length;
+	if (missing === 0) return null;
+	return missing === items.length ? 'Counts not reported.' : 'Some counts not reported.';
+}
+
 // =============================================================================
 // KEYS
 // =============================================================================

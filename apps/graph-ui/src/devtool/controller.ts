@@ -209,11 +209,13 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 		if (!endpoint) throw new ExplorerToolError({ kind: 'unavailable', tool, message: 'This connection is not listed any more. Refresh the connections.' });
 		return endpoint;
 	};
-	const sized = <T>(result: T, tool: string): T => {
+	// A query's result can be made smaller; a schema view, the styles or the saved queries are what they are.
+	const QUERY_ADVICE = ' Lower the row limit, or return fewer or smaller properties.';
+	const sized = <T>(result: T, tool: string, advice: string = QUERY_ADVICE): T => {
 		const bytes = jsonByteLength(result);
 		if (bytes > maxResultBytes) {
 			const mb = (n: number): string => (n / (1024 * 1024)).toFixed(1);
-			throw new ExplorerToolError({ kind: 'malformed', tool, message: `The result is ${mb(bytes)} MB, too large to send to this window (the limit is ${mb(maxResultBytes)} MB). Lower the row limit, or return fewer or smaller properties.` });
+			throw new ExplorerToolError({ kind: 'malformed', tool, message: `The result is ${mb(bytes)} MB, too large to send to this window (the limit is ${mb(maxResultBytes)} MB).${advice}` });
 		}
 		return result;
 	};
@@ -281,7 +283,22 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 	let savedRev = 0;
 	const savedFile = followFile(SAVED_QUERIES_PATH, 'saved queries', () => (savedRev += 1));
 	const stylesFile = followFile(STYLES_PATH, 'styles', () => (styleRev += 1));
-	const userData = createStoredUserData({ styles: stylesFile, saved: savedFile, privacyNote: () => devToolUserDataNote(savedFile.storage(), stylesFile.storage()) }, { now });
+	const userData = createStoredUserData(
+		{
+			styles: stylesFile,
+			saved: savedFile,
+			owner: () => (identity.get().known ? identity.get().fingerprint : null),
+			privacyNote: () => devToolUserDataNote(savedFile.storage(), stylesFile.storage()),
+		},
+		{
+			now,
+			// Colour slots shown before they are written: frames read the style again now, not a second later.
+			onShownChange: () => {
+				styleRev += 1;
+				if (userDataLive) publishUserData();
+			},
+		},
+	);
 	/**
 	 * Refuse a user-data call from a frame that does not belong to who is signed in now.
 	 *
@@ -349,7 +366,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			stores.dataVersions.bump(keyOf(params, OP.writeAbandoned));
 			return replyOk(null);
 		},
-		[OP.schemaView]: (params) => replyOk(sized(toWire(schemaViewOf(stores.schemas.get(keyOf(params, OP.schemaView)))), OP.schemaView)),
+		[OP.schemaView]: (params) => replyOk(sized(toWire(schemaViewOf(stores.schemas.get(keyOf(params, OP.schemaView)))), OP.schemaView, ' The sidebar still lists the schema.')),
 		[OP.styles]: async (params) => {
 			// Only the frame's own account's, checked again after the wait: a frame bound to A is never served B's.
 			const key = keyOf(params, OP.styles);
@@ -358,7 +375,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			await stylesFile.accessor(OP.styles);
 			requireOwner(owner, OP.styles);
 			const answer: IStylesAnswer = { ...userData.style(key).get(), privacyNote: userData.privacyNote };
-			return replyOk(sized(toWire(answer), OP.styles));
+			return replyOk(sized(toWire(answer), OP.styles, ''));
 		},
 		[OP.savedQueries]: async (params) => {
 			const key = keyOf(params, OP.savedQueries);
@@ -367,7 +384,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			await savedFile.accessor(OP.savedQueries);
 			requireOwner(owner, OP.savedQueries);
 			const answer: ISavedQueriesAnswer = { saved: userData.saved(key).get(), privacyNote: userData.privacyNote };
-			return replyOk(sized(toWire(answer), OP.savedQueries));
+			return replyOk(sized(toWire(answer), OP.savedQueries, ''));
 		},
 		[OP.styleEdit]: async (params) => {
 			const key = keyOf(params, OP.styleEdit);
@@ -484,6 +501,8 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 		if (next === fingerprint) return;
 		fingerprint = next;
 		stores.schemas.clear();
+		// Colour slots wanted for the previous account are never written for this one.
+		userData.forget();
 		stores.previews.clear();
 		syncHistory();
 	}));

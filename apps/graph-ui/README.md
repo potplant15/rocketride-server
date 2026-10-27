@@ -76,10 +76,11 @@ A card also carries chips, each from what the node itself reports:
   connection's schema was read in this session (opening its workbench reads
   it). No card asks the node for it. The node total adds up the per-label
   counts, so on Neo4j and FalkorDB a node with two labels counts twice; the
-  relationship total is exact. A count the database estimates (Apache AGE) says
-  *about*, and a part with a count missing (AGE before its tables were analysed)
-  says *nodes not reported* or *relationships not reported* (*counts not
-  reported* when neither has one).
+  relationship total counts each relationship once. When the node listed only
+  part of a very large schema, both totals say *at least*. A count the database
+  estimates (Apache AGE) says *about*, and a part with a count missing (AGE
+  before its tables were analysed) says *nodes not reported* or *relationships
+  not reported* (*counts not reported* when neither has one).
 - **Empty graph**, only when a schema read in this session lists no label and
   no relationship type. A node that could not read its schema, or an older
   node, never shows it.
@@ -113,11 +114,13 @@ screen.
 **Accounts in the full app.** The shell reads your workspace file once per page
 and keeps it until the page reloads. So after another account signs in without
 a reload, the app shows none of the first account's history, drafts, caption
-choices, editor height, grid layouts, label styles or saved queries, records
-none of its statements, and saves none of them until the page is reloaded (or
-the first account signs in again). The saved queries say `Signed in as a
-different account: reload the page to see your saved queries and styles.`, and
-a change to them or to a style is refused with the same advice. A write the
+choices, editor height, grid layouts, label styles or saved queries, and saves
+none of them, nor anything of the new account's, until the page is reloaded (or
+the first account signs in again). The new account's statements are recorded
+for this session only, and the History panel says so. The saved queries say
+`Signed in as a different account: reload the page to see your saved queries
+and styles.`, and a change to them or to a style is refused with the same
+advice. A write the
 shell itself makes in that time, such as switching to another app or changing
 the theme, still writes the preferences it holds, the first account's history,
 styles and saved queries among them, into the signed-in account's file, so
@@ -257,8 +260,10 @@ result for anyone who would rather not use the canvas.
 For the active connection the sidebar lists its **node labels** and
 **relationship types**, with how many there are of each, and a count per label
 or type where the node has one. A count marked *about* is the database's
-estimate. Each label has a colour dot: the colour the label is drawn in on
-every screen. Colours are kept per connection and per account:
+estimate; where counts are missing (Apache AGE before its tables were
+analysed), a line under the list says they are not reported. Each label has a
+colour dot: the colour the label is drawn in on every screen. Colours are kept
+per connection and per account:
 
 - A label gets one of the six chart colours the first time a schema read lists
   it, and keeps it, so a label added to the graph later never changes the
@@ -391,15 +396,17 @@ What is different there:
     query. The styles file is also written when the sidebar gives new labels
     their colours, and only once it has read that file.
   - Two windows writing the same file at the same time keep the later one's
-    copy, so a style changed in one window can be lost to another's colours;
-    a saved query never is.
+    copy, of the saved queries as of the styles. The colours the sidebar gives
+    by itself only ever write the styles file, so they never cost a saved
+    query.
   - If a file cannot be read, what it holds is kept for the session only, the
     file is left alone, and the Saved queries panel says so.
   - After a disconnect or a sign-out, the last changes are written once the
     same account is back while the sidebar is open; if the sidebar closes
     first (VS Code closes it on every disconnect), they are lost. After a
-    switch to another account they are dropped, and that account never sees
-    them.
+    switch to another account they are dropped, colours the sidebar was about
+    to give the previous account's labels included, and that account never
+    sees them.
 - Editor drafts and caption choices last for the session only.
 - Results grid layouts (sort, column widths) are kept in memory: in
   rocket-ui until the page reloads, in VS Code until the document's panel

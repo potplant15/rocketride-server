@@ -62,7 +62,7 @@
 import type { IPrefsAccessor } from 'shared/explorer';
 import type { IReadable } from '../env';
 import type { ISchemaStore } from './schemaStore';
-import { EMPTY_STYLE, SAVED_QUERIES_PREF, assignmentFor, editSavedIn, editStyleIn, savedQueriesIn, styleIn, withAssignment } from './userDataStore';
+import { EMPTY_STYLE, SAVED_QUERIES_PREF, assignmentFor, editSavedIn, editStyleIn, savedQueriesIn, setOwn, styleIn, withAssignment } from './userDataStore';
 import type { IAssignment } from './userDataStore';
 
 // =============================================================================
@@ -175,18 +175,18 @@ export function applyStyleEdit(style: IConnectionStyle, edit: StyleEdit): IConne
 		case 'reset':
 			return Object.keys(style.labels).length === 0 && Object.keys(style.types).length === 0 ? style : { assigned: style.assigned, labels: {}, types: {} };
 		case 'label': {
-			const next: Record<string, unknown> = { ...(style.labels[edit.label] ?? {}), ...(edit.patch ?? {}) };
+			const next: Record<string, unknown> = { ...(Object.hasOwn(style.labels, edit.label) ? style.labels[edit.label] : {}), ...(edit.patch ?? {}) };
 			for (const field of edit.clear ?? []) delete next[field];
 			const labels: Record<string, ILabelStyle> = { ...style.labels };
-			if (LABEL_FIELDS.some((field) => next[field] !== undefined)) labels[edit.label] = next as ILabelStyle;
+			if (LABEL_FIELDS.some((field) => next[field] !== undefined)) setOwn(labels, edit.label, next as ILabelStyle);
 			else delete labels[edit.label];
 			return { ...style, labels };
 		}
 		case 'type': {
-			const next: ITypeStyle = { ...(style.types[edit.type] ?? {}), ...(edit.patch ?? {}) };
+			const next: ITypeStyle = { ...(Object.hasOwn(style.types, edit.type) ? style.types[edit.type] : {}), ...(edit.patch ?? {}) };
 			if (edit.clear?.includes('slot')) delete next.slot;
 			const types: Record<string, ITypeStyle> = { ...style.types };
-			if (next.slot !== undefined) types[edit.type] = next;
+			if (next.slot !== undefined) setOwn(types, edit.type, next);
 			else delete types[edit.type];
 			return { ...style, types };
 		}
@@ -244,12 +244,25 @@ export interface IUserDataSource {
 	changed?(): void;
 }
 
-/** Where a stored user data keeps its two bags, and how it says so. */
+/** Where a stored user data keeps its two bags, whose they are, and how it says so. */
 export interface IUserDataSources {
 	styles: IUserDataSource;
 	saved: IUserDataSource;
+	/**
+	 * The account the bags belong to now (the identity fingerprint; null when nobody is signed in). Colour slots are
+	 * computed for one account and written only while it is still the one signed in.
+	 */
+	owner(): string | null;
 	/** Where they are kept, in one sentence, now. */
 	privacyNote(): string;
+}
+
+/** One connection of the owning realm's schema store: its label list, and whether the read lists every label. */
+export interface IWantedSchema {
+	key: string;
+	labels: readonly string[];
+	/** Fresh and not truncated: a slot of a label it no longer lists may be released for a new one. */
+	complete: boolean;
 }
 
 /** What {@link createStoredUserData} may be given besides its sources. */
@@ -260,6 +273,11 @@ export interface IStoredUserDataOptions {
 	assignDelayMs?: number;
 	/** Timers (tests run their own); returns a cancel. */
 	schedule?: (fn: () => void, ms: number) => () => void;
+	/**
+	 * Told when the style a connection shows may have changed without a write (new colour slots shown before they are
+	 * stored): the controller moves its styles revision, so frames read them now, not after the write.
+	 */
+	onShownChange?: () => void;
 }
 
 /** A user data owned by a realm that holds its bags: the full app, the controller, or memory. */
@@ -272,11 +290,13 @@ export interface IOwnedUserData extends IGraphUserData {
 	/** Change the saved queries; `check` as for {@link editStyle}. */
 	editSaved(key: string, edit: SavedEdit, check?: () => void): Promise<void>;
 	/**
-	 * The labels of a connection's loaded schema: their colour slots are shown at once and written (debounced) once the
-	 * styles store has been read. `complete`: the read lists every label (fresh, not truncated), so a slot of a label
-	 * it no longer lists may be released for a new one.
+	 * Every connection of the owning realm's schema store, as it is now (it REPLACES what was wanted before, so a
+	 * cleared store wants nothing): their colour slots are shown at once and written (debounced) once the styles store
+	 * has been read, for the account they were computed for only.
 	 */
-	assign(key: string, labels: Iterable<string>, complete: boolean): void;
+	want(schemas: readonly IWantedSchema[]): void;
+	/** The account changed (or is gone): forget what was wanted and drop the pending slot write. */
+	forget(): void;
 	/** Read again: a source's state, or the account, may have changed. */
 	notify(): void;
 	/** Be told about every change, of any connection. */
@@ -353,8 +373,10 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 	const notify = (): void => listeners.forEach((entry) => entry.fn());
 	const styleReadables = new Map<string, IReadable<IStyleView>>();
 	const savedReadables = new Map<string, IReadable<ISavedQueriesView>>();
-	// What the owning realm's schema lists per connection (the slots come from these, never from a screen's labels).
-	const wanted = new Map<string, { labels: readonly string[]; complete: boolean }>();
+	// What the owning realm's schema lists per connection (the slots come from these, never from a screen's labels),
+	// and the account it was listed for: never anyone else's.
+	let wanted = new Map<string, { labels: readonly string[]; complete: boolean }>();
+	let wantedFor: string | null = null;
 	// One view per key, with what it was made from: the same inputs (most hosts hand out the same objects) are not read
 	// again, and equal text gives the same view, so a host that copies values still gives a stable snapshot.
 	const styles = new Map<string, { stored: IConnectionStyle; want: unknown; text: string; view: IStyleView }>();
@@ -365,7 +387,7 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 		const read = sources.styles.read();
 		if (!('prefs' in read)) return read.status === 'loading' ? STYLE_LOADING : STYLE_NONE;
 		const stored = styleIn(read.prefs, key);
-		const want = wanted.get(key);
+		const want = wantedFor === sources.owner() ? wanted.get(key) : undefined;
 		const last = styles.get(key);
 		if (last && last.stored === stored && last.want === want) return last.view;
 		const delta = want ? assignmentFor(stored.assigned, want.labels, want.complete) : null;
@@ -387,11 +409,12 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 	};
 
 	// The slots are written only to a styles store that was READ (never while it loads, never to a session-only
-	// fallback: an automatic write must never replace what it has not seen), and only when they change something.
-	const writeSlots = (): void => {
+	// fallback: an automatic write must never replace what it has not seen), only when they change something, and only
+	// for the account they were computed for, still the one signed in when the write is due.
+	const writeSlots = (owner: string | null): void => {
 		cancelWrite = null;
 		const read = sources.styles.read();
-		if (read.status !== 'ready') return;
+		if (read.status !== 'ready' || owner === null || owner !== wantedFor || owner !== sources.owner()) return;
 		let wrote = false;
 		for (const [key, want] of wanted) {
 			const delta = assignmentFor(styleIn(read.prefs, key).assigned, want.labels, want.complete);
@@ -403,7 +426,8 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 	};
 	const scheduleSlots = (): void => {
 		cancelWrite?.();
-		cancelWrite = schedule(writeSlots, delay);
+		const owner = wantedFor;
+		cancelWrite = schedule(() => writeSlots(owner), delay);
 	};
 
 	return {
@@ -440,14 +464,35 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 			notify();
 			sources.saved.changed?.();
 		},
-		assign(key, labels, complete) {
-			const distinct = Array.from(new Set(labels)).filter((label) => label !== '');
-			const last = wanted.get(key);
-			if (!last || last.complete !== complete || last.labels.length !== distinct.length || last.labels.some((label, i) => label !== distinct[i])) {
-				wanted.set(key, { labels: distinct, complete });
+		want(schemas) {
+			const owner = sources.owner();
+			const next = new Map<string, { labels: readonly string[]; complete: boolean }>();
+			for (const schema of schemas) next.set(schema.key, { labels: Array.from(new Set(schema.labels)).filter((label) => label !== ''), complete: schema.complete });
+			const same = owner === wantedFor && next.size === wanted.size && [...next].every(([key, want]) => {
+				const last = wanted.get(key);
+				return last !== undefined && last.complete === want.complete && last.labels.length === want.labels.length && last.labels.every((label, i) => label === want.labels[i]);
+			});
+			if (!same) {
+				// Unchanged entries keep their object, so their cached view stays the same snapshot.
+				for (const [key, want] of next) {
+					const last = wanted.get(key);
+					if (last && last.complete === want.complete && last.labels.length === want.labels.length && last.labels.every((label, i) => label === want.labels[i])) next.set(key, last);
+				}
+				wanted = next;
+				wantedFor = owner;
 				notify();
+				opts.onShownChange?.();
 			}
-			if (sources.styles.read().status === 'ready') scheduleSlots();
+			if (wanted.size > 0 && sources.styles.read().status === 'ready') scheduleSlots();
+		},
+		forget() {
+			cancelWrite?.();
+			cancelWrite = null;
+			if (wanted.size === 0 && wantedFor === null) return;
+			wanted = new Map();
+			wantedFor = null;
+			notify();
+			opts.onShownChange?.();
 		},
 		notify,
 		subscribe,
@@ -469,12 +514,13 @@ export function createMemoryUserData(privacyNote: string, now: () => number = Da
 	const values = new Map<string, unknown>();
 	const prefs: IPrefsAccessor = { getPref: (key) => values.get(key), setPref: (key, value) => void values.set(key, value) };
 	const source: IUserDataSource = { read: () => ({ status: 'session', prefs }), accessor: async () => prefs };
-	return createStoredUserData({ styles: source, saved: source, privacyNote: () => privacyNote }, { now });
+	return createStoredUserData({ styles: source, saved: source, owner: () => 'session', privacyNote: () => privacyNote }, { now });
 }
 
 /**
  * Give every loaded schema's labels their colour slots, in the realm that owns the schema: now, on every schema
- * change, and whenever the user data can be written again (a file read, an account back).
+ * change, and whenever the user data can be written again (a file read, an account back). What is wanted is rebuilt
+ * from the schema store each time, so a store cleared for another account wants nothing of the previous one.
  *
  * @param schemas - The realm's schema store.
  * @param userData - The realm's user data.
@@ -483,15 +529,17 @@ export function createMemoryUserData(privacyNote: string, now: () => number = Da
 export function followAssignments(schemas: ISchemaStore, userData: IOwnedUserData): () => void {
 	let running = false;
 	const run = (): void => {
-		// An assignment notifies, which runs this again: once is enough (it finds nothing new).
+		// A change notifies, which runs this again: once is enough (it finds nothing new).
 		if (running) return;
 		running = true;
 		try {
+			const wanted: IWantedSchema[] = [];
 			for (const key of schemas.keys()) {
 				const entry = schemas.get(key);
 				if (entry.loadedAt === 0 || entry.view.labels.length === 0) continue;
-				userData.assign(key, entry.view.labels.map((label) => label.name), entry.view.evidence === 'fresh' && !entry.view.truncated);
+				wanted.push({ key, labels: entry.view.labels.map((label) => label.name), complete: entry.view.evidence === 'fresh' && !entry.view.truncated });
 			}
+			userData.want(wanted);
 		} finally {
 			running = false;
 		}

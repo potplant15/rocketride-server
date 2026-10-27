@@ -442,3 +442,64 @@ describe('the schema view of a connection whose label names do not fit the summa
 		r.dispose();
 	});
 });
+
+describe('review P5: colour slots, account switches and frames that watch again', () => {
+	it('C-1 (T7): A loads a schema and B signs in within the pause; B\'s styles file never gets A\'s connection or labels', async () => {
+		const r = await rig();
+		await r.readStyle(FP_A);
+		await r.landing.env(true).loadSchema(r.key);
+		await until(() => r.controller.stores.schemas.get(r.key).loadedAt > 0, 'A\'s schema loaded');
+		r.engine.realm.root.accountChanged(account('u2'));
+		const FP_B = 'u2|org-1|team-1';
+		await until(() => r.controller.identity.get().fingerprint === FP_B, 'account B');
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		const names = parseSchema(NEO4J_SCHEMA).labels.map((label) => label.name);
+		const bText = JSON.stringify(bagOf(r.engine.files, FP_B, STYLES_PATH) ?? {});
+		assert.equal(bText.includes(r.key), false, 'A\'s connection never reaches B\'s file');
+		for (const name of names) assert.equal(bText.includes(`"${name}"`), false, `A's label ${name} never reaches B's file`);
+		assert.equal(JSON.stringify(bagOf(r.engine.files, FP_A, STYLES_PATH) ?? {}).includes('"assigned"'), false, 'and nothing was written for A after the switch either');
+		assert.deepEqual(Object.keys(r.controller.env(true).userData.style(r.key).get().style.assigned), [], 'B is shown none of the slots wanted for A');
+		r.dispose();
+	});
+
+	it('I-2: a frame view watched again after a change made while nobody watched it reads it again', async () => {
+		const r = await rig();
+		const view = r.frame.env(true).userData.saved(r.key);
+		let off = view.subscribe(() => undefined);
+		await until(() => view.get().status === 'ready', 'the first read');
+		off();
+		await r.landing.env(true).userData.editSaved(r.key, saveOf('Elsewhere'));
+		await settle();
+		off = view.subscribe(() => undefined);
+		await until(() => view.get().queries.some((q) => q.name === 'Elsewhere'), 'the change made elsewhere', 200);
+		off();
+		r.dispose();
+	});
+
+	for (const unreadable of [false, true]) {
+		it(`I-3: a frame that read its style before the schema loaded gets the same colour slots as the sidebar at once (styles file ${unreadable ? 'unreadable: session only' : 'readable'})`, async () => {
+			const engine = vscodeRealm();
+			if (unreadable) engine.files.set(STYLES_PATH, { format: 'from the future' });
+			signInVsCode(engine.realm);
+			const mounted = mountController(engine.cm);
+			mounted.h.setHostConnection(true);
+			const landing = mountFrame(mounted.h, undefined).frame;
+			await until(() => landing.env(true).endpoints.get().endpoints.length === 1, 'discovery');
+			const key = landing.env(true).endpoints.get().endpoints[0].key;
+			const doc = mountFrame(mounted.h, `workbench:${key}`).frame;
+			await until(() => doc.guard.first() !== null, 'the account');
+			const style = doc.env(true).userData.style(key);
+			const off = style.subscribe(() => undefined);
+			await until(() => style.get().ready, 'the frame read its style');
+			await doc.env(true).loadSchema(key);
+			await until(() => mounted.controller.stores.schemas.get(key).loadedAt > 0, 'the schema');
+			const sidebar = () => mounted.controller.env(true).userData.style(key).get().style.assigned;
+			await until(() => Object.keys(sidebar()).length === 6 && JSON.stringify(style.get().style.assigned) === JSON.stringify(sidebar()), 'the frame agrees with the sidebar', 30);
+			assert.deepEqual(fileRequests(engine, 'client.fsWriteJson', STYLES_PATH), [], 'before any write: what is shown, not only what is stored');
+			off();
+			doc.dispose();
+			landing.dispose();
+			mounted.controller.dispose();
+		});
+	}
+});

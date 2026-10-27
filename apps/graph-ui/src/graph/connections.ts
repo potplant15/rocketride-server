@@ -262,16 +262,18 @@ function total(items: ReadonlyArray<{ count: number | null; countEstimated: bool
  * @param value - The total.
  * @param one - The singular noun.
  * @param many - The plural noun.
- * @returns `about 1,200 nodes`, `1 relationship`.
+ * @param atLeast - The schema listing was cut (some items are missing), so the sum is a lower bound.
+ * @returns `about 1,200 nodes`, `1 relationship`, `at least 60 nodes`.
  */
-function counted(value: { sum: number; estimated: boolean }, one: string, many: string): string {
-	return `${value.estimated ? 'about ' : ''}${value.sum.toLocaleString('en-US')} ${value.sum === 1 ? one : many}`;
+function counted(value: { sum: number; estimated: boolean }, one: string, many: string, atLeast: boolean): string {
+	return `${atLeast ? 'at least ' : ''}${value.estimated ? 'about ' : ''}${value.sum.toLocaleString('en-US')} ${value.sum === 1 ? one : many}`;
 }
 
 /**
  * A connection's size from the schema read in this session, in the words the cards, the drawer and the Overview share:
  * `60 nodes (per label) · 92 relationships`. A part with any count absent (AGE before its tables were analysed) says
- * `nodes not reported` or `relationships not reported`, and `counts not reported` when no part has its counts.
+ * `nodes not reported` or `relationships not reported`, and `counts not reported` when no part has its counts. When
+ * the node listed only part of a very large schema, the totals are lower bounds and say `at least`.
  *
  * @param schema - The schema, or null when it was not read (then nothing is said, and nothing is asked for).
  * @returns The text; '' when the schema was not read, or lists no label and no relationship type.
@@ -281,11 +283,11 @@ export function countsText(schema: ISchemaView | null): string {
 	const parts: Array<{ text: string; counted: boolean }> = [];
 	if (schema.labels.length > 0) {
 		const nodes = total(schema.labels);
-		parts.push(nodes ? { text: `${counted(nodes, 'node', 'nodes')} (per label)`, counted: true } : { text: 'nodes not reported', counted: false });
+		parts.push(nodes ? { text: `${counted(nodes, 'node', 'nodes', schema.truncated)} (per label)`, counted: true } : { text: 'nodes not reported', counted: false });
 	}
 	if (schema.relationshipTypes.length > 0) {
 		const relationships = total(schema.relationshipTypes);
-		parts.push(relationships ? { text: counted(relationships, 'relationship', 'relationships'), counted: true } : { text: 'relationships not reported', counted: false });
+		parts.push(relationships ? { text: counted(relationships, 'relationship', 'relationships', schema.truncated), counted: true } : { text: 'relationships not reported', counted: false });
 	}
 	if (parts.length === 0) return '';
 	if (parts.every((part) => !part.counted)) return 'counts not reported';

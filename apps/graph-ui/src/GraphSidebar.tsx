@@ -61,7 +61,7 @@ import { connectionRow, sidebarListLine } from './graph/connections';
 import type { IBadge } from './graph/connections';
 import { parseDialect } from './graph/dialect';
 import { NO_SCHEMA, SAMPLED_NOTE, schemaStatusText } from './graph/schema';
-import { buildSchemaList } from './graph/schemaTree';
+import { buildSchemaList, countsNote } from './graph/schemaTree';
 import type { ISchemaEntry } from './graph/schemaStore';
 import { GraphIcon } from './icons';
 
@@ -347,6 +347,7 @@ const GraphSidebar: React.FC<IGraphSidebarProps> = ({ devtool = false }) => {
 						)}
 						{entry.view.sampled && entry.view.labels.length > 0 && <div style={styles.statusLine}>{SAMPLED_NOTE}</div>}
 						{entry.view.truncated && <div style={styles.statusLine}>{TRUNCATED_NOTE}</div>}
+						{countsNote(entry.view) !== null && <div style={styles.statusLine}>{countsNote(entry.view)}</div>}
 						{list.labels.length + list.types.length > 0 && <div style={styles.statusLine}>{SCHEMA_ACTIONS_NOTE}</div>}
 					</div>
 				</>
