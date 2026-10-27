@@ -315,7 +315,7 @@ test('the run surface settles, records and describes a run through the mode-awar
 // The busy sentence says "stop waiting for it", so the control is offered for every request, not only a path search.
 test('the graph offers Stop waiting for whatever it is waiting on, in the toolbar and in the inspector', () => {
 	const view = code(read('components', 'GraphView.tsx'));
-	assert.ok(/\{busy && <Button[^>]*onClick=\{\(\) => session\.stopWaiting\(\)\}>Stop waiting<\/Button>\}/.test(view), 'the toolbar offers it whenever a request runs');
+	assert.ok(/\.\.\.\(busy \? \[\{ id: 'stop', label: 'Stop waiting'[^\]]*keep: 100, run: \(\) => session\.stopWaiting\(\) \}\]/.test(view), 'the toolbar offers it whenever a request runs, and it is the last action to move to More');
 	assert.ok(!/state\.busy === 'path' && <Button/.test(view), 'not only for a path search');
 	const inspector = code(read('components', 'InspectorPanel.tsx'));
 	assert.ok(/state\.busy !== null && <Button[^>]*onClick=\{\(\) => session\.stopWaiting\(\)\}>Stop waiting<\/Button>/.test(inspector), 'the inspector offers it beside Refresh');

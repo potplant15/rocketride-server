@@ -493,8 +493,13 @@ one of its labels or any property value, ignoring case. Matching captions come
 first. The canvas dims the other nodes; Enter selects the current match and
 centres it, Down and Up step to the next and previous.
 
-**View and Export.** The toolbar keeps the node actions, search, **Fit**, **View**
-and **Export** on one row. **View** holds Layout (Force, Tree (top down), Left to
+**View and Export.** The toolbar never wraps. When the width it has cannot hold
+every action (the inspector and the legend each take 320 px beside the canvas, and a
+VS Code panel is narrow), the least needed actions move into a **More** menu, one at a
+time and always in the same order: the focused-node label first, then Show more nodes,
+Clear selection, Connect nodes, Dismiss, Collapse, Fit, Inspect, Find path and Expand;
+Stop waiting stays longest while a request runs. Search, **View** and **Export** never
+move. **More** follows the same menu keys as the others. **View** holds Layout (Force, Tree (top down), Left to
 right), Re-run layout, whether nodes you dragged stay pinned, the legend, the
 keyboard shortcuts and Full screen (while full screen is on, **Exit full screen**
 is also a button on the toolbar). Export offers PNG and SVG images and the drawn
@@ -517,7 +522,7 @@ canvas, never two.
 An out of date drawing says so once, offers **Rerun**, and keeps the full
 explanation in its Details. The result line (rows, time) is on the right.
 
-**Legend and styles.** The legend is closed by default and opens from **View** in the column to the right of the canvas, with the inspector, so it takes width and no canvas height. Labels are still coloured on the canvas, and in the sidebar, without it. It lists the labels and relationship types that
+**Legend and styles.** The legend is closed by default and opens from **View** in the column to the right of the canvas, with the inspector, so it takes 320 px of width and no height: opening it (or the inspector) narrows the canvas and moves actions into **More** when the row is full. Labels are still coloured on the canvas, and in the sidebar, without it. It lists the labels and relationship types that
 are drawn, with how many of each (drawn, not in the database). Clicking a label
 selects its drawn nodes. **Style** opens an editor under the legend: a label
 takes one of the six measured chart colours (or its automatic one), a size (S,

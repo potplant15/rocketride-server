@@ -41,7 +41,7 @@
 // elements, and a menu closes when a pointer goes down outside it.
 // =============================================================================
 
-import React, { Component, Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { Component, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Button, EmptyState } from 'shell';
 import { useConnectionStyle, useGraphEnv, useSchemaView } from '../env';
@@ -54,8 +54,11 @@ import type { IGraphSession, IGraphState } from '../graph/graphSession';
 import { exportFailureText, exportOutcome } from '../graph/exportWording';
 import { inspectNode } from '../graph/inspector';
 import { legendOf, nodeIdsOfLabel, typeLegendOf } from '../graph/legend';
+import { MAX_COPY_CHARS } from '../graph/exportRows';
 import { searchNodes } from '../graph/search';
 import { statusItems } from '../graph/statusLine';
+import { fitToolbar } from '../graph/toolbarFit';
+import type { IToolbarSlot } from '../graph/toolbarFit';
 import type { GraphNode } from '../graph/types';
 import { toJsonText } from '../graph/values';
 import { STOP_WAITING_NOTE, canvasBudgetText } from '../graph/wording';
@@ -80,9 +83,10 @@ const GraphCanvas = lazy(() => import('../canvas/GraphCanvas'));
 const styles = {
 	root: { display: 'flex', flexDirection: 'row', height: '100%', minHeight: 0 } as CSSProperties,
 	main: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 } as CSSProperties,
-	toolbar: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', padding: '8px 10px', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
+	// Never wraps: what does not fit moves to the More menu (graph/toolbarFit.ts).
+	toolbar: { display: 'flex', flexWrap: 'nowrap', gap: 6, alignItems: 'center', padding: '8px 10px', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
 	focused: { fontSize: 12, color: 'var(--rr-text-secondary)', marginRight: 6, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
-	spacer: { marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } as CSSProperties,
+	spacer: { marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap' } as CSSProperties,
 	canvas: { flex: 1, minHeight: 0, position: 'relative' } as CSSProperties,
 	side: { width: 320, flex: '0 0 320px', minHeight: 0, overflowY: 'auto', borderLeft: '1px solid var(--rr-border)', background: 'var(--rr-bg-default)' } as CSSProperties,
 	menuAnchor: { position: 'relative', display: 'inline-block' } as CSSProperties,
@@ -140,7 +144,7 @@ function download(blob: Blob, name: string): void {
 }
 
 /** The toolbar menus. */
-type ToolMenu = 'view' | 'export';
+type ToolMenu = 'view' | 'export' | 'more';
 
 // =============================================================================
 // COMPONENT
@@ -240,8 +244,8 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const canvasBox = useRef<HTMLDivElement>(null);
 	const handle = useRef<IGraphCanvasHandle | null>(null);
 	const searchInput = useRef<HTMLInputElement>(null);
-	const triggers = useRef<Record<ToolMenu, HTMLSpanElement | null>>({ view: null, export: null });
-	const toolbar = useRef<HTMLDivElement>(null);
+	const triggers = useRef<Record<ToolMenu, HTMLSpanElement | null>>({ view: null, export: null, more: null });
+	const toolbar = useRef<HTMLDivElement | null>(null);
 
 	// An informational notice leaves by itself; a warning or an error stays until the next action.
 	const [expiredNotice, setExpiredNotice] = useState<unknown>(null);
@@ -349,8 +353,21 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	/** Announce a copy; when the browser refused it, leave the text on screen to copy by hand. */
 	const say = async (text: string, ok: boolean, fallback?: string): Promise<void> => {
 		announce(ok ? text : 'Copying was not allowed by the browser.');
-		setBlockedCopy(ok ? null : (fallback ?? null));
+		setBlockedCopy(ok ? null : (fallback !== undefined && fallback.length <= MAX_COPY_CHARS ? fallback : null));
 	};
+	/** Copy exported text; one that is too large is not put on the clipboard (a huge string can freeze the page or be refused). */
+	const copyExport = async (text: string, what: string, done: string): Promise<void> => {
+		if (text.length > MAX_COPY_CHARS) {
+			setBlockedCopy(null);
+			announce(`Not copied: ${what} is too large for the clipboard (over ${MAX_COPY_CHARS.toLocaleString('en-US')} characters). Export where downloads are allowed.`);
+			return;
+		}
+		await say(done, await copyText(text), text);
+	};
+	// A box left for copying by hand belongs to the drawing it came from.
+	useEffect(() => {
+		setBlockedCopy(null);
+	}, [state.model]);
 
 	const runExport = async (what: 'png' | 'svg' | 'json' | 'copy-svg' | 'copy-json'): Promise<void> => {
 		try {
@@ -366,8 +383,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		}
 		if (what === 'copy-json') {
 			{
-				const text = exportGraphJson();
-				await say('Copied the drawn graph as JSON.', await copyText(text), text);
+				await copyExport(exportGraphJson(), 'the drawn graph as JSON', 'Copied the drawn graph as JSON.');
 			}
 			return;
 		}
@@ -380,8 +396,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 			return;
 		}
 		if (what === 'copy-svg') {
-			const text = await blob.text();
-			await say('Copied the SVG.', await copyText(text), text);
+			await copyExport(await blob.text(), 'the SVG', 'Copied the SVG.');
 		}
 		else download(blob, `graph.${format}`);
 	};
@@ -432,7 +447,8 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		const which = toolMenu;
 		setToolMenu(null);
 		if (which) restoreToolFocus(which);
-		if (id === 'force' || id === 'tree' || id === 'left-right') setLayoutMode(id);
+		if (id.startsWith('tb:')) actions.find((a) => `tb:${a.id}` === id)?.run();
+		else if (id === 'force' || id === 'tree' || id === 'left-right') setLayoutMode(id);
 		else if (id === 'relayout') handle.current?.relayout();
 		else if (id === 'keep-pinned') setKeepPinned(!keepPinned);
 		else if (id === 'legend') setLegendOpen(!legendOpen);
@@ -567,6 +583,66 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		path: state.path,
 	});
 
+	// -------------------------------------------------------------------
+	// the toolbar: it never wraps, so what does not fit goes to "More"
+	// -------------------------------------------------------------------
+
+	interface IToolbarAction {
+		id: string;
+		label: string;
+		title: string;
+		disabled: boolean;
+		keep: number;
+		run(): void;
+	}
+	const actions: IToolbarAction[] = [
+		{ id: 'expand', label: 'Expand', title: 'Fetch up to 100 new neighbours (E)', disabled: !focused || busy || focusedStale, keep: 90, run: () => focused && void session.expand(focused.id) },
+		{ id: 'collapse', label: 'Collapse', title: 'Remove what hangs only from this node (C)', disabled: !focused, keep: 50, run: () => focused && session.collapse(focused.id) },
+		{ id: 'dismiss', label: 'Dismiss', title: 'Remove this node from the canvas (Delete or Backspace)', disabled: !focused, keep: 40, run: () => focused && session.dismiss(focused.id) },
+		{ id: 'inspect', label: 'Inspect', title: 'Open the inspector (Enter)', disabled: !focused, keep: 70, run: () => focused && inspect(focused.id) },
+		{ id: 'connect', label: 'Connect nodes', title: 'Draw the relationships among the nodes on the canvas', disabled: busy || state.stale || state.model.nodes.size < 2, keep: 30, run: () => void session.connect() },
+		{ id: 'path', label: 'Find path', title: 'Select two nodes with Space, then find a path (P)', disabled: busy || state.stale || state.selected.size !== 2, keep: 80, run: () => void session.findPath() },
+		...(busy ? [{ id: 'stop', label: 'Stop waiting', title: STOP_WAITING_NOTE, disabled: false, keep: 100, run: () => session.stopWaiting() }] : []),
+		...(hasMore ? [{ id: 'more-nodes', label: 'Show more nodes', title: 'Draw more of the result', disabled: false, keep: 10, run: () => session.showMore() }] : []),
+		...(state.selected.size > 0 ? [{ id: 'clear', label: `Clear selection (${state.selected.size})`, title: 'Clear the selection', disabled: false, keep: 20, run: () => session.clearSelection() }] : []),
+		{ id: 'fit', label: 'Fit', title: 'Fit to screen (F)', disabled: false, keep: 60, run: () => handle.current?.fit() },
+	];
+	const fixedEl = useRef<HTMLSpanElement | null>(null);
+	const moreEl = useRef<HTMLSpanElement | null>(null);
+	const slotEls = useRef(new Map<string, HTMLElement>());
+	const widths = useRef(new Map<string, number>());
+	const [hiddenIds, setHiddenIds] = useState<readonly string[]>([]);
+	const [tick, setTick] = useState(0);
+	// The row's width changes when a panel opens beside it; measuring is a ResizeObserver, not a document listener.
+	useLayoutEffect(() => {
+		const el = toolbar.current;
+		if (!el || typeof ResizeObserver === 'undefined') return undefined;
+		const observer = new ResizeObserver(() => setTick((n) => n + 1));
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, []);
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	useLayoutEffect(() => {
+		const el = toolbar.current;
+		if (!el) return;
+		for (const [id, node] of slotEls.current) if (node.isConnected && node.offsetWidth > 0) widths.current.set(id, node.offsetWidth);
+		if (moreEl.current && moreEl.current.offsetWidth > 0) widths.current.set('__more', moreEl.current.offsetWidth);
+		const box = getComputedStyle(el);
+		const available = el.clientWidth - parseFloat(box.paddingLeft || '0') - parseFloat(box.paddingRight || '0');
+		const slots: IToolbarSlot[] = [{ id: 'label', width: widths.current.get('label') ?? 150, keep: 0 }, ...actions.map((a) => ({ id: a.id, width: widths.current.get(a.id) ?? 90, keep: a.keep }))];
+		const fit = fitToolbar(slots, { available, fixed: fixedEl.current?.offsetWidth ?? 0, gap: 6, moreWidth: widths.current.get('__more') ?? 70 });
+		// Runs after every render on purpose (labels and counts change widths); it sets state only when the answer differs.
+		setHiddenIds((before) => (before.join('\u0000') === fit.hidden.join('\u0000') ? before : fit.hidden));
+	});
+	void tick;
+	const hiddenActions = actions.filter((a) => hiddenIds.includes(a.id));
+	const moreItems: IMenuItem[] = hiddenActions.map((a) => ({ id: `tb:${a.id}`, label: a.label, ...(a.disabled ? { disabled: true, reason: a.title } : {}) }));
+	/** One toolbar slot: measured by id, so its width is known even after it has moved to More. */
+	const slotRef = (id: string) => (node: HTMLElement | null): void => {
+		if (node) slotEls.current.set(id, node);
+		else slotEls.current.delete(id);
+	};
+
 	if (state.model.nodes.size === 0) {
 		// Still the status line: an out-of-date empty drawing must keep its Rerun.
 		return (
@@ -595,18 +671,34 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	return (
 		<div style={styles.root} onKeyDown={onRootKeyDown} onPointerDownCapture={onPointerDownCapture}>
 			<div style={styles.main}>
-				<div ref={toolbar} style={styles.toolbar} role="toolbar" aria-label="Graph actions">
-					<span style={styles.focused} title={focusedCaption ?? ''}>{focusedCaption ? `Focused: ${focusedCaption}` : 'No node focused'}</span>
-					<Button variant="ghost" small disabled={!focused || busy || focusedStale} title="Fetch up to 100 new neighbours (E)" onClick={() => focused && void session.expand(focused.id)}>Expand</Button>
-					<Button variant="ghost" small disabled={!focused} title="Remove what hangs only from this node (C)" onClick={() => focused && session.collapse(focused.id)}>Collapse</Button>
-					<Button variant="ghost" small disabled={!focused} title="Remove this node from the canvas (Delete or Backspace)" onClick={() => focused && session.dismiss(focused.id)}>Dismiss</Button>
-					<Button variant="ghost" small disabled={!focused} title="Open the inspector (Enter)" onClick={() => focused && inspect(focused.id)}>Inspect</Button>
-					<Button variant="ghost" small disabled={busy || state.stale || state.model.nodes.size < 2} title="Draw the relationships among the nodes on the canvas" onClick={() => void session.connect()}>Connect nodes</Button>
-					<Button variant="ghost" small disabled={busy || state.stale || state.selected.size !== 2} title="Select two nodes with Space, then find a path (P)" onClick={() => void session.findPath()}>Find path</Button>
-					{busy && <Button variant="ghost" small title={STOP_WAITING_NOTE} onClick={() => session.stopWaiting()}>Stop waiting</Button>}
-					{hasMore && <Button variant="ghost" small onClick={() => session.showMore()}>Show more nodes</Button>}
-					{state.selected.size > 0 && <Button variant="ghost" small onClick={() => session.clearSelection()}>{`Clear selection (${state.selected.size})`}</Button>}
-					<span style={styles.spacer}>
+				<div
+					ref={toolbar}
+					style={styles.toolbar}
+					role="toolbar"
+					aria-label="Graph actions"
+				>
+					{!hiddenIds.includes('label') && (
+						<span ref={slotRef('label')} style={styles.focused} title={focusedCaption ?? ''}>{focusedCaption ? `Focused: ${focusedCaption}` : 'No node focused'}</span>
+					)}
+					{actions.filter((a) => !hiddenIds.includes(a.id)).map((a) => (
+						<span key={a.id} ref={slotRef(a.id)}>
+							<Button variant="ghost" small disabled={a.disabled} title={a.title} onClick={a.run}>{a.label}</Button>
+						</span>
+					))}
+					{hiddenActions.length > 0 && (
+						<span
+							ref={(el) => {
+								moreEl.current = el;
+								triggers.current.more = el;
+							}}
+							style={styles.menuAnchor}
+							data-menu-trigger=""
+						>
+							<Button variant="ghost" small ariaExpanded={toolMenu === 'more'} title="More actions" onClick={() => { setMenu(null); setToolMenu(toolMenu === 'more' ? null : 'more'); }}>More ▾</Button>
+							{toolMenu === 'more' && <CanvasMenu label="More actions" items={moreItems} x={0} y={28} onActivate={activate} onClose={closeMenu} />}
+						</span>
+					)}
+					<span ref={fixedEl} style={styles.spacer}>
 						<CanvasSearch
 							inputRef={searchInput}
 							value={query}
@@ -620,7 +712,6 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 							onChoose={chooseMatch}
 							onLeave={() => restoreFocus()}
 						/>
-						<Button variant="ghost" small title="Fit to screen (F)" onClick={() => handle.current?.fit()}>Fit</Button>
 						{toolMenuTrigger('view', 'View', viewItems)}
 						{toolMenuTrigger('export', 'Export', exportItems)}
 						{maximized === true && onToggleMaximized && <Button variant="ghost" small pressed title="Exit full screen (Esc)" onClick={onToggleMaximized}>Exit full screen</Button>}
