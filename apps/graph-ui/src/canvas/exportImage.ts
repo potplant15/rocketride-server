@@ -44,7 +44,10 @@
 // canvas in Safari, which then refuses to give the PNG back).
 //
 // PNG is that SVG drawn into a <canvas> at twice the size, as large as a browser canvas
-// can hold. It needs a browser; `buildSvg` and `pngScale` do not, and are tested in Node.
+// can hold. When there is no image, `exportResult` says why (too large, not ready, or the
+// browser could not draw it), so the view never blames the size for something else.
+// Drawing needs a browser; `buildSvg`, `pngScale` and `exportResult` do not, and are
+// tested in Node.
 // =============================================================================
 
 import { edgeShape } from '../graph/geometry';
@@ -333,17 +336,50 @@ export function pngScale(width: number, height: number): number {
 	return scale < 0.25 ? 0 : scale;
 }
 
+/** Why there is no image: a PNG too large for a browser canvas, nothing laid out yet, or the browser could not draw it. */
+export type ExportFailure = 'too-large' | 'not-ready' | 'render-failed';
+
+/** An exported image, or why there is none (the view words each reason differently). */
+export type ExportResult = { blob: Blob } | { blob: null; reason: ExportFailure };
+
+/** Draws an SVG into a bitmap at a scale and gives the PNG back, or null when the browser could not. */
+export type Rasteriser = (svg: string, width: number, height: number, scale: number) => Promise<Blob | null>;
+
+/**
+ * The image for a format, from the built SVG, with the reason when there is none. Only a PNG that would be under a
+ * quarter of the drawing's size is "too large"; the SVG has no size limit.
+ *
+ * @param format - SVG or PNG.
+ * @param built - The SVG from {@link buildSvg}, or null when nothing is drawn yet.
+ * @param rasterise - How a PNG is drawn (the browser's canvas: {@link rasterise}).
+ * @returns The image, or why there is none.
+ */
+export async function exportResult(format: 'svg' | 'png', built: { svg: string; width: number; height: number } | null, rasterise: Rasteriser): Promise<ExportResult> {
+	if (!built) return { blob: null, reason: 'not-ready' };
+	if (format === 'svg') return { blob: new Blob([built.svg], { type: 'image/svg+xml' }) };
+	const scale = pngScale(built.width, built.height);
+	if (scale === 0) return { blob: null, reason: 'too-large' };
+	let blob: Blob | null;
+	try {
+		blob = await rasterise(built.svg, built.width, built.height, scale);
+	} catch {
+		blob = null;
+	}
+	return blob ? { blob } : { blob: null, reason: 'render-failed' };
+}
+
 /**
  * Draw an SVG into a canvas and read it back as a PNG.
  *
  * @param svg - The SVG text (with its own width and height).
  * @param width - Its width in pixels.
  * @param height - Its height in pixels.
- * @returns The PNG, or null when it cannot be made (too large, no canvas, the image did not load).
+ * @param scale - How many canvas pixels per SVG pixel (see {@link pngScale}).
+ * @returns The PNG, or null when the browser could not make it (no canvas, the image did not load, no 2D context, or
+ *   toBlob gave nothing).
  */
-export function svgToPng(svg: string, width: number, height: number): Promise<Blob | null> {
-	const scale = pngScale(width, height);
-	if (scale === 0 || typeof document === 'undefined' || typeof Image === 'undefined') return Promise.resolve(null);
+export function rasterise(svg: string, width: number, height: number, scale: number): Promise<Blob | null> {
+	if (typeof document === 'undefined' || typeof Image === 'undefined') return Promise.resolve(null);
 	return new Promise((resolve) => {
 		const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
 		const finish = (blob: Blob | null): void => {

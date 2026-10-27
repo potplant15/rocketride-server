@@ -79,16 +79,17 @@ import { FLOW_INTERACTION_PROPS } from './flowProps';
 import { EdgeLayer, edgePaint } from './EdgeLayer';
 import { contentBounds } from './fitBounds';
 import type { EdgePointerHandler, IEdgeDraw } from './EdgeLayer';
-import { buildSvg, cssResolver, svgToPng } from './exportImage';
-import type { IExportEdge, IExportNode } from './exportImage';
+import { buildSvg, cssResolver, exportResult, rasterise } from './exportImage';
+import type { ExportResult, IExportEdge, IExportNode } from './exportImage';
 import { GraphNodeView, NODE_DIAMETER, SIZE_DIAMETER } from './GraphNodeView';
 import type { GraphFlowNode } from './GraphNodeView';
 import { ACCENT_TOKEN, CANVAS_TEXT_TOKEN } from './tokens';
 import { useGraphLayout } from './useGraphLayout';
 import type { IExpandHint, LayoutMode, LayoutStatus } from './useGraphLayout';
 
-// The layout modes are defined beside the layouts; the view imports the type from here.
+// The layout modes are defined beside the layouts, the export result beside the export; the view imports them from here.
 export type { LayoutMode };
+export type { ExportFailure, ExportResult } from './exportImage';
 
 // =============================================================================
 // TYPES
@@ -104,8 +105,8 @@ export interface IGraphCanvasHandle {
 	focusNode(id: GraphId): boolean;
 	fit(): void;
 	relayout(): void;
-	/** The drawing as an image, or null when it cannot be made. */
-	exportImage(format: 'svg' | 'png'): Promise<Blob | null>;
+	/** The drawing as an image, or why there is none: too large (a PNG only), not ready (nothing laid out yet), render failed. */
+	exportImage(format: 'svg' | 'png'): Promise<ExportResult>;
 }
 
 /** How one label's nodes are drawn (from the connection's style). */
@@ -167,6 +168,8 @@ export interface IGraphCanvasProps {
 	onClearPath?(): void;
 	/** Refit whenever the canvas changes size, until the user pans or zooms (the old behaviour). Default: never on a resize. */
 	refitOnResize?: boolean;
+	/** Called once, when the canvas has mounted and placed its first layout: from then on the handle can export. */
+	onReady?(): void;
 	/** How each label's nodes are drawn, by label. */
 	looks?: ReadonlyMap<string, INodeLook>;
 	/** A colour per relationship type. */
@@ -371,6 +374,14 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 		observer.observe(el);
 		return () => observer.disconnect();
 	}, [tryFit, keepFocusedInView]);
+
+	// Ready once the first layout is placed (the handle is set by then): the view enables Export on it. Once per mount.
+	const readyTold = useRef(false);
+	useEffect(() => {
+		if (layout.version === 0 || readyTold.current) return;
+		readyTold.current = true;
+		latest.current.onReady?.();
+	}, [layout.version]);
 
 	// Glide into place only after a layout, never while dragging.
 	useEffect(() => {
@@ -624,18 +635,18 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 	}, []);
 
 	/** The whole drawing as an SVG (or that SVG as a PNG), in the colours the canvas shows now. */
-	const exportDrawing = useCallback(async (format: 'svg' | 'png'): Promise<Blob | null> => {
+	const exportDrawing = useCallback(async (format: 'svg' | 'png'): Promise<ExportResult> => {
 		const el = container.current;
-		if (!el) return null;
+		if (!el) return { blob: null, reason: 'not-ready' };
 		const nodesOut: IExportNode[] = flowNodesRef.current.map((n) => ({ id: n.id, x: n.position.x + n.data.diameter / 2, y: n.position.y + n.data.diameter / 2, radius: n.data.diameter / 2, fill: n.data.fill, textColor: n.data.textColor, badge: n.data.badge, badgeMode: n.data.badgeMode, caption: n.data.caption, dim: n.data.dim, stale: n.data.stale, selected: n.data.selected }));
 		const edgesOut: IExportEdge[] = edgesRef.current.map((e) => {
 			const paint = edgePaint(e);
 			return { id: e.id, source: e.source, target: e.target, slot: e.slot, type: e.type, stroke: paint.stroke, width: paint.width, dashed: e.stale, dim: e.dim };
 		});
 		const theme = { background: 'var(--rr-bg-default)', text: `var(${CANVAS_TEXT_TOKEN})`, halo: 'var(--rr-bg-paper)', border: 'var(--rr-text-primary)', accent: `var(${ACCENT_TOKEN})` };
+		// Nothing placed yet (the first layout has not landed) builds nothing: not ready.
 		const built = buildSvg(nodesOut, edgesOut, theme, { resolve: cssResolver(el), labels: edgesOut.length <= LABELS_MAX_EDGES });
-		if (!built) return null;
-		return format === 'svg' ? new Blob([built.svg], { type: 'image/svg+xml' }) : svgToPng(built.svg, built.width, built.height);
+		return exportResult(format, built, rasterise);
 	}, []);
 
 	useImperativeHandle(
