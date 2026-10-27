@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { IDataGridPersistence } from 'shell';
-import { MIN_SAVED_WIDTH, RESULT_LAYOUTS, createSessionLayouts, guardLayouts, layoutRulesFor, sanitizeColumnLayout } from '../src/graph/gridLayout';
+import { columnSignature, nextMountNonce, resultLayoutKey, MIN_SAVED_WIDTH, RESULT_LAYOUTS, createSessionLayouts, guardLayouts, layoutRulesFor, sanitizeColumnLayout } from '../src/graph/gridLayout';
 
 /** The result grid's columns: generated keys, no width (all flexible). */
 const RESULT = [{ field: 'c0' }, { field: 'c1' }, { field: 'c2' }];
@@ -92,4 +92,22 @@ test('the session store hands out copies: what the grid writes into them never c
 	read[0].extra = 1;
 	assert.deepEqual(store.read('t', 'sort'), [{ column: 'a', dir: 'asc' }]);
 	store.clear('t');
+});
+
+test('two mounts with the same tab id and result counter do not share a layout key, and a result with other columns does not either', () => {
+	const first = resultLayoutKey('k-q1-1', nextMountNonce(), ['a', 'b']);
+	const second = resultLayoutKey('k-q1-1', nextMountNonce(), ['a', 'b']);
+	assert.notEqual(first, second, 'a reopened workbench restarts its counters');
+	const nonce = nextMountNonce();
+	assert.equal(resultLayoutKey('k-q1-1', nonce, ['a', 'b']), resultLayoutKey('k-q1-1', nonce, ['a', 'b']), 'stable within one mount');
+	assert.notEqual(resultLayoutKey('k-q1-1', nonce, ['a', 'b']), resultLayoutKey('k-q1-1', nonce, ['a', 'c']));
+	assert.notEqual(columnSignature(['a', 'bc']), columnSignature(['ab', 'c']));
+	assert.match(first, /^graph-results-k-q1-1-m\d+-[0-9a-f]{8}$/);
+});
+
+test('the results Table builds its key from the mount nonce and the columns', () => {
+	const views = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'components', 'ResultViews.tsx'), 'utf8');
+	assert.match(views, /useState\(nextMountNonce\)/);
+	assert.match(views, /resultLayoutKey\(tableKey, nonce, result\.columns\)/);
+	assert.match(views, /tableId=\{tableId\}/);
 });

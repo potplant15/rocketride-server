@@ -43,7 +43,7 @@ import { columnGridTypes, columnKeys, rawView, toGridRows } from '../graph/resul
 import type { ReadQueryResult } from '../graph/types';
 import { describeValue } from '../graph/values';
 import { COPY_BLOCKED_NOTE } from '../graph/wording';
-import { RESULT_LAYOUTS, guardLayouts, layoutRulesFor } from '../graph/gridLayout';
+import { RESULT_LAYOUTS, guardLayouts, layoutRulesFor, nextMountNonce, resultLayoutKey } from '../graph/gridLayout';
 import { ExportMenu } from './ExportMenu';
 
 // =============================================================================
@@ -84,6 +84,9 @@ export interface IResultTableProps {
  * @returns The table inside a card.
  */
 export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onRowOpen, meta, announce }) => {
+	// This mount's own number: the tab id and the result counter in `tableKey` restart when the workbench is opened again.
+	const [nonce] = useState(nextMountNonce);
+	const tableId = useMemo(() => resultLayoutKey(tableKey, nonce, result.columns), [tableKey, nonce, result.columns]);
 	const rows = useMemo(() => toGridRows(result), [result]);
 	const columns = useMemo<GridColumnDefinition[]>(() => {
 		const keys = columnKeys(result.columns);
@@ -119,7 +122,7 @@ export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onR
 				noExport
 				columns={columns}
 				data={rows}
-				tableId={`graph-results-${tableKey}`}
+				tableId={tableId}
 				persistence={persistence}
 				paginate={false}
 				height="100%"
