@@ -87,15 +87,20 @@ export function rowsMeta(result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 't
 	return elapsedMs === undefined ? base : `${base} · ${(elapsedMs / 1000).toFixed(1)} s round trip`;
 }
 
+/** What the write console's result line says on Apache AGE, whose node reports result rows, not a count of changes. */
+export const AGE_AFFECTED_NOT_REPORTED = 'Affected count not reported by Apache AGE';
+
 /**
  * The line under a result: the affected count first when the write console reported one, then {@link rowsMeta}.
  *
  * @param run - The run shown (its outcome, affected count and round trip).
  * @param result - Its answer.
+ * @param affectedNotReported - True for a write on Apache AGE (runConfig affectedNotReported): the line says so first.
  * @returns Text such as `3 affected · 0 rows returned (limit 25,000) · 0.4 s round trip`.
  */
-export function resultMeta(run: { outcome: string; affected?: number; ms?: number } | null, result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 'truncated'>): string {
+export function resultMeta(run: { outcome: string; affected?: number; ms?: number } | null, result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 'truncated'>, affectedNotReported = false): string {
 	const rows = rowsMeta(result, run?.ms);
+	if (affectedNotReported) return `${AGE_AFFECTED_NOT_REPORTED} · ${rows}`;
 	return run?.outcome === 'affected' ? `${num(run.affected ?? 0)} affected · ${rows}` : rows;
 }
 

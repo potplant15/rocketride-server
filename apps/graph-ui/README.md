@@ -655,8 +655,12 @@ editor and an **Execute** button, and it always says what it is:
   not flag is sent when you press Execute, without a dialog.
 - Statements go through `execute` with the graph result shape, so what a
   statement returned is drawn like any other result. The result line, the strip
-  and History show the count the node reports as affected. There is no row-limit
-  choice here: `execute` returns at most the node's own maximum.
+  and History show the count the node reports as affected. Apache AGE's node
+  reports the number of rows the statement returned there instead (0 for a
+  write with no `RETURN`), so on Apache AGE the result line says **Affected
+  count not reported by Apache AGE**, and the strip and History show the rows
+  returned. There is no row-limit choice here: `execute` returns at most the
+  node's own maximum.
 - Each statement is its own request. A batch stops at the first error; statements
   that ran are not undone. The strip says how many ran and how many were not run.
 - A write is never sent again by the app: no automatic retry.

@@ -145,7 +145,7 @@ test('the write console counts a write where it is sent, not in the record step 
 // A run is settled by its mode: the write console's runs are not settled as 'rows' with the read toggle's limit.
 test('the run surface settles, records and describes a run through the mode-aware helpers', () => {
 	const surface = code(read('components', 'RunSurface.tsx'));
-	assert.ok(/settle: \(_run, result\) => settleRun\(mode, result\)/.test(surface), 'settle follows the mode');
+	assert.ok(/settle: \(_run, result\) => settleRun\(mode, result, dialect\?\.dialect \?\? null\)/.test(surface), 'settle follows the mode (and the engine: Apache AGE reports rows, not changes)');
 	assert.ok(/patch: limitPatch\(mode, p\.limit\)/.test(surface), 'a limit is recorded only where one is sent');
 	assert.ok(/historySummaryOf\(run, Date\.now\(\)\)/.test(surface), 'history keeps an affected count');
 	assert.ok(/resultMeta\(displayed/.test(surface), 'the result line shows the affected count');

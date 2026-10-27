@@ -62,13 +62,13 @@ import { createGraphSession } from '../graph/graphSession';
 import type { IGraphSession } from '../graph/graphSession';
 import { describeWrites } from '../graph/writeConfirm';
 import type { IWriteConfirmation } from '../graph/writeConfirm';
-import { GRAPH_BATCH_WORDS, historySummaryOf, limitPatch, prepareStatement, refuseNonReads, runRefusal, settleRun, toHistoryEntry } from '../graph/runConfig';
+import { GRAPH_BATCH_WORDS, affectedNotReported, historySummaryOf, limitPatch, prepareStatement, refuseNonReads, runRefusal, settleRun, toHistoryEntry } from '../graph/runConfig';
 import { chooseTab, summarizeResult } from '../graph/results';
 import type { ResultTab } from '../graph/results';
 import type { ILoadSlot } from '../graph/loadSlot';
 import { inspectorTextOfRow } from '../graph/rowInspect';
 import type { ReadQueryResult } from '../graph/types';
-import { STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, truncationText } from '../graph/wording';
+import { AGE_AFFECTED_NOT_REPORTED, STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, truncationText } from '../graph/wording';
 import { GraphFailureBanner } from './GraphFailureBanner';
 import { GraphView } from './GraphView';
 import QueryEditor from './QueryEditor';
@@ -149,6 +149,8 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const probe = probes[endpoint.key];
 	const dialect = useMemo(() => (probe?.ok ? parseDialect(probe.info) : null), [probe]);
 	const writable = dialectCanWrite(dialect);
+	// Apache AGE reports result rows where the others report a count of changes: the write console says so.
+	const notReported = affectedNotReported(mode, dialect?.dialect);
 	const announce = useCallback((text: string) => announcer.announce(text), []);
 	// Why nothing may be sent right now (statements and graph actions alike), or null.
 	const blocked = !env.ready ? 'The shell is not connected to the engine.' : paused;
@@ -231,7 +233,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 				// closed still marks drawn graphs out of date.
 				: env.countWrite(endpoint.key, () => session.invoke<ReadQueryResult>(TOOL.execute, { query: send.cypher, shape: 'graph' }, { generation: ticket }));
 		},
-		settle: (_run, result) => settleRun(mode, result),
+		settle: (_run, result) => settleRun(mode, result, dialect?.dialect ?? null),
 		describeFailure: (message, error) => {
 			const notice = mode === 'write' ? describeWriteFailure(message, error) : describeFailureOf(message, error, writable);
 			failureNotes.current = notice;
@@ -247,7 +249,8 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		summarize: ({ shown, runs }) => {
 			if (shown?.result) {
 				const s = summarizeResult(shown.result);
-				const said = `${shown.outcome === 'affected' ? `${num(shown.affected ?? 0)} affected. ` : ''}${resultAnnouncement(shown.result.rows.length, s.nodeCount, s.relationshipCount, truncationText(shown.result))}`;
+				const affected = shown.outcome === 'affected' ? `${num(shown.affected ?? 0)} affected. ` : notReported ? `${AGE_AFFECTED_NOT_REPORTED}. ` : '';
+				const said = `${affected}${resultAnnouncement(shown.result.rows.length, s.nodeCount, s.relationshipCount, truncationText(shown.result))}`;
 				return runs.length > 1 ? `${formatBatchOutcome(runs, GRAPH_BATCH_WORDS)}. ${said}` : said;
 			}
 			return null;
@@ -373,7 +376,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const rowView = result && openRow !== null && result.rows[openRow] ? inspectorTextOfRow(result.columns, result.rows[openRow]) : null;
 
 	// ── Meta line ────────────────────────────────────────────────────────────
-	const metaText = result ? resultMeta(displayed, result) : '';
+	const metaText = result ? resultMeta(displayed, result, notReported) : '';
 	const truncation = result ? truncationText(result) : null;
 	const willRun = describeSnapshot(view ?? { text, start: 0, end: 0, caret: 0 });
 	const strip = runner.runs.length > 1;

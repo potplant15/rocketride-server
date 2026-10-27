@@ -41,6 +41,7 @@
 import { classifyStatement, patternCheck } from '../cypher/classify';
 import { splitStatements } from '../cypher/split';
 import type { IPatternFinding, StatementKind } from '../cypher/classify';
+import type { GraphDialect } from '../cypher/quote';
 import type { IHistoryEntry } from 'shared/explorer';
 import type { IBatchWords } from 'shared/explorer/runner/format';
 import { rowLimitFor } from './dialect';
@@ -126,15 +127,29 @@ export interface ISettledRun {
 }
 
 /**
+ * Whether the node's `affected_rows` is NOT a count of changes. Apache AGE's node sends the number of result ROWS
+ * there (0 for a write with no RETURN), so the write console never shows it as "affected".
+ *
+ * @param mode - `read` for the workbench, `write` for the write console.
+ * @param dialect - The engine, or null before the probe.
+ * @returns True for a write on Apache AGE.
+ */
+export function affectedNotReported(mode: 'read' | 'write', dialect: GraphDialect | null | undefined): boolean {
+	return mode === 'write' && dialect === 'age';
+}
+
+/**
  * How a statement that answered settles. In the write console it is the affected count `execute` returned (its rows
- * still draw); an answer without that count settles as rows rather than claiming "0 affected".
+ * still draw); an answer without that count, or one whose count is not a count of changes (Apache AGE, see
+ * {@link affectedNotReported}), settles as rows rather than claiming "0 affected".
  *
  * @param mode - `read` for the workbench, `write` for the write console.
  * @param result - The node's answer.
+ * @param dialect - The engine, or null before the probe.
  * @returns The settled fields.
  */
-export function settleRun(mode: 'read' | 'write', result: ReadQueryResult): ISettledRun {
-	if (mode === 'write' && typeof result.affected_rows === 'number') return { outcome: 'affected', rowCount: result.rows.length, affected: result.affected_rows, result };
+export function settleRun(mode: 'read' | 'write', result: ReadQueryResult, dialect: GraphDialect | null = null): ISettledRun {
+	if (mode === 'write' && !affectedNotReported(mode, dialect) && typeof result.affected_rows === 'number') return { outcome: 'affected', rowCount: result.rows.length, affected: result.affected_rows, result };
 	return { outcome: 'rows', rowCount: result.rows.length, result };
 }
 
@@ -179,7 +194,7 @@ export function historySummaryOf(run: IFinishedRun, now: number): IRunSummary {
 		ms,
 		outcome,
 		...(outcome === 'rows' ? { rows: run.result?.rows.length ?? 0 } : {}),
-		...(outcome === 'affected' ? { affected: run.affected ?? 0 } : {}),
+		...(outcome === 'affected' && run.affected !== undefined ? { affected: run.affected } : {}),
 		...(run.limitApplied != null ? { limit: run.limitApplied } : {}),
 		...(run.error !== undefined ? { error: run.error } : {}),
 		kind: run.verb,
