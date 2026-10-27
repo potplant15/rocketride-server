@@ -69,15 +69,47 @@ describe('ConnectionView frame', () => {
 	});
 });
 
-describe('the editor region', () => {
-	it('gets more than the old 38% and room for about 13 lines', () => {
-		const query = src('views', 'QueryView.tsx');
-		const region = /editorRegion: \{([\s\S]*?)\}/.exec(query);
-		assert.ok(region, 'editorRegion not found');
-		const share = /flex: '0 0 (\d+)%'/.exec(region[1]!);
-		assert.ok(share && Number(share[1]) > 38, 'the editor still gets 38% or less');
-		const min = /minHeight: (\d+)/.exec(region[1]!);
-		assert.ok(min && Number(min[1]) >= 250, 'the editor has no room for 13 lines');
+// Live L2 (1440x900): the editor had 285 px (14 lines) but the results
+// 132 px of rows, so 5 of 10 rows showed. The page now sizes both from a
+// basis: 13 editor lines and 10 result rows, sharing what is left, and the
+// notes that sat under the grid ride its header line.
+describe('the editor and results regions (live L2)', () => {
+	const query = src('views', 'QueryView.tsx');
+	const block = (name: string): string => {
+		const found = new RegExp(`\\t${name}: \\{([\\s\\S]*?)\\} as CSSProperties`).exec(query);
+		assert.ok(found, `${name} not found`);
+		return found[1]!;
+	};
+	const px = (text: string, re: RegExp): number => Number(re.exec(text)?.[1] ?? NaN);
+
+	it('the editor keeps 13 lines and the results 10 rows at 1440x900', () => {
+		// Monaco's line is 20 px; a result row is 23 px under a 34 px grid
+		// header and the 51 px card header.
+		const editor = px(block('editorRegion'), /flex: '1 1 (\d+)px'/);
+		const results = px(block('resultsRegion'), /flex: '1 1 (\d+)px'/);
+		assert.ok(editor >= 13 * 20, `editor basis ${editor}`);
+		assert.ok(results >= 51 + 34 + 10 * 23, `results basis ${results}`);
+		assert.ok(px(block('editorRegion'), /minHeight: (\d+)/) >= 10 * 20, 'at least 10 lines when banners take room');
+		// What the page has at 1440x900, measured live: the body is 666 px
+		// under the doc tabs (36), workbench tabs (53), query strip (34),
+		// page header (79) and over the status bar (32).
+		const body = block('body');
+		const pad = /padding: '(\d+)px \d+px (\d+)px'/.exec(body);
+		const gap = px(body, /gap: (\d+),/);
+		const askRow = 34;
+		const willRun = 13;
+		const inner = 666 - Number(pad?.[1]) - Number(pad?.[2]);
+		const needed = askRow + editor + willRun + results + 3 * gap;
+		assert.ok(needed <= inner, `${needed} px needed, ${inner} px there`);
+		assert.doesNotMatch(block('willRun'), /paddingTop/);
+	});
+
+	it('the result notes ride the results header line, not a line under the grid', () => {
+		const header = /actions=\{\s*<span style=\{styles\.meta\}>([\s\S]*?)<\/span>\s*\}\s*columns=\{columns\}/.exec(query);
+		assert.ok(header, 'results header not found');
+		assert.match(header[1]!, /\{showPrecisionNote && <span>\{PRECISION_NOTE\}<\/span>\}/);
+		assert.match(header[1]!, /\{showMergedNote && <span>\{MERGED_COLUMNS_NOTE\}<\/span>\}/);
+		assert.equal((query.match(/showPrecisionNote &&/g) ?? []).length, 1);
 	});
 });
 

@@ -150,15 +150,23 @@ const styles = {
 		gap: 4,
 	} as CSSProperties,
 
+	// The reason Ask is off sits on this row, wrapping to a line of its own
+	// only where it does not fit: a line below cost the results a row (live L2).
 	row: {
 		display: 'flex',
 		alignItems: 'center',
+		flexWrap: 'wrap',
 		gap: 8,
 	} as CSSProperties,
 
 	input: {
-		flex: 1,
+		flex: '1 1 320px',
 		minWidth: 0,
+	} as CSSProperties,
+
+	reason: {
+		fontSize: 11,
+		color: 'var(--rr-text-secondary)',
 	} as CSSProperties,
 
 	meta: {
@@ -263,11 +271,10 @@ export const AskBar: React.FC<{ endpoint: SqlEndpoint }> = ({ endpoint }) => {
 						Ask
 					</Button>
 				)}
+				{/* Why the bar is disabled, as text: a tooltip alone is not an answer. */}
+				{refusal !== null && <span style={styles.reason}>{refusal}</span>}
 			</div>
-			{/* Why the bar is disabled, as text: a tooltip alone is not an answer. */}
-			{refusal !== null ? (
-				<div style={styles.meta}>{refusal}</div>
-			) : (
+			{refusal === null && (
 				<details style={styles.context}>
 					<summary>What Ask sends, and what it does not do</summary>
 					{ASK_CONTEXT_TEXT}

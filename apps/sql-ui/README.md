@@ -400,8 +400,8 @@ pipeline started is not suggested.
 **Results.** Columns are typed, and the header tooltip says on what basis:
 `BIGINT (schema)` when the single source table is known, `number (inferred
 from N rows)` otherwise. Selecting a row opens a cell inspector with every
-column's full value. A precision note shows under a result when a value may
-not be the number the database holds: `Decimal values arrive as floating
+column's full value. A precision note shows on the results' header line when
+a value may not be the number the database holds: `Decimal values arrive as floating
 point; integers above 2^53 lose precision.` It applies to exports too. Rows
 arrive keyed by column name, so two columns with the same name merge into
 one; when a statement projects `*` over a join, or names the same output

@@ -182,7 +182,10 @@ describe('Ask never executes anything', () => {
 	it('Enter during IME composition does not ask, and a refusal (not connected, direct) is visible text, not only a tooltip (review M5)', () => {
 		const bar = fs.readFileSync(path.join(SRC, 'components', 'AskBar.tsx'), 'utf8');
 		assert.match(bar, /onKeyDown=\{\(event\) => \{ if \(event\.key === 'Enter' && !event\.nativeEvent\.isComposing\) void ask\(\); \}\}/);
-		assert.match(bar, /\{refusal !== null \? \(\s*<div style=\{styles\.meta\}>\{refusal\}<\/div>/);
+		// On the input's own row (live L2: a line below cost the results 17 px);
+		// the row wraps it onto a line of its own where it does not fit.
+		assert.match(bar, /\{refusal !== null && <span style=\{styles\.reason\}>\{refusal\}<\/span>\}/);
+		assert.match(bar, /row: \{[\s\S]*?flexWrap: 'wrap',/);
 		const panel = fs.readFileSync(path.join(SRC, 'components', 'SavedQueriesPanel.tsx'), 'utf8');
 		const enters = [...panel.matchAll(/event\.key === 'Enter'([^)]*)\)/g)].map((m) => m[1]);
 		assert.ok(enters.length >= 2 && enters.every((rest) => /!event\.nativeEvent\.isComposing/.test(rest!)), 'the save dialog and rename fields too');

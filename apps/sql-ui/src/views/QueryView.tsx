@@ -142,6 +142,9 @@ interface RunTarget {
 /** Row-limit options offered by the header toggle. */
 const LIMIT_OPTIONS = ['200', '1000', 'All'] as const;
 
+/** Shown on the results header line when a value may not be the number the database holds. */
+const PRECISION_NOTE = 'Decimal values arrive as floating point; integers above 2^53 lose precision.';
+
 /** The line under the editor names the connection's safety level. */
 const SAFETY_LINE: Record<SafetyLevel, string> = {
 	off: 'Does not ask before writes',
@@ -164,26 +167,31 @@ const styles = {
 		...commonStyles.columnFill,
 	} as CSSProperties,
 
-	// Column below the header: editor at a fixed share, results fill the rest.
+	// Column below the header: the editor and the results share it. Tight
+	// padding and gaps, because at 1440x900 every pixel here is a row of
+	// results or a line of editor (live L2).
 	body: {
 		flex: 1,
 		minHeight: 0,
 		display: 'flex',
 		flexDirection: 'column',
-		gap: 12,
-		padding: '16px 24px 24px',
+		gap: 6,
+		padding: '10px 24px 10px',
 	} as CSSProperties,
 
-	// About 13 lines of editor at least; the results take the rest.
+	// 13 lines of editor (Monaco's line is 20 px), never fewer than 10; it
+	// shares any height beyond its basis with the results.
 	editorRegion: {
-		flex: '0 0 46%',
-		minHeight: 270,
+		flex: '1 1 262px',
+		minHeight: 200,
 		display: 'flex',
 		flexDirection: 'column',
 	} as CSSProperties,
 
+	// Ten result rows: the card header (51 px), the grid header (34) and
+	// 10 rows of 23 px, so `SELECT ... LIMIT 10` shows whole at 1440x900.
 	resultsRegion: {
-		flex: 1,
+		flex: '1 1 317px',
 		minHeight: 0,
 		display: 'flex',
 		flexDirection: 'column',
@@ -197,7 +205,6 @@ const styles = {
 		gap: 12,
 		fontSize: 11,
 		color: 'var(--rr-text-secondary)',
-		paddingTop: 6,
 	} as CSSProperties,
 
 	// Result meta line in the grid card's action slot.
@@ -1029,6 +1036,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 									<span style={styles.meta}>
 										{meta.text}
 										{meta.limitReached && <StatusBadge variant="warning">Limit reached, more rows may exist</StatusBadge>}
+										{/* On this line rather than under the grid, which would cost a row. */}
+										{showPrecisionNote && <span>{PRECISION_NOTE}</span>}
+										{showMergedNote && <span>{MERGED_COLUMNS_NOTE}</span>}
 										<span ref={exportAnchorRef}>
 											<Button
 												variant="secondary"
@@ -1085,10 +1095,6 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 							}
 						/>
 					)}
-					{showPrecisionNote && (
-						<div style={styles.meta}>Decimal values arrive as floating point; integers above 2^53 lose precision.</div>
-					)}
-					{showMergedNote && <div style={styles.meta}>{MERGED_COLUMNS_NOTE}</div>}
 				</div>
 			</div>
 
