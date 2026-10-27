@@ -144,6 +144,11 @@ describe('referencedRowStatement', () => {
 		assert.equal(referencedRowStatement('postgres', composite, { tenant_id: 3 }), null);
 	});
 
+	it('escapes a backslash in a ClickHouse name, so the lookup cannot leave the identifier (DA-R1 M6)', () => {
+		const hostile = { id: 0, table: 'a', columns: ['c'], refTable: 't\\', refColumns: ['k\\'] };
+		assert.deepEqual(referencedRowStatement('clickhouse', hostile, { c: 1 }), { sql: 'SELECT * FROM `t\\\\` WHERE `k\\\\` = $1 LIMIT 2', params: [1] });
+	});
+
 	it('quotes hostile identifiers and binds hostile values', () => {
 		const hostile = { id: 0, table: 'a"b', columns: ['c"d'], refTable: 'e"f', refColumns: ['g"h'] };
 		const stmt = referencedRowStatement('postgres', hostile, { 'c"d': "1' OR '1'='1" });

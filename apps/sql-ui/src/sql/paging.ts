@@ -42,6 +42,12 @@ import type { FilterChip } from './filters';
  * Quote an identifier (table/column name) for the dialect: backticks for
  * MySQL/ClickHouse, double quotes elsewhere (Postgres and ANSI engines).
  *
+ * The quote character is doubled. ClickHouse also reads backslash escapes
+ * inside a backtick identifier, so there a backslash is doubled too, first:
+ * otherwise a name ending in `\` escapes the closing backtick and the rest
+ * of the statement becomes part of the name. MySQL and PostgreSQL read a
+ * backslash in an identifier as itself, so it is left alone there.
+ *
  * Identifiers are the ONLY thing this module renders into SQL text. Values
  * are bound (see {@link buildPageStatements}).
  *
@@ -50,7 +56,10 @@ import type { FilterChip } from './filters';
  * @returns The quoted identifier.
  */
 export function quoteIdent(dialect: SqlDialect, name: string): string {
-	if (dialect === 'mysql' || dialect === 'clickhouse') {
+	if (dialect === 'clickhouse') {
+		return '`' + name.replace(/\\/g, '\\\\').replace(/`/g, '``') + '`';
+	}
+	if (dialect === 'mysql') {
 		return '`' + name.replace(/`/g, '``') + '`';
 	}
 	return '"' + name.replace(/"/g, '""') + '"';

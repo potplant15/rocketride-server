@@ -82,7 +82,70 @@ describe('quoteIdent', () => {
 		assert.equal(quoteIdent('mysql', 'we`ird'), '`we``ird`');
 		assert.equal(quoteIdent('postgres', 'we"ird'), '"we""ird"');
 	});
+
+	// DA-R1 M6: ClickHouse's lexer honours backslash escapes inside a backtick
+	// identifier, so a name ending in `\` escaped the closing backtick and the
+	// rest of the statement became part of the name. MySQL and PostgreSQL
+	// read a backslash in an identifier as itself.
+	it('escapes a backslash for ClickHouse, and only for ClickHouse', () => {
+		assert.equal(quoteIdent('clickhouse', 'a\\'), '`a\\\\`');
+		assert.equal(quoteIdent('clickhouse', 'a\\`b'), '`a\\\\``b`');
+		assert.equal(quoteIdent('mysql', 'a\\'), '`a\\`');
+		assert.equal(quoteIdent('postgres', 'a\\'), '"a\\"');
+	});
+
+	it('a ClickHouse identifier always ends at its own closing backtick and reads back as the name', () => {
+		for (const name of ['orders', 'a\\', '\\', '\\\\', 'we`ird', 'a\\`', '`\\', 'x\\` OR 1=1 --', 'tab\\tname']) {
+			const quoted = quoteIdent('clickhouse', name);
+			const read = readClickHouseBacktick(quoted);
+			assert.equal(read.end, quoted.length, `${JSON.stringify(name)}: the identifier ends where the quoting does`);
+			assert.equal(read.name, name, `${JSON.stringify(name)}: and is the same name`);
+		}
+	});
+
+	it('every statement the data browser builds quotes ClickHouse names this way', () => {
+		const hostile: SqlSchemaTable = { columns: [{ column: 'c\\', type: 'String' }], primary_key: ['c\\'] };
+		const statements = buildPageStatements('clickhouse', 't\\', hostile, req({ filters: { 'c\\': 'x' } }), { chips: [{ column: 'c\\', op: 'eq', value: 'y' }] });
+		assert.ok(statements.select.startsWith('SELECT * FROM `t\\\\` WHERE '), statements.select);
+		assert.ok(!/[^\\]\\`/.test(statements.select.replace(/\\\\/g, '')), `no backtick left escaped: ${statements.select}`);
+		assert.match(statements.select, /ORDER BY `c\\\\` ASC/);
+		assert.match(statements.count, /^SELECT COUNT\(\*\) AS total FROM `t\\\\`/);
+	});
 });
+
+/**
+ * Read one backtick-quoted identifier the way ClickHouse's lexer does
+ * (src/Parsers/Lexer.cpp `quotedString`, readBackQuotedStringWithSQLStyle):
+ * a backslash escapes the next character, a doubled backtick is a backtick,
+ * and a single backtick ends it.
+ *
+ * @param text - Text starting with the opening backtick.
+ * @returns The decoded name and the index just past the closing backtick.
+ */
+function readClickHouseBacktick(text: string): { name: string; end: number } {
+	assert.equal(text[0], '`');
+	let name = '';
+	let at = 1;
+	while (at < text.length) {
+		const ch = text[at] as string;
+		if (ch === '\\') {
+			const next = text[at + 1] as string;
+			name += next === 't' ? '\t' : next;
+			at += 2;
+		} else if (ch === '`') {
+			if (text[at + 1] === '`') {
+				name += '`';
+				at += 2;
+			} else {
+				return { name, end: at + 1 };
+			}
+		} else {
+			name += ch;
+			at += 1;
+		}
+	}
+	return { name, end: -1 };
+}
 
 // =============================================================================
 // PAGING — ORDER BY AND OFFSET
