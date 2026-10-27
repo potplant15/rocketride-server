@@ -288,7 +288,8 @@ export const SavedQueriesPanel: React.FC<ISavedQueriesPanelProps> = ({ endpointK
 					))}
 				</ul>
 				<p style={{ ...styles.note, marginTop: 12 }}>
-					{`${env.userData.privacyNote} ${schema && schema.labels.length > 0 ? 'Templates use the labels and relationship types of this connection.' : 'Templates that name a label appear once the schema has been read.'}`}
+					{/* privacyNote is '' in a dev-tool frame until the sidebar has answered: only the template line then. */}
+					{[env.userData.privacyNote, schema && schema.labels.length > 0 ? 'Templates use the labels and relationship types of this connection.' : 'Templates that name a label appear once the schema has been read.'].filter((line) => line !== '').join(' ')}
 				</p>
 			</div>
 			{deleting && (
