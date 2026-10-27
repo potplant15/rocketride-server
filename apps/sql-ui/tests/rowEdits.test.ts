@@ -104,6 +104,59 @@ function refuses(fn: () => unknown, reason: RegExp): void {
 // EDITABILITY
 // =============================================================================
 
+// =============================================================================
+// BINARY KEYS (DA-R2 I1)
+// =============================================================================
+//
+// The node sends bytes as text: `bytes.decode('utf-8', errors='replace')`
+// puts U+FFFD for every byte that is not UTF-8, and PostgreSQL's bytea
+// arrives as '<memory at 0x…>'. Live MySQL: a BINARY(16) key stored as
+// 11F0A2B3C4D5E6F7… was bound back as 11EFBFBDEFBFBD… and matched 0 rows, so
+// every edit failed as "changed by someone else". Such a table is refused.
+// =============================================================================
+
+/** What the node sends for BINARY(16) UNHEX('11f0a2b3c4d5e6f708192a3b4c5d6e7f') (DA-R2). */
+const DECODED_KEY = JSON.parse('"\\u0011\\ufffd\\ufffd\\ufffd\\ufffd\\ufffd\\b\\u0019*;L]n\\u007f"') as string;
+
+/** A table keyed by a UUID kept as BINARY(16). */
+const TOKENS: SqlSchemaTable = {
+	columns: [{ column: 'id', type: 'BINARY(16)' }, { column: 'note', type: 'VARCHAR(20)' }],
+	primary_key: ['id'],
+};
+
+/** The refusal, word for word. */
+const BINARY_KEY = 'This table\'s key is binary, which the node sends as text, so rows cannot be changed here. Use the Query page.';
+
+describe('a table keyed by a binary column cannot be edited (DA-R2 I1)', () => {
+	it('is refused for every binary key type, on both engines, with the reason', () => {
+		for (const type of ['BINARY(16)', 'VARBINARY(255)', 'BLOB', 'LONGBLOB', 'BYTEA', 'BIT(1)', 'BIT VARYING(8)']) {
+			for (const dialect of ['postgres', 'mysql'] as const) {
+				const result = rowEditability(dialect, { columns: [{ column: 'id', type }, { column: 'note', type: 'TEXT' }], primary_key: ['id'] });
+				assert.deepEqual(result, { editable: false, reason: BINARY_KEY }, `${dialect} ${type}`);
+			}
+		}
+	});
+
+	it('is refused when any part of a composite key is binary', () => {
+		const composite: SqlSchemaTable = { columns: [{ column: 'tenant', type: 'INTEGER' }, { column: 'token', type: 'VARBINARY(32)' }], primary_key: ['tenant', 'token'] };
+		assert.equal(rowEditability('mysql', composite).editable, false);
+	});
+
+	it('the data page says so, and no statement binds the text the node decoded', () => {
+		assert.equal(rowEditGate({ dialect: 'mysql', def: TOKENS, table: 'tokens', executeState: 'on', ready: true }), BINARY_KEY);
+		refuses(() => stageUpdate(emptyRowEdits(), my(TOKENS, 'tokens'), { id: DECODED_KEY, note: 'old' }, { note: 'new' }), /key is binary/);
+		refuses(() => stageDelete(emptyRowEdits(), my(TOKENS, 'tokens'), { id: DECODED_KEY, note: 'old' }), /key is binary/);
+		refuses(() => rowKey(pg({ ...TOKENS, columns: [{ column: 'id', type: 'BYTEA' }, { column: 'note', type: 'TEXT' }] }, 'tokens'), { id: '<memory at 0x7f3a2c1b0e80>' }), /key is binary/);
+	});
+
+	it('a binary column outside the key, or a word that only contains "bit", does not block editing', () => {
+		const withBlob: SqlSchemaTable = { columns: [{ column: 'id', type: 'INTEGER' }, { column: 'photo', type: 'BLOB' }], primary_key: ['id'] };
+		assert.deepEqual(rowEditability('mysql', withBlob), { editable: true, pk: ['id'] });
+		const orbit: SqlSchemaTable = { columns: [{ column: 'id', type: 'ORBIT' }], primary_key: ['id'] };
+		assert.equal(rowEditability('postgres', orbit).editable, true);
+	});
+});
+
 describe('which tables can be edited', () => {
 	it('a table with a primary key on PostgreSQL or MySQL', () => {
 		assert.deepEqual(rowEditability('postgres', ORDERS), { editable: true, pk: ['order_id'] });

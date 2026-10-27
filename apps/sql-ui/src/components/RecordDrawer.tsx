@@ -331,6 +331,8 @@ interface LevelProps {
 	/** Following a key; null disables the links (a schema-only node). */
 	onFollow: ((edge: RelationEdge, row: Record<string, unknown>, table: string) => void) | null;
 	graph: RelationGraph;
+	/** The reflected tables, for the key columns' types (a binary key is not followed). */
+	tables: Record<string, SqlSchemaTable>;
 	onShowRows?: (table: string, chips: FilterChip[]) => void;
 	/** Lookup state shown above the fields. */
 	status?: React.ReactNode;
@@ -343,7 +345,7 @@ interface LevelProps {
  * @param props - {@link LevelProps}.
  * @returns The drawer element.
  */
-const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, closeLabel, onClose, ambiguous, onFollow, graph, onShowRows, status }) => {
+const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, closeLabel, onClose, ambiguous, onFollow, graph, tables, onShowRows, status }) => {
 	const fields = recordFields(def, row, graph, table);
 	const children = referencingEdges(graph, table);
 	// One id per drawer level; each refused link and button points at its reason.
@@ -376,8 +378,8 @@ const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, cl
 					const text = inspectorText(field.value);
 					// The first key the column belongs to; a NULL key has nothing to open.
 					const link = field.links.find((edge) => hasKeyValues(edge, row));
-					// A key the browser holds rounded is not looked up: it may be another row's.
-					const linkOff = link ? linkRefusal(link, row) : null;
+					// A key the browser does not hold exactly (rounded, or binary sent as text) is not looked up.
+					const linkOff = link ? linkRefusal(link, row, tables) : null;
 					return (
 						<LabelValue key={field.column} label={field.column} mono>
 							<div style={styles.valueRow}>
@@ -416,9 +418,9 @@ const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, cl
 			{children.length > 0 && (
 				<Section label="Rows that reference this one">
 					{children.map((edge) => {
-						const chips = childRowsPreset(edge, row);
-						// A key the browser holds rounded would filter on another row's key.
-						const showOff = showRowsRefusal(edge, row);
+						const chips = childRowsPreset(edge, row, tables);
+						// A key the browser does not hold exactly would filter on another row's key.
+						const showOff = showRowsRefusal(edge, row, tables);
 						return (
 							<div key={edge.id}>
 								<div style={styles.child}>
@@ -473,7 +475,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 	}, [index, table]);
 
 	const follow = useCallback((depth: number) => (edge: RelationEdge, row: Record<string, unknown>, fromTable: string): void => {
-		const stmt = referencedRowStatement(dialect, edge, row);
+		const stmt = referencedRowStatement(dialect, edge, row, tables);
 		if (!stmt || !lookup) return;
 		const seq = ++seqRef.current;
 		const where = edge.refColumns.map((c, i) => `${c} = ${String(row[edge.columns[i]!])}`).join(', ');
@@ -568,6 +570,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 				onClose={onClose}
 				onFollow={lookup ? follow(0) : null}
 				graph={graph}
+				tables={tables}
 				onShowRows={onShowRows}
 				status={editStatus}
 			/>
@@ -585,6 +588,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 						ambiguous={level.ambiguous}
 						onFollow={lookup ? follow(depth + 1) : null}
 						graph={graph}
+						tables={tables}
 						onShowRows={onShowRows}
 						status={statusFor(depth + 1)}
 					/>

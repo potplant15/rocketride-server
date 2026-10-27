@@ -141,7 +141,7 @@ describe('RecordDrawer', () => {
 	});
 
 	it('runs the foreign-key lookup through the statement the model builds', () => {
-		assert.match(drawer, /referencedRowStatement\(dialect, edge, row\)/);
+		assert.match(drawer, /referencedRowStatement\(dialect, edge, row, tables\)/);
 		assert.match(drawer, /lookup\(stmt\.sql, stmt\.params\)/);
 	});
 
@@ -150,11 +150,12 @@ describe('RecordDrawer', () => {
 	});
 
 	it('shows a key too large to look up exactly as a disabled link with the reason, and Show rows off with it (DA-R1 I3)', () => {
-		assert.match(drawer, /const linkOff = link \? linkRefusal\(link, row\) : null;/);
+		assert.match(drawer, /const linkOff = link \? linkRefusal\(link, row, tables\) : null;/);
 		assert.match(drawer, /aria-disabled="true"/);
 		assert.match(drawer, /aria-describedby=\{reasonId\(field\.column\)\}/);
 		assert.match(drawer, /<div id=\{reasonId\(field\.column\)\} style=\{styles\.type\}>\{linkOff\}<\/div>/);
-		assert.match(drawer, /const showOff = showRowsRefusal\(edge, row\);/);
+		assert.match(drawer, /const showOff = showRowsRefusal\(edge, row, tables\);/);
+		assert.match(drawer, /const chips = childRowsPreset\(edge, row, tables\);/);
 		assert.match(drawer, /<GatedButton[\s\S]*?gateReason=\{showOff\}[\s\S]*?Show rows/);
 	});
 });

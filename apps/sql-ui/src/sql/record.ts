@@ -34,6 +34,9 @@
 // node sends an integer as a full-digit JSON number, and JSON.parse rounds
 // one that long to the nearest double, which may be another row's key: the
 // lookup would say "No row" for a row that exists, or open the wrong one.
+// Nor is a key of a binary type: the node sends bytes as text it decoded with
+// errors='replace' (PostgreSQL's bytea as '<memory at 0x…>'), which is not
+// the key the database holds either.
 // =============================================================================
 
 import type { SqlDialect, SqlSchemaTable } from '../connect';
@@ -41,6 +44,7 @@ import { fkTargetFor, inboundReferences } from '../schema/relations';
 import type { RelationEdge, RelationGraph } from '../schema/relations';
 import type { FilterChip } from './filters';
 import { quoteIdent } from './paging';
+import { isBinarySqlType } from './resultTypes';
 
 /** One field of the drawer. */
 export interface RecordField {
@@ -125,15 +129,33 @@ export function isRoundedKey(value: unknown): boolean {
 	return typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value);
 }
 
+/** Why a key is not looked up: it is binary, and the node sent it as text that is not the stored key. */
+export const KEY_BINARY = 'This key is binary, which the node sends as text, so it cannot be looked up here.';
+
+/**
+ * Whether either side of a foreign key is a binary column, by the reflected
+ * types (a table the schema lacks has none, and is followed as before).
+ *
+ * @param edge - The foreign key.
+ * @param tables - The reflected tables.
+ * @returns True when a key column on either side holds bytes.
+ */
+function binaryKey(edge: RelationEdge, tables: Record<string, SqlSchemaTable> | undefined): boolean {
+	const binary = (table: string, column: string): boolean => isBinarySqlType(tables?.[table]?.columns.find((c) => c.column === column)?.type ?? '');
+	return edge.columns.some((column) => binary(edge.table, column)) || edge.refColumns.some((column) => binary(edge.refTable, column));
+}
+
 /**
  * Why a referencing row's key cannot be followed, or null when it can (or
  * when it is NULL, which shows no link at all).
  *
  * @param edge - The foreign key.
  * @param row - The referencing row.
- * @returns {@link KEY_TOO_LARGE}, or null.
+ * @param tables - The reflected tables, for the key columns' types.
+ * @returns {@link KEY_BINARY}, {@link KEY_TOO_LARGE}, or null.
  */
-export function linkRefusal(edge: RelationEdge, row: Record<string, unknown>): string | null {
+export function linkRefusal(edge: RelationEdge, row: Record<string, unknown>, tables?: Record<string, SqlSchemaTable>): string | null {
+	if (binaryKey(edge, tables)) return KEY_BINARY;
 	return edge.columns.some((column) => isRoundedKey(row[column])) ? KEY_TOO_LARGE : null;
 }
 
@@ -143,9 +165,11 @@ export function linkRefusal(edge: RelationEdge, row: Record<string, unknown>): s
  *
  * @param edge - The inbound foreign key.
  * @param row - The referenced (parent) row.
- * @returns {@link KEY_TOO_LARGE}, or null.
+ * @param tables - The reflected tables, for the key columns' types.
+ * @returns {@link KEY_BINARY}, {@link KEY_TOO_LARGE}, or null.
  */
-export function showRowsRefusal(edge: RelationEdge, row: Record<string, unknown>): string | null {
+export function showRowsRefusal(edge: RelationEdge, row: Record<string, unknown>, tables?: Record<string, SqlSchemaTable>): string | null {
+	if (binaryKey(edge, tables)) return KEY_BINARY;
 	return edge.refColumns.some((column) => isRoundedKey(row[column])) ? KEY_TOO_LARGE : null;
 }
 
@@ -164,16 +188,17 @@ export function hasKeyValues(edge: RelationEdge, row: Record<string, unknown>): 
 /**
  * The statement a foreign-key link runs: the referenced row, looked up by the
  * key's value(s). LIMIT 2 so a key that is not unique can say so. Returns
- * null when any key value is NULL (a NULL key points at nothing) or was
- * rounded on its way in ({@link linkRefusal}).
+ * null when any key value is NULL (a NULL key points at nothing), or is not
+ * the key the database holds ({@link linkRefusal}).
  *
  * @param dialect - The engine dialect.
  * @param edge - The foreign key.
  * @param row - The referencing row.
+ * @param tables - The reflected tables, for the key columns' types.
  * @returns The statement, or null when there is nothing to look up.
  */
-export function referencedRowStatement(dialect: SqlDialect, edge: RelationEdge, row: Record<string, unknown>): BoundStatement | null {
-	if (!hasKeyValues(edge, row) || linkRefusal(edge, row) !== null) return null;
+export function referencedRowStatement(dialect: SqlDialect, edge: RelationEdge, row: Record<string, unknown>, tables?: Record<string, SqlSchemaTable>): BoundStatement | null {
+	if (!hasKeyValues(edge, row) || linkRefusal(edge, row, tables) !== null) return null;
 	const params: unknown[] = [];
 	const conditions: string[] = [];
 	for (let i = 0; i < edge.columns.length; i++) {
@@ -197,14 +222,16 @@ export function referencingEdges(graph: RelationGraph, table: string): RelationE
 
 /**
  * The chips "Show rows" presets on the child table: its key column(s) equal
- * this row's referenced value(s). Null when a value is NULL, or was rounded
- * on its way in ({@link showRowsRefusal}).
+ * this row's referenced value(s). Null when a value is NULL, or is not the
+ * key the database holds ({@link showRowsRefusal}).
  *
  * @param edge - The inbound foreign key.
  * @param row - The referenced (parent) row.
+ * @param tables - The reflected tables, for the key columns' types.
  * @returns The chips, or null when there is nothing to match.
  */
-export function childRowsPreset(edge: RelationEdge, row: Record<string, unknown>): FilterChip[] | null {
+export function childRowsPreset(edge: RelationEdge, row: Record<string, unknown>, tables?: Record<string, SqlSchemaTable>): FilterChip[] | null {
+	if (binaryKey(edge, tables)) return null;
 	const chips: FilterChip[] = [];
 	for (let i = 0; i < edge.columns.length; i++) {
 		const value = row[edge.refColumns[i]!];

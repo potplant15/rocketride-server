@@ -39,7 +39,10 @@
 //   EXACT KEYS. A 64-bit key travels as text: JavaScript numbers are exact
 //   only up to 2^53, so a key that already arrived as a larger number may
 //   have been rounded to ANOTHER row's key, and such a row is refused rather
-//   than risked. Every statement expects to change exactly one row, which is
+//   than risked. A table whose key is binary is refused outright: the node
+//   sends bytes as text it decoded with errors='replace' (PostgreSQL's bytea
+//   as '<memory at 0x…>'), which matches no row, and every edit would fail as
+//   if someone else had changed it. Every statement expects to change exactly one row, which is
 //   what catches a key that matched nothing, or more than one row.
 //
 //   CONFLICTS. An edit also matches the old value of every column it changes,
@@ -75,7 +78,7 @@ import type { SqlApplyResult, SqlApplyStatement, SqlDialect, SqlSchemaTable } fr
 import { executeGateReason } from '../executeGate';
 import type { ExecuteState } from '../schema/schemaStore';
 import { quoteIdent } from './paging';
-import { rrTypeFromSqlType } from './resultTypes';
+import { isBinarySqlType, rrTypeFromSqlType } from './resultTypes';
 
 // =============================================================================
 // TYPES
@@ -282,6 +285,9 @@ export function coerceValue(sqlType: string, raw: unknown, dialect: SqlDialect =
 // TABLES AND KEYS
 // =============================================================================
 
+/** Why a table keyed by a binary column cannot be edited (kept as is: it names the table's key, not the table). */
+const BINARY_KEY_REASON = 'This table\'s key is binary, which the node sends as text, so rows cannot be changed here. Use the Query page.';
+
 /**
  * Whether a table can be edited here, and if not, why.
  *
@@ -299,6 +305,9 @@ export function rowEditability(dialect: SqlDialect, def: SqlSchemaTable | null |
 	const pk = def?.primary_key ?? [];
 	if (!def || pk.length === 0) {
 		return { editable: false, reason: 'This table has no primary key, so a row cannot be picked out exactly. Rows can be edited only in tables with a primary key.' };
+	}
+	if (pk.some((column) => isBinarySqlType(def.columns.find((c) => c.column === column)?.type ?? ''))) {
+		return { editable: false, reason: BINARY_KEY_REASON };
 	}
 	return { editable: true, pk: [...pk] };
 }
@@ -319,7 +328,7 @@ export function rowEditability(dialect: SqlDialect, def: SqlSchemaTable | null |
  */
 export function rowEditGate(input: { dialect: SqlDialect; def: SqlSchemaTable | null | undefined; table: string; executeState: ExecuteState; ready: boolean }): string | null {
 	const editability = rowEditability(input.dialect, input.def);
-	if (!editability.editable) return editability.reason.replace(/^This table/, input.table);
+	if (!editability.editable) return editability.reason.replace(/^This table(?!')/, input.table);
 	const off = executeGateReason(input.executeState);
 	if (off !== null) return off;
 	if (!input.ready) return 'Not connected (in the dev tool, the SQL Explorer sidebar must be open), so rows cannot be changed now.';
@@ -335,7 +344,7 @@ export function rowEditGate(input: { dialect: SqlDialect; def: SqlSchemaTable | 
  */
 function keyColumns(target: RowEditTarget): string[] {
 	const editability = rowEditability(target.dialect, target.def);
-	if (!editability.editable) throw new RowEditError(editability.reason.replace(/^This table/, target.table));
+	if (!editability.editable) throw new RowEditError(editability.reason.replace(/^This table(?!')/, target.table));
 	return editability.pk;
 }
 

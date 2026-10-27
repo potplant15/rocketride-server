@@ -101,6 +101,14 @@ const NUMBER_TOKENS = /^(tinyint|smallint|mediumint|int|int2|int4|int8|integer|b
 /** Quoted runs inside a type name (`ENUM('int','x')`) — removed before tokenising. */
 const TYPE_LITERAL = /'[^']*'|"[^"]*"/g;
 
+/**
+ * Whole type-name tokens of binary types, whose values the node sends as
+ * text it decoded (`bytes.decode('utf-8', errors='replace')`; PostgreSQL's
+ * bytea as '<memory at 0x…>'). MySQL's `CHAR(n) CHARACTER SET binary` is
+ * BINARY(n) under another name, and carries the token too.
+ */
+const BINARY_TOKENS = /^(binary|varbinary|tinyblob|blob|mediumblob|longblob|bytea|bit|varbit)$/i;
+
 /** Whole type-name tokens of exact decimal types, which the node sends as floats. */
 const DECIMAL_TOKENS = /^(decimal|dec|numeric|fixed|decimal(32|64|128|256))$/i;
 
@@ -132,6 +140,19 @@ function typeTokens(sqlType: string): string[] {
  */
 export function isDecimalSqlType(sqlType: string): boolean {
 	return typeTokens(sqlType).some((token) => DECIMAL_TOKENS.test(token));
+}
+
+/**
+ * Whether a type holds bytes (BINARY, VARBINARY, the BLOBs, bytea, BIT and
+ * BIT VARYING). The node sends such a value as text that is not the value
+ * stored, so it can be shown but never matched against the database. Read by
+ * whole token, so ORBIT or a `_bin` collation is not one.
+ *
+ * @param sqlType - The type string from `get_schema`.
+ * @returns True for a binary type.
+ */
+export function isBinarySqlType(sqlType: string): boolean {
+	return typeTokens(sqlType).some((token) => BINARY_TOKENS.test(token));
 }
 
 /**

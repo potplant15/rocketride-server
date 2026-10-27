@@ -32,9 +32,10 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { SqlSchemaResponse } from '../src/connect';
+import type { SqlSchemaResponse, SqlSchemaTable } from '../src/connect';
 import { buildRelationGraph } from '../src/schema/relations';
 import {
+	KEY_BINARY,
 	KEY_TOO_LARGE,
 	childRowsPreset,
 	fallbackDef,
@@ -236,6 +237,49 @@ describe('keys too large for the browser to hold exactly', () => {
 		assert.deepEqual(childRowsPreset(edge, { id: '1234567890123456789' }), [{ column: 'customer_id', op: 'eq', value: '1234567890123456789' }]);
 		assert.equal(showRowsRefusal(edge, { id: '1234567890123456789' }), null);
 		assert.equal(showRowsRefusal(edge, { id: null }), null, 'a NULL key is no key, not a refusal');
+	});
+});
+
+// =============================================================================
+// BINARY KEYS (DA-R2 I1)
+// =============================================================================
+//
+// The node sends a binary value as text it decoded with errors='replace', so
+// the text in the row is not the key the database holds: a lookup would say
+// "No row" for a row that exists. Such a key is not looked up or preset.
+// =============================================================================
+
+describe('binary keys are neither looked up nor preset', () => {
+	const DECODED_KEY = JSON.parse('"\\u0011\\ufffd\\ufffd\\ufffd\\ufffd\\ufffd\\b\\u0019*;L]n\\u007f"') as string;
+	const TABLES: Record<string, SqlSchemaTable> = {
+		tokens: { columns: [{ column: 'id', type: 'BINARY(16)' }, { column: 'note', type: 'VARCHAR(20)' }], primary_key: ['id'] },
+		sessions: { columns: [{ column: 'sid', type: 'INT' }, { column: 'token_id', type: 'BINARY(16)' }], primary_key: ['sid'] },
+	};
+	const edge = { id: 0, table: 'sessions', columns: ['token_id'], refTable: 'tokens', refColumns: ['id'] };
+
+	it('the link is refused with the reason, and no lookup binds the decoded text', () => {
+		const row = { sid: 1, token_id: DECODED_KEY };
+		assert.equal(linkRefusal(edge, row, TABLES), KEY_BINARY);
+		assert.equal(referencedRowStatement('mysql', edge, row, TABLES), null);
+		assert.equal(KEY_BINARY, 'This key is binary, which the node sends as text, so it cannot be looked up here.');
+		assert.doesNotMatch(KEY_BINARY, /No row/);
+	});
+
+	it('the referenced column alone is enough to refuse (a key column typed differently on each side)', () => {
+		const tables = { ...TABLES, sessions: { columns: [{ column: 'sid', type: 'INT' }, { column: 'token_id', type: 'CHAR(16)' }] } };
+		assert.equal(linkRefusal(edge, { token_id: 'abc' }, tables), KEY_BINARY);
+	});
+
+	it('Show rows is refused with the reason, and presets no chip', () => {
+		const parent = { id: '<memory at 0x7f3a2c1b0e80>', note: 'x' };
+		assert.equal(showRowsRefusal(edge, parent, TABLES), KEY_BINARY);
+		assert.equal(childRowsPreset(edge, parent, TABLES), null);
+	});
+
+	it('a key whose types are not known (a table the schema lacks) is followed as before', () => {
+		assert.equal(linkRefusal(edge, { token_id: 'abc' }), null);
+		assert.equal(linkRefusal(edge, { token_id: 'abc' }, {}), null);
+		assert.deepEqual(referencedRowStatement('mysql', edge, { token_id: 'abc' }, {})?.params, ['abc']);
 	});
 });
 
