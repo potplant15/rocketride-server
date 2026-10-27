@@ -32,7 +32,10 @@
 // bar from waiting; a late answer is then dropped.
 //
 // The workbench shows the bar on demand (Ask in the run bar) and keeps it mounted
-// while it is hidden, so a question already sent still opens its tab.
+// while it is hidden, so a question already sent still opens its tab. A question
+// goes through the workbench's request gate like any of its requests (on Apache
+// AGE the node checks the drafted Cypher with EXPLAIN through the same small
+// pool): while another request holds it, Ask is not sent and says why.
 // =============================================================================
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -44,6 +47,8 @@ import { TOOL, announcer } from '../adapters/explorer';
 import { useGraphEnv } from '../env';
 import { ASK_MAX_CHARS, askQuestion } from '../graph/ask';
 import type { AskOutcome } from '../graph/ask';
+import { isGateRefusal } from '../graph/requestGate';
+import type { IRequestGate } from '../graph/requestGate';
 import { ASK_UNAVAILABLE } from '../graph/wording';
 
 /** The headline of the banner on a tab Ask opened. */
@@ -101,6 +106,8 @@ export interface IAskBarProps {
 	onClose?(): void;
 	/** Move the focus to the question (the bar was just shown). */
 	focusSeq?: number;
+	/** The workbench's request gate: a question is one request like any other. */
+	gate?: IRequestGate;
 }
 
 const styles = {
@@ -116,7 +123,7 @@ const styles = {
  * @param props - See {@link IAskBarProps}.
  * @returns The bar.
  */
-export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onClose, focusSeq = 0 }) => {
+export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onClose, focusSeq = 0, gate }) => {
 	const env = useGraphEnv();
 	const isConnected = env.ready;
 	const [question, setQuestion] = useState('');
@@ -141,6 +148,13 @@ export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onC
 	const ask = useCallback(async () => {
 		const session = env.session(endpoint);
 		if (!session || pending) return;
+		// Another request of this workbench is still on the database: nothing is sent, and the bar says why.
+		const busy = gate?.busy() ?? null;
+		if (busy !== null) {
+			setOutcome({ kind: 'refused', text: busy });
+			announcer.announce(busy);
+			return;
+		}
 		const mine = ++ticket.current;
 		asked.current = question;
 		setPending(true);
@@ -148,7 +162,15 @@ export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onC
 		onAsked?.();
 		announcer.announce('Asking the node. This can take a while.');
 		// The same rules as adapters/actions.ts askConnection, over this mount's session (a remote one in a dev-tool frame).
-		const result = await askQuestion(question, (text) => session.invoke(TOOL.getQuery, { question: text }), ASK_UNAVAILABLE);
+		// A refusal by the gate (taken between the check above and the send) is said as the gate says it, not as a
+		// pipeline without a language model.
+		const refused: { text: string | null } = { text: null };
+		const send = (text: string): Promise<unknown> => session.invoke(TOOL.getQuery, { question: text });
+		const answer = await askQuestion(question, (text) => (gate ? gate.send(TOOL.getQuery, () => send(text)) : send(text)).catch((error: unknown) => {
+			if (isGateRefusal(error)) refused.text = (error as Error).message;
+			throw error;
+		}), ASK_UNAVAILABLE);
+		const result: AskOutcome = refused.text !== null ? { kind: 'refused', text: refused.text } : answer;
 		if (mine !== ticket.current) return;
 		setPending(false);
 		if (result.kind === 'ignored') return;
@@ -162,7 +184,7 @@ export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onC
 		else if (result.kind === 'unavailable') announcer.announce('Asking is unavailable for this pipeline.');
 		else if (result.kind === 'refused') announcer.announce(result.text);
 		else announcer.announce(`Asking failed. ${result.headline}`);
-	}, [env, endpoint, pending, question, onDraft, onAsked]);
+	}, [env, endpoint, pending, question, onDraft, onAsked, gate]);
 
 	const stop = useCallback(() => {
 		ticket.current += 1;

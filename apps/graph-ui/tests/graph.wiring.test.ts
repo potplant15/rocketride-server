@@ -178,6 +178,36 @@ test('a gate refusal is a warning with no pipeline hint and no History entry, an
 	assert.ok(/waiting \? 'Waiting for an earlier request to finish…'/.test(surface) && /title=\{waiting \? gateWaitingTitle\(mode === 'read' \? 'Run' : 'Execute'\) :/.test(surface) && /title=\{waiting \? gateWaitingTitle\(mode === 'read' \? 'Run all' : 'Execute all'\) :/.test(surface), 'Run says it is waiting, and why, naming its own button (Execute in the write console)');
 });
 
+// DA-R2 N-1: full screen covers the document, so what it covers must not stay reachable by the keyboard or a screen
+// reader: the host hides its root (visibility keeps the layout) and the graph's area makes itself visible again.
+test('in full screen the covered document is hidden from the keyboard and screen readers, and its editor runs nothing', () => {
+	const styles = code(read('styles.ts'));
+	assert.ok(/documentRootCovered: \{\s*\.\.\.commonStyles\.columnFill,\s*position: 'relative',\s*visibility: 'hidden',\s*\}/.test(styles), 'the covered root is hidden');
+	const surface = code(read('components', 'RunSurface.tsx'));
+	assert.ok(/maximized: \{[^}]*visibility: 'visible' \}/.test(surface), 'the graph\'s area shows itself again');
+	assert.ok(/wasMaximized\.current = maximized;\s*fullScreenListener\.current\?\.\(maximized\);/.test(surface), 'the host is told on the way in and out');
+	assert.ok(/useEffect\(\(\) => \(\) => \{\s*if \(wasMaximized\.current\) fullScreenListener\.current\?\.\(false\);\s*\}, \[\]\);/.test(surface), 'and when the surface goes while full screen (its tab closed)');
+	const run = surface.slice(surface.indexOf('const run = useCallback'), surface.indexOf('}, [startRun]);', surface.indexOf('const run = useCallback')));
+	assert.ok(/if \(fullScreenNow\.current\) return;/.test(run), 'Ctrl/Cmd+Enter in the hidden editor sends nothing');
+	assert.ok(/fullScreenNow\.current = maximized;/.test(surface));
+	for (const [file, root] of [['views/WorkbenchView.tsx', 'shared'], ['views/WriteConsoleView.tsx', 'styles']] as const) {
+		const view = code(read(...file.split('/')));
+		assert.ok(new RegExp(`<div style=\\{fullScreen \\? ${root}\\.documentRootCovered : ${root}\\.documentRoot\\}>`).test(view), `${file} hides its root while a graph fills it`);
+		assert.ok(/onFullScreen=\{setFullScreen\}/.test(view), `${file} listens`);
+	}
+});
+
+// DA-R2 N-7: Ask is one of the workbench's requests (on Apache AGE its check runs EXPLAIN through the same pool).
+test('Ask goes through the workbench\'s gate, and a refusal says the gate\'s sentence, not "no language model"', () => {
+	const ask = code(read('components', 'AskBar.tsx'));
+	assert.ok(/const busy = gate\?\.busy\(\) \?\? null;\s*if \(busy !== null\) \{\s*setOutcome\(\{ kind: 'refused', text: busy \}\);/.test(ask), 'checked before anything is sent');
+	assert.ok(/gate \? gate\.send\(TOOL\.getQuery, \(\) => send\(text\)\) : send\(text\)/.test(ask), 'sent through it');
+	assert.ok(/if \(isGateRefusal\(error\)\) refused\.text = \(error as Error\)\.message;/.test(ask) && /refused\.text !== null \? \{ kind: 'refused', text: refused\.text \} : answer/.test(ask), 'a refusal that races the check is said as the gate says it');
+	const workbench = code(read('views', 'WorkbenchView.tsx'));
+	const bar = workbench.slice(workbench.indexOf('<AskBar'), workbench.indexOf('/>', workbench.indexOf('<AskBar')));
+	assert.ok(/gate=\{requests\}/.test(bar), 'the workbench hands Ask its gate');
+});
+
 // DA-R1 I-2: the graph view is mounted only while its tab is shown, so how the graph is shown lives with the tab: a
 // tab switch must not reset Tree to Force (the grid again in VS Code past 100 nodes), unpin nodes or reopen the legend.
 test('a tab keeps its layout choice, pinning and legend for its graph view, which it mounts only while shown', () => {

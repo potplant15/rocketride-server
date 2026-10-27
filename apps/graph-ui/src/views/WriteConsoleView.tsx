@@ -108,6 +108,8 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 	const [loadSeq, setLoadSeq] = useState(0);
 	// One request at a time from this console (its own gate; see the header).
 	const [requests] = useState(() => createRequestGate('write console'));
+	// True while the console's graph fills the document: everything it covers is hidden (RunSurface onFullScreen).
+	const [fullScreen, setFullScreen] = useState(false);
 	// From History a statement is only loaded here, never sent: it runs when Execute is pressed, after the confirmation
 	// when the text check flags it (rerunAnnouncement says which).
 	const put = useCallback((text: string) => {
@@ -117,7 +119,7 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 	const failed = endpoint.state === 'unreachable' || endpoint.state === 'inaccessible';
 
 	return (
-		<div style={styles.documentRoot}>
+		<div style={fullScreen ? styles.documentRootCovered : styles.documentRoot}>
 			<ContentHeader
 				title={`${view.title} \u2014 write console`}
 				subtitle={subtitle}
@@ -150,7 +152,7 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 					</div>
 					<div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
 						<div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-							<RunSurface endpoint={endpoint} mode="write" paused={gate.paused} loadSlot={slot} loadSeq={loadSeq} onOpenHistory={() => setHistoryOpen((open) => !open)} historyOpen={historyOpen} gate={requests} />
+							<RunSurface endpoint={endpoint} mode="write" paused={gate.paused} loadSlot={slot} loadSeq={loadSeq} onOpenHistory={() => setHistoryOpen((open) => !open)} historyOpen={historyOpen} gate={requests} onFullScreen={setFullScreen} />
 						</div>
 						{historyOpen && (
 							<SidePanel title="History" subtitle={view.title} onClose={() => setHistoryOpen(false)}>
