@@ -125,6 +125,26 @@ describe('the diagram', () => {
 		}
 	});
 
+	it('draws the minimap with theme tints, not a solid selection blue (live bug 9)', () => {
+		const minimap = /<MiniMap([\s\S]*?)\/>/.exec(diagram);
+		assert.ok(minimap, 'MiniMap not found');
+		assert.doesNotMatch(minimap[1]!, /--rr-bg-list-active/);
+		assert.match(minimap[1]!, /maskColor="color-mix\(in srgb, var\(--rr-text-primary\) 8%, transparent\)"/);
+		assert.match(minimap[1]!, /nodeColor="color-mix\(in srgb, var\(--rr-color-info\) 30%, var\(--rr-bg-paper\)\)"/);
+	});
+
+	it('keeps its toolbar above the canvas, so no table sits under it (live L1)', () => {
+		const toolbar = /\ttoolbar: \{([\s\S]*?)\} as CSSProperties/.exec(diagram);
+		assert.ok(toolbar, 'toolbar style not found');
+		assert.doesNotMatch(toolbar[1]!, /position: 'absolute'/);
+		assert.match(/\troot: \{([\s\S]*?)\} as CSSProperties/.exec(diagram)![1]!, /flexDirection: 'column'/);
+		const canvas = /\tcanvas: \{([\s\S]*?)\} as CSSProperties/.exec(diagram);
+		assert.ok(canvas, 'canvas style not found');
+		assert.match(canvas[1]!, /flex: 1/);
+		assert.match(canvas[1]!, /minHeight: 0/);
+		assert.match(diagram, /<div style=\{styles\.canvas\}>\s*<ReactFlow/);
+	});
+
 	it('opens a table when its node is clicked, through the prop', () => {
 		assert.match(diagram, /onNodeClick=\{/);
 		assert.match(diagram, /onOpenTable\(/);
@@ -135,7 +155,8 @@ describe('the diagram', () => {
 		const mini = /<MiniMap[\s\S]*?\/>/.exec(diagram);
 		assert.ok(mini, 'MiniMap not found');
 		for (const prop of ['nodeColor', 'maskColor', 'bgColor']) {
-			assert.match(mini[0], new RegExp(`${prop}="var\\(--rr-`), prop);
+			// A theme variable, alone or mixed (a tint).
+			assert.match(mini[0], new RegExp(`${prop}="[^"]*var\\(--rr-`), prop);
 		}
 	});
 
