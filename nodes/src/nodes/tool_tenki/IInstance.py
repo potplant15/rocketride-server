@@ -655,7 +655,11 @@ class IInstance(IInstanceBase):
                 },
                 'cwd': {
                     'type': 'string',
-                    'description': 'Directory to run in (optional); must be under /home/tenki, where a relative path resolves.',
+                    'description': (
+                        'Directory to run in (optional); must be under /home/tenki, where a relative path '
+                        'resolves. If it is not a folder the command can enter, the command does not run: '
+                        'exit_code is 1 and stderr says why.'
+                    ),
                 },
             },
         },
@@ -677,7 +681,8 @@ class IInstance(IInstanceBase):
         cwd = (optional_str(args, 'cwd', tool_name='tenki') or '').strip()
         if cwd:
             # In the script, not exec's cwd: a cd in the login shell's startup files would win over that.
-            command = f'cd {shlex.quote(_normalize_path(cwd))} && {command}'
+            # On its own line, so a failed cd ends the script instead of skipping only the first command.
+            command = f'cd {shlex.quote(_normalize_path(cwd))} || exit 1\n{command}'
         timeout = self.IGlobal.exec_timeout_secs
         return self._run(lambda session, once: _run_process(session, ('bash', '-lc', command), timeout, once))
 

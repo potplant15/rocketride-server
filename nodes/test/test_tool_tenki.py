@@ -1242,10 +1242,26 @@ def test_run_command_runs_a_login_shell_under_a_marker_of_its_own_with_the_timeo
     inst, _ = _instance(monkeypatch, session, cfg={'exec_timeout_secs': 33})
     inst.run_command({'command': 'make', 'cwd': 'src/app'})
     inst.run_command({'command': 'ls'})
-    assert session.commands() == [('bash', '-lc', 'cd /home/tenki/src/app && make'), ('bash', '-lc', 'ls')]
+    assert session.commands() == [('bash', '-lc', 'cd /home/tenki/src/app || exit 1\nmake'), ('bash', '-lc', 'ls')]
     first, second = session.runs
     assert first.marker.startswith('TOOL_TENKI_RUN=') and first.marker != second.marker
     assert [call for call in session.calls if call[0] == 'start'][-1][2] == 33
+
+
+_NEEDS_BASH = pytest.mark.skipif(sys.platform == 'win32' or not shutil.which('bash'), reason='runs in the Linux VM')
+
+
+@_NEEDS_BASH
+@pytest.mark.parametrize('command', ['true; echo ran', 'false || echo ran', 'true\necho ran'])
+def test_a_cwd_that_does_not_exist_stops_the_whole_command(monkeypatch, logs, tmp_path, command):
+    session = _Session()
+    inst, _ = _instance(monkeypatch, session)
+    inst.run_command({'command': command, 'cwd': 'no-such-folder'})
+    ((_, _, script),) = session.commands()
+    env = {**os.environ, 'LC_ALL': 'C'}  # bash's message in English
+    done = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=60, cwd=tmp_path, env=env)
+    assert (done.returncode, done.stdout) == (1, '')
+    assert 'No such file or directory' in done.stderr
 
 
 def test_a_command_result_reports_exit_code_output_and_timeout(monkeypatch, logs):
@@ -1454,9 +1470,6 @@ def _run_the_kill_script(tmp_path, processes, marker, survivors=()):
     env = {**os.environ, 'FAKE_PROC': str(proc), 'SURVIVORS': ' '.join(map(str, survivors))}
     done = subprocess.run(['bash', '-c', script, 'k', marker], capture_output=True, text=True, timeout=60, env=env)
     return done.stdout.strip(), done.returncode, sorted(int(path.name) for path in proc.iterdir())
-
-
-_NEEDS_BASH = pytest.mark.skipif(sys.platform == 'win32' or not shutil.which('bash'), reason='runs in the Linux VM')
 
 
 @_NEEDS_BASH
