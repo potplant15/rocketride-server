@@ -60,7 +60,13 @@ describe('README claims: Changing rows', () => {
 	it('says exactly what the conflict check compares, in the words the apply uses (R2-I2)', () => {
 		assert.ok(prose.includes(`\`${ROW_CONFLICT_TEXT}\``));
 		assert.match(prose, /for an edit, by the old values of the columns you changed \(for a delete, of every column\)/);
-		assert.match(prose, /Floating-point, date and time, JSON and binary columns, and longer decimals, are matched by key only/);
+		assert.match(prose, /Floating-point, date and time, JSON and binary columns, and longer or unconstrained decimals, are matched by key only/);
+		assert.match(prose, /Review SQL names those columns, for edits and deletes alike/);
+	});
+
+	it('says a case- or accent-only change on an insensitive collation is not detected (R3-M2)', () => {
+		assert.match(prose, /On a case- or accent-insensitive collation \(MySQL `_ci` and `_ai` collations, PostgreSQL `citext`\), the database calls two values equal when they differ only in case or accents, so a change of that kind alone is not detected\./);
+		assert.match(prose, /decimals declared with up to 15 digits/);
 	});
 
 	it('quotes the question asked before staged changes would be dropped (R2-M2)', () => {

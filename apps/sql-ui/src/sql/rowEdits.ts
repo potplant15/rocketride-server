@@ -47,9 +47,11 @@
 //   `IS NOT DISTINCT FROM`, MySQL `<=>`), so a row someone else changed since
 //   it was read matches no row and the apply stops instead of overwriting
 //   their change. Only values that come back exactly are compared: whole
-//   numbers, decimals up to 15 digits, text, booleans. Floats, timestamps,
-//   JSON, binary values and longer decimals are matched by key only
-//   (uncheckedColumns names them, so Review SQL can say so).
+//   numbers, text, booleans, and decimals DECLARED with at most 15 digits
+//   (the node sends a DECIMAL as a float, so its value cannot be trusted
+//   beyond that). Floats, timestamps, JSON, binary values, unconstrained or
+//   longer decimals are matched by key only (uncheckedColumns names them,
+//   for edits and deletes, so Review SQL can say so).
 //
 //   TYPED VALUES. A form gives text; the reflected column type decides what
 //   is bound: a number when a JavaScript number holds it exactly, else the
@@ -155,8 +157,11 @@ const FALSE_TEXT = /^(?:false|f|no|n|off|0)$/i;
 /** Text-type tokens whose values come back exactly (compared for conflicts). */
 const TEXT_TOKENS = /^(?:char|character|varchar|nchar|nvarchar|bpchar|text|tinytext|mediumtext|longtext|citext|name|uuid|enum|string)$/i;
 
-/** Exact decimal types (compared for conflicts when the value has at most 15 digits). */
+/** Exact decimal types (compared for conflicts only when declared with at most 15 digits). */
 const DECIMAL_TOKENS = /^(?:decimal|dec|numeric|fixed)$/i;
+
+/** A decimal type's declared precision: `NUMERIC(10, 2)` -> 10. */
+const DECIMAL_PRECISION = /\b(?:decimal|dec|numeric|fixed)\s*\(\s*(\d+)/i;
 
 /** Boolean types (compared for conflicts). */
 const BOOLEAN_TOKENS = /^(?:bool|boolean)$/i;
@@ -187,7 +192,7 @@ function isWholeNumberType(sqlType: string): boolean {
  *
  * @param sqlType - The column's reflected type.
  * @param value - The value as read (undefined: the row did not carry the column).
- * @returns True for whole numbers, decimals up to 15 digits, text and booleans (and NULL in any of them).
+ * @returns True for whole numbers, decimals declared with at most 15 digits, text and booleans (and NULL in any of them).
  */
 function comparesExactly(sqlType: string, value: unknown): boolean {
 	if (value === undefined) return false;
@@ -195,9 +200,13 @@ function comparesExactly(sqlType: string, value: unknown): boolean {
 	const is = (pattern: RegExp): boolean => tokens.some((token) => pattern.test(token));
 	if (is(INTEGER_TOKENS)) return value === null || (typeof value === 'number' && Number.isSafeInteger(value)) || (typeof value === 'string' && INTEGER_TEXT.test(value));
 	if (is(DECIMAL_TOKENS)) {
+		// By the DECLARED precision, never the value: the node sends a DECIMAL
+		// as a float, so a numeric(38,20) value can arrive rounded and look
+		// short (review P4 R3-M1). Unconstrained numeric is never compared.
+		const precision = DECIMAL_PRECISION.exec(sqlType);
+		if (!precision || Number(precision[1]) > EXACT_DIGITS) return false;
 		if (value === null) return true;
-		const text = typeof value === 'number' && Number.isFinite(value) ? String(value) : typeof value === 'string' ? value : '';
-		return DECIMAL_TEXT.test(text) && !/[eE]/.test(text) && text.replace(/^[+-]/, '').replace('.', '').replace(/^0+/, '').length <= EXACT_DIGITS;
+		return (typeof value === 'number' && Number.isFinite(value)) || (typeof value === 'string' && DECIMAL_TEXT.test(value.trim()));
 	}
 	if (is(BOOLEAN_TOKENS)) return value === null || typeof value === 'boolean';
 	if (is(TEXT_TOKENS)) return value === null || typeof value === 'string';
@@ -819,22 +828,24 @@ export function buildRowStatements(edits: RowEdits, target: RowEditTarget): SqlA
 }
 
 /**
- * The changed columns of staged edits whose old values cannot be compared
- * exactly, so those rows are matched by key only for them (Review SQL says
- * so).
+ * The columns staged changes match by key only: an edit's changed columns,
+ * and a delete's other columns, whose old values cannot be compared exactly
+ * (Review SQL says so).
  *
  * @param edits - The staged changes.
  * @param target - The table.
  * @returns The columns, once each, in table order.
  */
 export function uncheckedColumns(edits: RowEdits, target: RowEditTarget): string[] {
+	const pk = target.def.primary_key ?? [];
 	const unchecked = new Set<string>();
+	const check = (column: string, value: unknown): void => {
+		const found = target.def.columns.find((c) => c.column === column);
+		if (found && !comparesExactly(found.type, value)) unchecked.add(column);
+	};
 	for (const edit of edits.entries) {
-		if (edit.kind !== 'update') continue;
-		for (const column of Object.keys(edit.changes)) {
-			const found = target.def.columns.find((c) => c.column === column);
-			if (found && !comparesExactly(found.type, edit.was[column])) unchecked.add(column);
-		}
+		if (edit.kind === 'update') for (const column of Object.keys(edit.changes)) check(column, edit.was[column]);
+		if (edit.kind === 'delete') for (const column of Object.keys(edit.original)) if (!pk.includes(column)) check(column, edit.original[column]);
 	}
 	return target.def.columns.map((c) => c.column).filter((column) => unchecked.has(column));
 }

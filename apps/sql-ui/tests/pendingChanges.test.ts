@@ -241,7 +241,7 @@ describe('R2-I2: a row changed by someone else is a conflict, said plainly; what
 
 	it('Review names the changed columns matched by key only', () => {
 		assert.equal(conflictCheckNote([]), null);
-		assert.equal(conflictCheckNote(['price']), 'Changes to price can\'t be checked for conflicts: its value may not come back exactly, so that row is matched by its key only.');
-		assert.equal(conflictCheckNote(['price', 'seen_at']), 'Changes to price and seen_at can\'t be checked for conflicts: their values may not come back exactly, so those rows are matched by their keys only.');
+		assert.equal(conflictCheckNote(['price']), 'Changes to price can\'t be checked for conflicts: its value may not come back exactly, so it is not compared.');
+		assert.equal(conflictCheckNote(['price', 'seen_at']), 'Changes to price and seen_at can\'t be checked for conflicts: their values may not come back exactly, so they are not compared.');
 	});
 });

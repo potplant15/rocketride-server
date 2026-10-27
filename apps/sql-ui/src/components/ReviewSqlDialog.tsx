@@ -115,17 +115,18 @@ export function mayHaveRunWarning(inserted: number): string {
 }
 
 /**
- * Review SQL's note on changed columns matched by key only (their old values
- * may not come back exactly, so a change by someone else is not detected).
+ * Review SQL's note on the columns staged changes match by key only (their
+ * old values may not come back exactly, so a change someone else made to
+ * them is not detected): an edit's changed columns, a delete's others.
  *
  * @param columns - The columns (sql/rowEdits.ts uncheckedColumns).
- * @returns The note, or null when every change is checked.
+ * @returns The note, or null when every one is checked.
  */
 export function conflictCheckNote(columns: readonly string[]): string | null {
 	if (columns.length === 0) return null;
-	if (columns.length === 1) return `Changes to ${columns[0]} can't be checked for conflicts: its value may not come back exactly, so that row is matched by its key only.`;
+	if (columns.length === 1) return `Changes to ${columns[0]} can't be checked for conflicts: its value may not come back exactly, so it is not compared.`;
 	const list = `${columns.slice(0, -1).join(', ')} and ${columns[columns.length - 1]}`;
-	return `Changes to ${list} can't be checked for conflicts: their values may not come back exactly, so those rows are matched by their keys only.`;
+	return `Changes to ${list} can't be checked for conflicts: their values may not come back exactly, so they are not compared.`;
 }
 
 /**

@@ -565,3 +565,23 @@ describe('R2-I2: an edit or a delete also matches the old values it read, so a r
 		assert.deepEqual(uncheckedColumns(stageUpdate(emptyRowEdits(), pg(), ROW, { status: 'paid' }), pg()), []);
 	});
 });
+
+describe('round 3: decimals by their declared type; a delete\'s key-only columns are named', () => {
+	const def = (type: string): SqlSchemaTable => ({ columns: [{ column: 'id', type: 'INTEGER' }, { column: 'amount', type }], primary_key: ['id'] });
+	const where = (type: string, value: number | string): string => {
+		const target = pg(def(type), 't');
+		return buildRowStatements(stageUpdate(emptyRowEdits(), target, { id: 1, amount: value }, { amount: '1' }), target)[0]!.sql;
+	};
+
+	it('R3-M1: a DECIMAL is compared only when its declared precision is 15 or less (the node sends it as a float)', () => {
+		assert.match(where('NUMERIC(10, 2)', 96.5), /"amount" IS NOT DISTINCT FROM/);
+		assert.match(where('DECIMAL(15,2)', 1234567890123.45), /"amount" IS NOT DISTINCT FROM/);
+		assert.doesNotMatch(where('NUMERIC(38,20)', 2), /"amount" IS NOT/, 'a high-scale value arrives rounded: never compared');
+		assert.doesNotMatch(where('DECIMAL(16,2)', 3), /"amount" IS NOT/);
+		assert.doesNotMatch(where('NUMERIC', 3), /"amount" IS NOT/, 'unconstrained numeric');
+	});
+
+	it('R3-M3: a staged delete names the columns it matches by key only, as an edit does', () => {
+		assert.deepEqual(uncheckedColumns(stageDelete(emptyRowEdits(), pg(), ROW), pg()), ['ordered_at']);
+	});
+});

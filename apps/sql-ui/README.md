@@ -253,10 +253,14 @@ columns you changed (for a delete, of every column). So a row someone else
 changed or deleted since you loaded it matches no row, and the apply stops:
 `This row was changed by someone else since you loaded it. Reload, then edit
 again.` Only values that come back exactly are compared: whole numbers,
-decimals of up to 15 digits, text and booleans. Floating-point, date and
-time, JSON and binary columns, and longer decimals, are matched by key only,
-so a change someone else made to them is not detected; Review SQL names
-those columns (`Changes to price can't be checked for conflicts`). On PostgreSQL, and on
+decimals declared with up to 15 digits, text and booleans. Floating-point,
+date and time, JSON and binary columns, and longer or unconstrained
+decimals, are matched by key only, so a change someone else made to them is
+not detected; Review SQL names those columns, for edits and deletes alike
+(`Changes to price can't be checked for conflicts`). On a case- or
+accent-insensitive collation (MySQL `_ci` and `_ai` collations, PostgreSQL
+`citext`), the database calls two values equal when they differ only in case
+or accents, so a change of that kind alone is not detected. On PostgreSQL, and on
 a MySQL table whose storage engine keeps transactions (InnoDB), the changes
 run as one transaction: all are saved, or none, and the confirmation says so.
 On a MySQL table whose engine keeps none (MyISAM, for one) each change
