@@ -61,3 +61,39 @@ export function legendOf(model: Pick<IGraphModel, 'nodes'>, colors: ReadonlyMap<
 		.map(([label, count]) => ({ label, name: label === '' ? '(no label)' : label, fill: colorFor(colors, label).fill, count }))
 		.sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
+
+/** One relationship-type line of the legend. */
+export interface ITypeLegendEntry {
+	type: string;
+	count: number;
+	/** The colour the person gave the type, or null for the ordinary line colour. */
+	fill: string | null;
+}
+
+/**
+ * The relationship types of a model, with how many of each are drawn.
+ *
+ * @param model - The canvas model.
+ * @param typeColors - The colours the connection's style gives types (colors.ts `typeColorsOf`).
+ * @returns Entries, most relationships first, then by name.
+ */
+export function typeLegendOf(model: Pick<IGraphModel, 'relationships'>, typeColors: ReadonlyMap<string, string>): ITypeLegendEntry[] {
+	const counts = new Map<string, number>();
+	for (const rel of model.relationships.values()) counts.set(rel.type, (counts.get(rel.type) ?? 0) + 1);
+	return [...counts.entries()]
+		.map(([type, count]) => ({ type, count, fill: typeColors.get(type) ?? null }))
+		.sort((a, b) => b.count - a.count || (a.type < b.type ? -1 : a.type > b.type ? 1 : 0));
+}
+
+/**
+ * The drawn nodes whose first label is a given one (what "click a label in the legend" selects).
+ *
+ * @param model - The canvas model.
+ * @param label - A label ('' for nodes with none).
+ * @returns Their ids, in drawing order.
+ */
+export function nodeIdsOfLabel(model: Pick<IGraphModel, 'nodes'>, label: string): string[] {
+	const ids: string[] = [];
+	for (const node of model.nodes.values()) if ((node.labels[0] ?? '') === label) ids.push(node.id);
+	return ids;
+}

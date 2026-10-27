@@ -37,6 +37,7 @@
 // link.
 // =============================================================================
 
+import type { IGraphModel } from './model';
 import type { GraphNode, GraphRelationship } from './types';
 import { decodedText, toJsonText, userEntries } from './values';
 
@@ -107,4 +108,32 @@ export function inspectRelationship(rel: GraphRelationship, captionOf: (id: stri
 		endpoints: { start: rel.start, end: rel.end },
 		notes: [ID_NOTE],
 	};
+}
+
+/** What the inspector shows for a found path. */
+export interface IPathModel {
+	/** The nodes in order, each with how it is reached from the one before (null for the first). */
+	steps: Array<{ id: string; caption: string; via: string | null }>;
+	/** The wire JSON of the path's nodes and relationships (Copy JSON). */
+	json: string;
+}
+
+/**
+ * The inspector model of a found path.
+ *
+ * @param model - The canvas model (what is drawn).
+ * @param path - The path, nodes and relationships in order.
+ * @param captionOf - The caption of a drawn node.
+ * @returns The steps and the JSON; elements no longer drawn are skipped in the JSON and shown by id in the steps.
+ */
+export function inspectPath(model: Pick<IGraphModel, 'nodes' | 'relationships'>, path: { nodes: readonly string[]; relationships: readonly string[] }, captionOf: (node: GraphNode) => string): IPathModel {
+	const steps = path.nodes.map((id, i) => {
+		const n = model.nodes.get(id);
+		const r = i > 0 ? model.relationships.get(path.relationships[i - 1]) : undefined;
+		const via = i === 0 ? null : r ? `${r.start === path.nodes[i - 1] ? '→' : '←'} :${r.type}` : '→ (relationship not drawn)';
+		return { id, caption: n ? captionOf(n) : id, via };
+	});
+	const nodes = path.nodes.map((id) => model.nodes.get(id)).filter((n): n is GraphNode => n !== undefined);
+	const relationships = path.relationships.map((id) => model.relationships.get(id)).filter((r): r is GraphRelationship => r !== undefined);
+	return { steps, json: toJsonText({ nodes, relationships }, 2) };
 }

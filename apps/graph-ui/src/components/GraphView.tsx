@@ -21,7 +21,7 @@
 // SOFTWARE.
 
 // =============================================================================
-// GRAPH-UI - GRAPH VIEW (toolbar, notices, legend, captions, and the lazy canvas)
+// GRAPH-UI - GRAPH VIEW (toolbar, canvas, inspector, menus, legend and status line)
 // =============================================================================
 //
 // The canvas (React Flow, d3-force worker) is a separate chunk: it loads when the
@@ -29,24 +29,45 @@
 // open without it. If the chunk cannot load (offline, blocked), the view says so
 // and points at the Table, which holds every returned row.
 //
-// Every canvas action is also a BUTTON here, not only a key or a double click:
-// expand, collapse, dismiss, connect, find path and inspect all work from the
-// toolbar on the focused (and, for paths, the two selected) nodes.
+// Every canvas action is also a BUTTON here, not only a key, a double click or a
+// right-click: expand, collapse, dismiss, connect, find path and inspect all work
+// from the toolbar on the focused (and, for paths, the two selected) nodes.
+//
+// Nothing here is a dialog. The inspector and the keys help are inline columns,
+// the menus are drawn inside the canvas, and notices are one status line under
+// it: rocket-ui keeps every document mounted, and a modal left open in a hidden
+// document would trap Tab and take Escape for the whole window. The view adds no
+// listener on the document; keys are handled by React handlers on its own
+// elements, and a menu closes when a pointer goes down outside it.
 // =============================================================================
 
-import React, { Component, Suspense, lazy, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { Component, Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { Banner, Button, EmptyState, Modal } from 'shell';
-import { assignLabelColors } from '../graph/colors';
-import type { ILabelColor } from '../graph/colors';
-import { captionChoices, captionOf } from '../graph/captions';
+import { Button, EmptyState } from 'shell';
+import { useConnectionStyle, useGraphEnv, useSchemaView } from '../env';
+import { captionOf } from '../graph/captions';
+import { menuItemsFor, relationshipTypesFor } from '../graph/canvasMenu';
+import type { IMenuItem } from '../graph/canvasMenu';
+import { nodeLooks } from '../graph/badges';
+import { labelColors, typeColorsOf } from '../graph/colors';
 import type { IGraphSession, IGraphState } from '../graph/graphSession';
-import { DATA_CHANGED_TEXT } from '../graph/identity';
-import { KEY_HELP } from '../graph/keynav';
-import { legendOf } from '../graph/legend';
-import { GRID_NOTICE, STOP_WAITING_NOTE, canvasBudgetText } from '../graph/wording';
+import { inspectNode } from '../graph/inspector';
+import { legendOf, nodeIdsOfLabel, typeLegendOf } from '../graph/legend';
+import { searchNodes } from '../graph/search';
+import { statusItems } from '../graph/statusLine';
+import type { GraphNode } from '../graph/types';
+import { toJsonText } from '../graph/values';
+import { STOP_WAITING_NOTE, canvasBudgetText } from '../graph/wording';
+import type { CanvasMenuTarget, IGraphCanvasHandle, LayoutMode } from '../canvas/GraphCanvas';
 import type { LayoutStatus } from '../canvas/useGraphLayout';
 import { GraphIcon } from '../icons';
+import { CanvasMenu } from './CanvasMenu';
+import { CanvasSearch } from './CanvasSearch';
+import { GraphStatusLine } from './GraphStatusLine';
+import { InspectorPanel } from './InspectorPanel';
+import { KeysPanel } from './KeysPanel';
+import { LegendPanel } from './LegendPanel';
+import { copyText } from './ResultViews';
 
 // The canvas is imported for its TYPES only above; the value comes through the lazy boundary.
 const GraphCanvas = lazy(() => import('../canvas/GraphCanvas'));
@@ -56,16 +77,14 @@ const GraphCanvas = lazy(() => import('../canvas/GraphCanvas'));
 // =============================================================================
 
 const styles = {
-	root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 } as CSSProperties,
+	root: { display: 'flex', flexDirection: 'row', height: '100%', minHeight: 0 } as CSSProperties,
+	main: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 } as CSSProperties,
 	toolbar: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', padding: '8px 10px', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
-	focused: { fontSize: 12, color: 'var(--rr-text-secondary)', marginRight: 6, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
-	// Notices float over the top of the canvas: one that appears or goes must never resize it (and shift the graph).
-	notices: { position: 'absolute', top: 6, left: 10, right: 10, zIndex: 5, display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'none' } as CSSProperties,
-	notice: { pointerEvents: 'auto', background: 'var(--rr-bg-paper)', borderRadius: 6 } as CSSProperties,
+	focused: { fontSize: 12, color: 'var(--rr-text-secondary)', marginRight: 6, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
+	spacer: { marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } as CSSProperties,
 	canvas: { flex: 1, minHeight: 0, position: 'relative' } as CSSProperties,
-	legend: { display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', padding: '6px 10px', borderTop: '1px solid var(--rr-border)', fontSize: 12, maxHeight: 76, overflowY: 'auto' } as CSSProperties,
-	swatch: (fill: string): CSSProperties => ({ display: 'inline-block', width: 12, height: 12, borderRadius: '50%', background: fill, border: '1px solid var(--rr-text-primary)', marginRight: 6, verticalAlign: 'middle' }),
-	select: { fontSize: 12, padding: '2px 4px', background: 'var(--rr-bg-input)', color: 'var(--rr-text-primary)', border: '1px solid var(--rr-border-input)', borderRadius: 4 } as CSSProperties,
+	side: { width: 320, flex: '0 0 320px', minHeight: 0, overflowY: 'auto', borderLeft: '1px solid var(--rr-border)', background: 'var(--rr-bg-default)' } as CSSProperties,
+	menuAnchor: { position: 'relative', display: 'inline-block' } as CSSProperties,
 };
 
 // =============================================================================
@@ -90,6 +109,37 @@ class CanvasBoundary extends Component<{ children: ReactNode }, { failed: string
 		);
 	}
 }
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/** Whether a key press happened in something the user types into. */
+function isTyping(target: EventTarget | null): boolean {
+	const el = target as HTMLElement | null;
+	if (!el || typeof el.tagName !== 'string') return false;
+	return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.closest('.monaco-editor') !== null;
+}
+
+/**
+ * Save a blob as a file.
+ *
+ * @param blob - The content.
+ * @param name - The file name.
+ */
+function download(blob: Blob, name: string): void {
+	const url = URL.createObjectURL(blob);
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = name;
+	document.body.appendChild(link);
+	link.click();
+	document.body.removeChild(link);
+	window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** The toolbar menus. */
+type ToolMenu = 'layout' | 'export';
 
 // =============================================================================
 // COMPONENT
@@ -119,6 +169,8 @@ export interface IGraphViewProps {
 	/** Whether the result area fills the document. */
 	maximized?: boolean;
 	onToggleMaximized?(): void;
+	/** `copy` where the host cannot download files (VS Code): Export copies the SVG and the JSON, and PNG is not offered. */
+	exportMode?: 'download' | 'copy';
 }
 
 /**
@@ -127,11 +179,29 @@ export interface IGraphViewProps {
  * @param props - See {@link IGraphViewProps}.
  * @returns The view.
  */
-export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, captions, onCaption, onInspect, seedKey, announce }) => {
+export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, captions, onCaption, onInspect, seedKey, announce, endpointKey, meta, onRerun, onNewQuery, maximized, onToggleMaximized, exportMode = 'download' }) => {
 	const state: IGraphState = useSyncExternalStore(session.subscribe, session.getState, session.getState);
+	const env = useGraphEnv();
+	const key = endpointKey ?? '';
+	const style = useConnectionStyle(key);
+	const schema = useSchemaView(key);
 	const [layoutStatus, setLayoutStatus] = useState<LayoutStatus>({ state: 'idle' });
 	const [helpOpen, setHelpOpen] = useState(false);
-	// An informational notice floats over the canvas, so it leaves by itself; a warning or an error stays until the next action.
+	const [helpToken, setHelpToken] = useState(0);
+	const [inspectToken, setInspectToken] = useState(0);
+	const [layoutMode, setLayoutMode] = useState<LayoutMode>('force');
+	const [keepPinned, setKeepPinned] = useState(true);
+	const [pickFrom, setPickFrom] = useState<string | null>(null);
+	const [menu, setMenu] = useState<{ target: CanvasMenuTarget; x: number; y: number } | null>(null);
+	const [toolMenu, setToolMenu] = useState<ToolMenu | null>(null);
+	const [query, setQuery] = useState('');
+	const [current, setCurrent] = useState(0);
+	const canvasBox = useRef<HTMLDivElement>(null);
+	const handle = useRef<IGraphCanvasHandle | null>(null);
+	const searchInput = useRef<HTMLInputElement>(null);
+	const triggers = useRef<Record<ToolMenu, HTMLSpanElement | null>>({ layout: null, export: null });
+
+	// An informational notice leaves by itself; a warning or an error stays until the next action.
 	const [expiredNotice, setExpiredNotice] = useState<unknown>(null);
 	useEffect(() => {
 		if (!state.notice || state.notice.variant !== 'info') return undefined;
@@ -140,144 +210,423 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		return () => window.clearTimeout(timer);
 	}, [state.notice]);
 
-	const colors = useMemo<ReadonlyMap<string, ILabelColor>>(() => {
+	const allLabels = useMemo(() => {
 		const labels = new Set(schemaLabels);
 		for (const node of state.model.nodes.values()) for (const l of node.labels.slice(0, 1)) labels.add(l);
-		return assignLabelColors(labels);
+		return labels;
 	}, [schemaLabels, state.model.nodes]);
+	const colors = useMemo(() => labelColors(style, allLabels), [style, allLabels]);
+	const looks = useMemo(() => nodeLooks(allLabels, style), [style, allLabels]);
+	const typeColors = useMemo(() => typeColorsOf(style), [style]);
 	const legend = useMemo(() => legendOf(state.model, colors), [state.model, colors]);
+	const typeLegend = useMemo(() => typeLegendOf(state.model, typeColors), [state.model, typeColors]);
+	const nodes = useMemo(() => [...state.model.nodes.values()], [state.model.nodes]);
+	const captionFor = (n: GraphNode): string => captionOf(n, captions.get(n.labels[0] ?? ''));
+
+	const matches = useMemo(() => searchNodes(nodes, query, (n) => captionOf(n, captions.get(n.labels[0] ?? ''))), [nodes, query, captions]);
+	const matchIds = useMemo(() => (matches === null ? null : new Set(matches)), [matches]);
+
 	const budget = canvasBudgetText(state.model);
 	const focused = state.focusedId !== null ? state.model.nodes.get(state.focusedId) : undefined;
-	const focusedCaption = focused ? captionOf(focused, captions.get(focused.labels[0] ?? '')) : null;
+	const focusedCaption = focused ? captionFor(focused) : null;
 	const busy = state.busy !== null;
 	const hasMore = state.model.hiddenNodes > 0 && state.model.nodes.size < 1000;
 	// Out of date: a write ran after the drawing, or this element came back as a different one. Nothing is fetched for it.
 	const focusedStale = state.stale || (focused !== undefined && state.staleIds.has(focused.id));
 
+	// A menu closes when the selection changes under it (but not for the change that came with opening it).
+	const selectionSig = `${[...state.selected].join('\u0000')}|${state.selectedRelationship ?? ''}`;
+	const openedSig = useRef(selectionSig);
+	useEffect(() => {
+		openedSig.current = selectionSig;
+	}, [menu]); // eslint-disable-line react-hooks/exhaustive-deps
+	useEffect(() => {
+		if (menu !== null && selectionSig !== openedSig.current) setMenu(null);
+	}, [selectionSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+	// ---------------------------------------------------------------------
+	// actions
+	// ---------------------------------------------------------------------
+
+	/** Put focus back on the node (or the canvas) a menu came from. */
+	const restoreFocus = (nodeId?: string): void => {
+		const box = canvasBox.current;
+		if (!box) return;
+		const id = nodeId ?? state.focusedId;
+		let el: HTMLElement | null = id !== null && id !== undefined ? box.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`) : null;
+		if (!el) el = box.querySelector<HTMLElement>('.react-flow__node[tabindex="0"]');
+		if (!el) {
+			el = box.querySelector<HTMLElement>('[role="group"][aria-roledescription="graph"]');
+			if (el && !el.hasAttribute('tabindex')) el.tabIndex = -1;
+		}
+		el?.focus({ preventScroll: true });
+	};
+	const restoreToolFocus = (which: ToolMenu): void => triggers.current[which]?.querySelector('button')?.focus();
+
+	const inspect = (id: string): void => {
+		onInspect(id);
+		setInspectToken((n) => n + 1);
+	};
+	const startPath = (id: string): void => {
+		setPickFrom(id);
+		announce('Pick the second node for the path.');
+	};
+	const choosePathEnd = (id: string): void => {
+		const from = pickFrom;
+		setPickFrom(null);
+		if (from === null || from === id) return;
+		session.clearSelection();
+		session.toggleSelect(from);
+		session.toggleSelect(id);
+		session.inspect(null);
+		void session.findPath();
+	};
+	const nodeClick = (id: string, mode: 'only' | 'toggle'): void => {
+		if (pickFrom !== null && id !== pickFrom) {
+			choosePathEnd(id);
+			return;
+		}
+		session.select(id, mode);
+	};
+
+	const openMenu = (target: CanvasMenuTarget, at: { x: number; y: number }): void => {
+		const box = canvasBox.current?.getBoundingClientRect();
+		setToolMenu(null);
+		setMenu({ target, x: at.x - (box?.left ?? 0), y: at.y - (box?.top ?? 0) });
+	};
+	const exportGraphJson = (): string => toJsonText({ nodes: nodes, relationships: [...state.model.relationships.values()] }, 2);
+	const say = async (text: string, ok: boolean): Promise<void> => announce(ok ? text : 'Copying was not allowed by the browser.');
+
+	const runExport = async (what: 'png' | 'svg' | 'json' | 'copy-svg' | 'copy-json'): Promise<void> => {
+		if (what === 'json') {
+			download(new Blob([exportGraphJson()], { type: 'application/json' }), 'graph.json');
+			return;
+		}
+		if (what === 'copy-json') {
+			await say('Copied the drawn graph as JSON.', await copyText(exportGraphJson()));
+			return;
+		}
+		const format = what === 'png' ? 'png' : 'svg';
+		const blob = (await handle.current?.exportImage(format)) ?? null;
+		if (blob === null) {
+			announce('The image could not be made.');
+			return;
+		}
+		if (what === 'copy-svg') await say('Copied the SVG.', await copyText(await blob.text()));
+		else download(blob, `graph.${format}`);
+	};
+
+	/** What a menu item does. */
+	const activate = (id: string): void => {
+		if (menu) {
+			const target = menu.target;
+			const nodeId = target.kind === 'node' ? target.id : undefined;
+			setMenu(null);
+			restoreFocus(nodeId);
+			if (target.kind === 'pane') {
+				if (id === 'fit') handle.current?.fit();
+				else if (id === 'relayout') handle.current?.relayout();
+				else if (id === 'clear-selection') session.clearSelection();
+				return;
+			}
+			if (target.kind === 'relationship') {
+				const rel = state.model.relationships.get(target.id);
+				if (id === 'inspect') {
+					session.selectRelationship(target.id);
+					setInspectToken((n) => n + 1);
+				} else if (id === 'select-start' && rel) session.select(rel.start, 'only');
+				else if (id === 'select-end' && rel) session.select(rel.end, 'only');
+				else if (id === 'new-query') {
+					const text = session.queryTextFor({ kind: 'relationship', id: target.id });
+					if (text !== null && rel) onNewQuery?.(text, `From :${rel.type}`);
+				}
+				return;
+			}
+			const node = state.model.nodes.get(target.id);
+			if (!node) return;
+			if (id === 'expand') void session.expand(node.id);
+			else if (id.startsWith('type:')) void session.expandByType(node.id, id.slice(5));
+			else if (id === 'collapse') session.collapse(node.id);
+			else if (id === 'dismiss') session.dismiss(node.id);
+			else if (id === 'inspect') inspect(node.id);
+			else if (id === 'find-path') startPath(node.id);
+			else if (id === 'connect') void session.connect();
+			else if (id === 'copy-caption') void copyText(captionFor(node)).then((ok) => say('Copied the caption.', ok));
+			else if (id === 'copy-json') void copyText(inspectNode(node, captionFor(node)).json).then((ok) => say('Copied as JSON.', ok));
+			else if (id === 'new-query') {
+				const text = session.queryTextFor({ kind: 'node', id: node.id });
+				if (text !== null) onNewQuery?.(text, `From ${captionFor(node)}`.slice(0, 40));
+			}
+			return;
+		}
+		const which = toolMenu;
+		setToolMenu(null);
+		if (which) restoreToolFocus(which);
+		if (id === 'force' || id === 'tree' || id === 'left-right') setLayoutMode(id);
+		else if (id === 'relayout') handle.current?.relayout();
+		else if (id === 'keep-pinned') setKeepPinned((v) => !v);
+		else if (id === 'png' || id === 'svg' || id === 'json' || id === 'copy-svg' || id === 'copy-json') void runExport(id);
+	};
+
+	const closeMenu = (restore: boolean): void => {
+		if (menu) {
+			const nodeId = menu.target.kind === 'node' ? menu.target.id : undefined;
+			setMenu(null);
+			if (restore) restoreFocus(nodeId);
+		} else if (toolMenu) {
+			const which = toolMenu;
+			setToolMenu(null);
+			if (restore) restoreToolFocus(which);
+		}
+	};
+
+	// ---------------------------------------------------------------------
+	// menu contents
+	// ---------------------------------------------------------------------
+
+	const menuItems = (() => {
+		if (!menu) return null;
+		const target = menu.target;
+		const nodeTarget = target.kind === 'node' ? state.model.nodes.get(target.id) : undefined;
+		const rel = target.kind === 'relationship' ? state.model.relationships.get(target.id) : undefined;
+		const canQuery = !!onNewQuery && target.kind !== 'pane' && session.queryTextFor({ kind: target.kind, id: target.id }) !== null;
+		return menuItemsFor(target, {
+			busy,
+			stale: state.stale,
+			selectedCount: state.selected.size,
+			nodeCount: state.model.nodes.size,
+			canQuery,
+			relationshipTypes: relationshipTypesFor(schema, nodeTarget?.labels ?? []),
+			startDrawn: rel ? state.model.nodes.has(rel.start) : undefined,
+			endDrawn: rel ? state.model.nodes.has(rel.end) : undefined,
+		});
+	})();
+
+	const layoutItems: IMenuItem[] = [
+		{ id: 'force', label: 'Force', role: 'menuitemradio', checked: layoutMode === 'force' },
+		{ id: 'tree', label: 'Tree (top down)', role: 'menuitemradio', checked: layoutMode === 'tree' },
+		{ id: 'left-right', label: 'Left to right (paths)', role: 'menuitemradio', checked: layoutMode === 'left-right' },
+		{ id: 'relayout', label: 'Re-run layout', separatorBefore: true },
+		{ id: 'keep-pinned', label: 'Keep dragged nodes pinned', role: 'menuitemcheckbox', checked: keepPinned },
+	];
+	const exportItems: IMenuItem[] =
+		exportMode === 'copy'
+			? [
+					{ id: 'copy-svg', label: 'Copy SVG' },
+					{ id: 'copy-json', label: 'Copy the drawn graph as JSON' },
+					{ id: 'png', label: 'PNG image', disabled: true, reason: 'PNG needs a file download, which this host does not allow. Copy SVG instead.' },
+				]
+			: [
+					{ id: 'png', label: 'PNG image' },
+					{ id: 'svg', label: 'SVG image' },
+					{ id: 'json', label: 'The drawn graph as JSON' },
+				];
+
+	// ---------------------------------------------------------------------
+	// keys and pointer, as React handlers on this view's own elements
+	// ---------------------------------------------------------------------
+
+	const onRootKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+		if (event.ctrlKey || event.metaKey || event.altKey) return;
+		if (event.key === '/' && !isTyping(event.target)) {
+			event.preventDefault();
+			searchInput.current?.focus();
+			searchInput.current?.select();
+			return;
+		}
+		if (event.key === 'Escape' && pickFrom !== null && !isTyping(event.target)) {
+			event.preventDefault();
+			setPickFrom(null);
+		}
+	};
+	const onCanvasKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+		const opens = event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey);
+		if (!opens || event.defaultPrevented) return;
+		const el = event.target as HTMLElement;
+		if (!el.classList?.contains('react-flow__node')) return;
+		const id = el.getAttribute('data-id');
+		if (id === null) return;
+		event.preventDefault();
+		const rect = el.getBoundingClientRect();
+		openMenu({ kind: 'node', id }, { x: rect.left + rect.width / 2, y: rect.bottom });
+	};
+	const onPointerDownCapture = (event: React.PointerEvent<HTMLDivElement>): void => {
+		if (menu === null && toolMenu === null) return;
+		const el = event.target as HTMLElement;
+		if (el.closest('[role="menu"]') || el.closest('[data-menu-trigger]')) return;
+		setMenu(null);
+		setToolMenu(null);
+	};
+
+	// ---------------------------------------------------------------------
+	// search
+	// ---------------------------------------------------------------------
+
+	const stepSearch = (delta: 1 | -1): void => {
+		if (!matches || matches.length === 0) return;
+		const next = (current + delta + matches.length) % matches.length;
+		setCurrent(next);
+		handle.current?.centerOn(matches[next]);
+	};
+	const chooseMatch = (): void => {
+		if (!matches || matches.length === 0) return;
+		const id = matches[Math.min(current, matches.length - 1)];
+		session.select(id, 'only');
+		handle.current?.centerOn(id);
+	};
+
+	// ---------------------------------------------------------------------
+	// render
+	// ---------------------------------------------------------------------
+
+	const target = state.inspect;
+	const showInspector = target ? (target.kind === 'node' ? state.model.nodes.has(target.id) : state.model.relationships.has(target.id)) : state.path !== null;
+	const selectedOnly = state.selected.size === 1 ? state.model.nodes.get([...state.selected][0]) : undefined;
+	const pickNode = pickFrom !== null ? state.model.nodes.get(pickFrom) : undefined;
+	const items = statusItems({
+		stale: state.stale,
+		notice: state.notice && state.notice !== expiredNotice ? state.notice : null,
+		budget,
+		layout: layoutStatus,
+		selection: {
+			count: state.selected.size,
+			caption: selectedOnly ? captionFor(selectedOnly) : null,
+			relationshipType: state.selectedRelationship !== null ? (state.model.relationships.get(state.selectedRelationship)?.type ?? null) : null,
+		},
+		picking: pickFrom !== null ? (pickNode ? captionFor(pickNode) : pickFrom) : null,
+		progress: state.progress,
+		path: state.path,
+	});
+
 	if (state.model.nodes.size === 0) {
 		return <EmptyState icon={<GraphIcon />} title="Nothing to draw" description="This result has no nodes. The Table tab lists every returned row." />;
 	}
 
-	return (
-		<div style={styles.root}>
-			<div style={styles.toolbar} role="toolbar" aria-label="Graph actions">
-				<span style={styles.focused} title={focusedCaption ?? ''}>{focusedCaption ? `Focused: ${focusedCaption}` : 'No node focused'}</span>
-				<Button variant="ghost" small disabled={!focused || busy || focusedStale} title="Fetch up to 100 new neighbours (E)" onClick={() => focused && void session.expand(focused.id)}>Expand</Button>
-				<Button variant="ghost" small disabled={!focused} title="Remove what hangs only from this node (C)" onClick={() => focused && session.collapse(focused.id)}>Collapse</Button>
-				<Button variant="ghost" small disabled={!focused} title="Remove this node from the canvas (Delete or Backspace)" onClick={() => focused && session.dismiss(focused.id)}>Dismiss</Button>
-				<Button variant="ghost" small disabled={!focused} title="Open the inspector (Enter)" onClick={() => focused && onInspect(focused.id)}>Inspect</Button>
-				<Button variant="ghost" small disabled={busy || state.stale || state.model.nodes.size < 2} title="Draw the relationships among the nodes on the canvas" onClick={() => void session.connect()}>Connect nodes</Button>
-				<Button variant="ghost" small disabled={busy || state.stale || state.selected.size !== 2} title="Select two nodes with Space, then find a path (P)" onClick={() => void session.findPath()}>Find path</Button>
-				{busy && <Button variant="ghost" small title={STOP_WAITING_NOTE} onClick={() => session.stopWaiting()}>Stop waiting</Button>}
-				{hasMore && <Button variant="ghost" small onClick={() => session.showMore()}>Show more nodes</Button>}
-				<Button variant="ghost" small ariaExpanded={helpOpen} onClick={() => setHelpOpen(true)}>Keys</Button>
-				{state.progress && <span style={{ fontSize: 12, color: 'var(--rr-text-secondary)' }} role="status">{state.progress}</span>}
-				{state.selected.size > 0 && <Button variant="ghost" small onClick={() => session.clearSelection()}>{`Clear selection (${state.selected.size})`}</Button>}
-			</div>
+	const toolMenuTrigger = (which: ToolMenu, text: string, items: IMenuItem[]): ReactNode => (
+		<span
+			ref={(el) => {
+				triggers.current[which] = el;
+			}}
+			style={styles.menuAnchor}
+			data-menu-trigger=""
+		>
+			<Button variant="ghost" small ariaExpanded={toolMenu === which} onClick={() => { setMenu(null); setToolMenu(toolMenu === which ? null : which); }}>{`${text} ▾`}</Button>
+			{toolMenu === which && <CanvasMenu label={text} items={items} x={0} y={28} onActivate={activate} onClose={closeMenu} />}
+		</span>
+	);
 
-			<div style={styles.canvas}>
-				<div style={styles.notices}>
-					{state.stale && (
-						<div style={styles.notice}>
-							<Banner variant="warning">{DATA_CHANGED_TEXT}</Banner>
-						</div>
-					)}
-					{state.notice && state.notice !== expiredNotice && (
-						<div style={styles.notice}>
-							<Banner variant={state.notice.variant === 'info' ? 'info' : state.notice.variant}>
-								<div>{state.notice.text}</div>
-								{state.notice.detail && <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{state.notice.detail}</div>}
-							</Banner>
-						</div>
-					)}
-					{budget && (
-						<div style={styles.notice}>
-							<Banner variant="info">{budget}</Banner>
-						</div>
-					)}
-					{layoutStatus.state === 'fallback' && (
-						<div style={styles.notice}>
-							<Banner variant="warning">{`${GRID_NOTICE} (${layoutStatus.detail})`}</Banner>
-						</div>
-					)}
-					{layoutStatus.state === 'ready' && layoutStatus.timedOut && (
-						<div style={styles.notice}>
-							<Banner variant="info">The layout stopped early to stay responsive; the positions are usable and you can drag nodes.</Banner>
-						</div>
+	return (
+		<div style={styles.root} onKeyDown={onRootKeyDown} onPointerDownCapture={onPointerDownCapture}>
+			<div style={styles.main}>
+				<div style={styles.toolbar} role="toolbar" aria-label="Graph actions">
+					<span style={styles.focused} title={focusedCaption ?? ''}>{focusedCaption ? `Focused: ${focusedCaption}` : 'No node focused'}</span>
+					<Button variant="ghost" small disabled={!focused || busy || focusedStale} title="Fetch up to 100 new neighbours (E)" onClick={() => focused && void session.expand(focused.id)}>Expand</Button>
+					<Button variant="ghost" small disabled={!focused} title="Remove what hangs only from this node (C)" onClick={() => focused && session.collapse(focused.id)}>Collapse</Button>
+					<Button variant="ghost" small disabled={!focused} title="Remove this node from the canvas (Delete or Backspace)" onClick={() => focused && session.dismiss(focused.id)}>Dismiss</Button>
+					<Button variant="ghost" small disabled={!focused} title="Open the inspector (Enter)" onClick={() => focused && inspect(focused.id)}>Inspect</Button>
+					<Button variant="ghost" small disabled={busy || state.stale || state.model.nodes.size < 2} title="Draw the relationships among the nodes on the canvas" onClick={() => void session.connect()}>Connect nodes</Button>
+					<Button variant="ghost" small disabled={busy || state.stale || state.selected.size !== 2} title="Select two nodes with Space, then find a path (P)" onClick={() => void session.findPath()}>Find path</Button>
+					{busy && <Button variant="ghost" small title={STOP_WAITING_NOTE} onClick={() => session.stopWaiting()}>Stop waiting</Button>}
+					{hasMore && <Button variant="ghost" small onClick={() => session.showMore()}>Show more nodes</Button>}
+					{state.selected.size > 0 && <Button variant="ghost" small onClick={() => session.clearSelection()}>{`Clear selection (${state.selected.size})`}</Button>}
+					<span style={styles.spacer}>
+						<CanvasSearch
+							inputRef={searchInput}
+							value={query}
+							onChange={(value) => {
+								setQuery(value);
+								setCurrent(0);
+							}}
+							count={matches === null ? null : matches.length}
+							current={current}
+							onStep={stepSearch}
+							onChoose={chooseMatch}
+							onLeave={() => restoreFocus()}
+						/>
+						{toolMenuTrigger('layout', 'Layout', layoutItems)}
+						<Button variant="ghost" small title="Fit to screen (F)" onClick={() => handle.current?.fit()}>Fit</Button>
+						{toolMenuTrigger('export', 'Export', exportItems)}
+						{onToggleMaximized && <Button variant="ghost" small pressed={maximized === true} title={maximized ? 'Exit full screen (Esc)' : 'Full screen'} onClick={onToggleMaximized}>{maximized ? 'Exit full screen' : 'Full screen'}</Button>}
+						<Button variant="ghost" small ariaExpanded={helpOpen} title="Keyboard shortcuts (?)" onClick={() => { setHelpOpen(!helpOpen); setHelpToken((n) => n + 1); }}>Keys</Button>
+					</span>
+				</div>
+
+				<div ref={canvasBox} style={styles.canvas} onKeyDown={onCanvasKeyDown} onWheel={() => menu !== null && setMenu(null)}>
+					<CanvasBoundary>
+						<Suspense fallback={<EmptyState icon={<GraphIcon />} title="Loading the graph view" description="The canvas loads on first use." />}>
+							<GraphCanvas
+								model={state.model}
+								colors={colors}
+								captions={captions}
+								selected={state.selected}
+								focusedId={state.focusedId}
+								staleIds={state.staleIds}
+								staleRelationshipIds={state.staleRelationshipIds}
+								allStale={state.stale}
+								seedKey={seedKey}
+								expandHint={state.hint}
+								highlighted={state.highlight}
+								selectedRelationshipId={state.selectedRelationship}
+								matchIds={matchIds}
+								focusIds={state.path ? { nodes: new Set(state.path.nodes), relationships: new Set(state.path.relationships) } : null}
+								looks={looks}
+								typeColors={typeColors}
+								layoutMode={layoutMode}
+								keepPinned={keepPinned}
+								handleRef={handle}
+								onFocus={(id) => session.focus(id)}
+								onInspect={inspect}
+								onToggleSelect={(id) => nodeClick(id, 'toggle')}
+								onNodeClick={nodeClick}
+								onSelectRelationship={(id) => session.selectRelationship(id)}
+								onContextMenu={openMenu}
+								onExpand={(id) => void session.expand(id)}
+								onCollapse={(id) => session.collapse(id)}
+								onDismiss={(id) => session.dismiss(id)}
+								onFindPath={() => void session.findPath()}
+								onClearSelection={() => session.clearSelection()}
+								onHelp={() => { setHelpOpen(true); setHelpToken((n) => n + 1); }}
+								announce={announce}
+								onLayoutStatus={setLayoutStatus}
+							/>
+						</Suspense>
+					</CanvasBoundary>
+					{menu && menuItems && (
+						<CanvasMenu
+							label={menu.target.kind === 'node' ? 'Node actions' : menu.target.kind === 'relationship' ? 'Relationship actions' : 'Canvas actions'}
+							items={menuItems}
+							x={menu.x}
+							y={menu.y}
+							bounds={canvasBox.current ? { width: canvasBox.current.clientWidth, height: canvasBox.current.clientHeight } : undefined}
+							onActivate={activate}
+							onClose={closeMenu}
+						/>
 					)}
 				</div>
-				<CanvasBoundary>
-					<Suspense fallback={<EmptyState icon={<GraphIcon />} title="Loading the graph view" description="The canvas loads on first use." />}>
-						<GraphCanvas
-							model={state.model}
-							colors={colors}
-							captions={captions}
-							selected={state.selected}
-							focusedId={state.focusedId}
-							staleIds={state.staleIds}
-							staleRelationshipIds={state.staleRelationshipIds}
-							allStale={state.stale}
-							seedKey={seedKey}
-							expandHint={state.hint}
-							highlighted={state.highlight}
-							onFocus={(id) => session.focus(id)}
-							onInspect={onInspect}
-							onToggleSelect={(id) => session.toggleSelect(id)}
-							onExpand={(id) => void session.expand(id)}
-							onCollapse={(id) => session.collapse(id)}
-							onDismiss={(id) => session.dismiss(id)}
-							onFindPath={() => void session.findPath()}
-							onClearSelection={() => session.clearSelection()}
-							onHelp={() => setHelpOpen(true)}
-							announce={announce}
-							onLayoutStatus={setLayoutStatus}
-						/>
-					</Suspense>
-				</CanvasBoundary>
+
+				<LegendPanel
+					labels={legend}
+					types={typeLegend}
+					colors={colors}
+					style={style}
+					captions={captions}
+					nodes={nodes}
+					onSelectLabel={(label) => {
+						session.clearSelection();
+						for (const id of nodeIdsOfLabel(state.model, label)) session.toggleSelect(id);
+					}}
+					onCaption={onCaption}
+					onEdit={(edit) => env.userData.editStyle(key, edit)}
+					privacyNote={env.userData.privacyNote}
+				/>
+				<GraphStatusLine items={items} meta={meta} onRerun={onRerun} />
 			</div>
 
-			<div style={styles.legend} aria-label="Legend">
-				{legend.map((entry) => (
-					<span key={entry.label || '(none)'}>
-						<span style={styles.swatch(entry.fill)} aria-hidden="true" />
-						{`${entry.name} (${entry.count})`}
-					</span>
-				))}
-				<details style={{ marginLeft: 'auto' }}>
-					<summary style={{ cursor: 'pointer' }}>Captions</summary>
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
-						{legend.filter((e) => e.label !== '').slice(0, 12).map((entry) => {
-							const nodes = [...state.model.nodes.values()].filter((n) => n.labels[0] === entry.label);
-							const choices = captionChoices(nodes);
-							return (
-								<label key={entry.label} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-									<span style={{ minWidth: 80 }}>{entry.name}</span>
-									<select style={styles.select} aria-label={`Caption for ${entry.name}`} value={captions.get(entry.label) ?? ''} onChange={(event) => onCaption(entry.label, event.target.value)}>
-										<option value="">automatic</option>
-										{choices.map((choice) => (
-											<option key={choice.value} value={choice.value}>{choice.label}</option>
-										))}
-									</select>
-								</label>
-							);
-						})}
-					</div>
-				</details>
-			</div>
-
-			{helpOpen && (
-				<Modal title="Graph keyboard" onClose={() => setHelpOpen(false)}>
-					<table style={{ borderCollapse: 'collapse', fontSize: 13 }}>
-						<tbody>
-							{KEY_HELP.map((row) => (
-								<tr key={row.keys}>
-									<th scope="row" style={{ textAlign: 'left', padding: '4px 12px 4px 0', whiteSpace: 'nowrap' }}>{row.keys}</th>
-									<td style={{ padding: '4px 0' }}>{row.does}</td>
-								</tr>
-							))}
-						</tbody>
-					</table>
-				</Modal>
+			{(showInspector || helpOpen) && (
+				<div style={styles.side}>
+					{showInspector && <InspectorPanel state={state} session={session} captions={captions} announce={announce} onNewQuery={onNewQuery} onFindPathFrom={startPath} focusToken={inspectToken} />}
+					{helpOpen && <KeysPanel focusToken={helpToken} onClose={() => setHelpOpen(false)} />}
+				</div>
 			)}
 		</div>
 	);

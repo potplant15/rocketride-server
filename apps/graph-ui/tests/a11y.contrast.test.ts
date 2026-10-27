@@ -26,7 +26,7 @@ import { ACCENT_TOKEN, CANVAS_SURFACES, CANVAS_TEXT_TOKEN, CHIP_TEXT_TOKEN, EDGE
 import { CANVAS_RULES } from '../src/canvas/environment';
 import { edgePaint } from '../src/canvas/EdgeLayer';
 import { CYPHER_TOKEN_BASES, cypherTokenRules, editorColors, ensureContrast, opaqueOver, readableOnEditor, toHexColor, toRuleHex } from '../src/components/editorTheme';
-import { contrastRatio, parseColor } from '../src/graph/colors';
+import { CHART_COLOR_NAMES, CHART_COLOR_VARS, TYPE_COLOR_SLOTS, contrastRatio, parseColor } from '../src/graph/colors';
 import type { Rgb } from '../src/graph/colors';
 
 const THEME_DIR = path.resolve(__dirname, '..', '..', '..', 'packages', 'shell', 'public', 'themes');
@@ -91,6 +91,17 @@ test('a highlighted relationship is told apart from an ordinary one by more than
 
 test('an ordinary relationship line is at least 3:1 on both canvas surfaces in every theme', () => {
 	clears(EDGE_TOKEN, MIN_GRAPHIC_CONTRAST, 'relationship line');
+});
+
+test('every colour a relationship type can be given is at least 3:1 on both canvas surfaces in every theme, and the ones left out are not', () => {
+	const rows: string[] = [];
+	CHART_COLOR_VARS.forEach((token, slot) => {
+		const worst = Math.min(...themes.flatMap(({ tokens }) => CANVAS_SURFACES.map((surface) => ratio(tokens, token, surface))));
+		rows.push(`${CHART_COLOR_NAMES[slot]} ${worst.toFixed(2)}`);
+		if (TYPE_COLOR_SLOTS.includes(slot)) clears(token, MIN_GRAPHIC_CONTRAST, `type colour ${CHART_COLOR_NAMES[slot]}`);
+		else assert.ok(worst < MIN_GRAPHIC_CONTRAST, `${CHART_COLOR_NAMES[slot]} passes everywhere (${worst.toFixed(2)}:1), so it could be offered`);
+	});
+	console.log('worst contrast of each chart colour over every theme and canvas surface:', rows.join(' | '));
 });
 
 test('relationship type labels (10 px text) are at least 4.5:1 on both canvas surfaces in every theme', () => {

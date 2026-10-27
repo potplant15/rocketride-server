@@ -61,6 +61,16 @@ import type { IConnectionStyle } from './userData';
  */
 export const CHART_COLOR_VARS = ['--rr-chart-blue', '--rr-chart-green', '--rr-chart-red', '--rr-chart-orange', '--rr-chart-purple', '--rr-chart-yellow'] as const;
 
+/** The names of the chart colours, in the order of {@link CHART_COLOR_VARS} (what the style editor calls them). */
+export const CHART_COLOR_NAMES = ['Blue', 'Green', 'Red', 'Orange', 'Purple', 'Yellow'] as const;
+
+/**
+ * The chart colours a relationship type may be drawn in: the slots whose colour is at least 3:1 against both canvas
+ * surfaces in every shipped theme (tests/a11y.contrast.test.ts measures them). A relationship is a thin line with
+ * no outline, so it cannot lean on one the way a node does; orange and yellow are below 3:1 in the light themes.
+ */
+export const TYPE_COLOR_SLOTS: readonly number[] = [0, 1, 2, 4];
+
 /** One label's colour. */
 export interface ILabelColor {
 	label: string;
@@ -177,6 +187,22 @@ export function labelColors(style: IConnectionStyle, labels: Iterable<string>): 
 		const given = Object.prototype.hasOwnProperty.call(style.assigned, label) ? style.assigned[label] : undefined;
 		const slot = isSlot(own) ? own : isSlot(given) ? given : null;
 		out.set(label, slot === null ? { label, fill: hashColor(label), slot: null } : { label, fill: `var(${CHART_COLOR_VARS[slot]})`, slot });
+	}
+	return out;
+}
+
+/**
+ * The colours a connection's style gives its relationship types. Only a type with a chosen colour from
+ * {@link TYPE_COLOR_SLOTS} is listed; every other type keeps the ordinary line colour.
+ *
+ * @param style - The connection's style.
+ * @returns A CSS colour per styled type.
+ */
+export function typeColorsOf(style: IConnectionStyle): Map<string, string> {
+	const out = new Map<string, string>();
+	for (const type of Object.keys(style.types)) {
+		const slot = style.types[type]?.slot;
+		if (typeof slot === 'number' && TYPE_COLOR_SLOTS.includes(slot)) out.set(type, `var(${CHART_COLOR_VARS[slot]})`);
 	}
 	return out;
 }

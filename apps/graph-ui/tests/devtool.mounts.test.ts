@@ -608,7 +608,9 @@ describe('R11 - what cannot work in a dev-tool mount degrades visibly', () => {
 	it('a layout worker the window cannot start (a VS Code webview loading the remote from the engine) falls back to the grid, with a note', () => {
 		const strategy = chooseWorkerStrategy({ workerUrl: 'http://127.0.0.1:5565/apps/rocketride.graph/v3/static/js/async/graph-layout.js', pageHref: 'vscode-webview://abc123/index.html', production: true, hasWorker: true });
 		assert.equal(strategy.kind, 'unavailable');
-		assert.match(code(read('components/GraphView.tsx')), /layoutStatus\.state === 'fallback' && \([\s\S]*?\$\{GRID_NOTICE\} \(\$\{layoutStatus\.detail\}\)/);
+		// The grid note reaches the person through the status line, which GraphView feeds the layout status.
+		assert.match(code(read('graph/statusLine.ts')), /input\.layout\.state === 'fallback'\)[^\n]*\$\{GRID_NOTICE\} \(\$\{input\.layout\.detail\}\)/);
+		assert.match(code(read('components/GraphView.tsx')), /layout: layoutStatus,/);
 		assert.match(GRID_NOTICE, /grid/);
 	});
 
@@ -617,6 +619,6 @@ describe('R11 - what cannot work in a dev-tool mount degrades visibly', () => {
 		const raw = code(read('components/ResultViews.tsx'));
 		assert.match(raw, /\{blocked !== null && <CopyBlocked text=\{blocked\} \/>\}/);
 		assert.match(raw, /<textarea readOnly value=\{text\}/);
-		assert.match(code(read('components/InspectorPanel.tsx')), /\{blocked !== null && blocked === m\.json && <CopyBlocked text=\{blocked\} \/>\}/);
+		assert.match(code(read('components/InspectorPanel.tsx')), /\{blocked !== null && blocked === json && <CopyBlocked text=\{blocked\} \/>\}/);
 	});
 });
