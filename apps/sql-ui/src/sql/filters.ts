@@ -121,7 +121,7 @@ export function textMatchHint(dialect: SqlDialect): string {
 			return `${insensitive} Equals and not equals compare exactly.`;
 		default:
 			// An unknown dialect gets a plain LIKE, whose case rules are the database's.
-			return 'Text matches compare as the database does until its type is known.';
+			return 'Text matches compare as the database does until the database is known.';
 	}
 }
 

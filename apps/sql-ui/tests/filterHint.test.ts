@@ -70,7 +70,7 @@ describe('textMatchHint', () => {
 	});
 
 	it('before the database type is known, it claims nothing about case', () => {
-		assert.equal(textMatchHint('unknown'), 'Text matches compare as the database does until its type is known.');
+		assert.equal(textMatchHint('unknown'), 'Text matches compare as the database does until the database is known.');
 	});
 
 	it('matches what the predicates send: ILIKE / LOWER for the text operators, a plain = for equals', () => {
