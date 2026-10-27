@@ -100,6 +100,7 @@ import { AGE_AFFECTED_NOT_REPORTED, NOTICE_HEADLINE_MAX, STOP_WAITING_NOTE, num,
 import type { IResultNote } from '../graph/wording';
 import { GraphFailureBanner } from './GraphFailureBanner';
 import { GraphView } from './GraphView';
+import type { LayoutMode } from '../canvas/GraphCanvas';
 import QueryEditor from './QueryEditor';
 import type { IQueryEditorHandle } from './QueryEditor';
 import { RawView, ResultTable } from './ResultViews';
@@ -188,6 +189,19 @@ const styles = {
 
 /** The row-limit choices as the toggle shows them. */
 const LIMIT_OPTIONS = ROW_LIMIT_CHOICES.map((choice) => ({ id: choice === null ? 'all' : String(choice), label: choice === null ? 'All' : choice.toLocaleString('en-US') }));
+
+/**
+ * How a tab's graph is shown. The graph view is mounted only while its tab is shown, so the tab keeps these and hands
+ * them to it (DA-R1 I-2): a tab switch no longer resets Tree to Force, unpins nodes or reopens the legend.
+ */
+export interface IGraphViewState {
+	layoutMode: LayoutMode;
+	keepPinned: boolean;
+	legendOpen: boolean;
+}
+
+/** A new tab's graph: Force, dragged nodes kept pinned, the legend closed. */
+export const DEFAULT_GRAPH_VIEW: IGraphViewState = Object.freeze({ layoutMode: 'force', keepPinned: true, legendOpen: false });
 
 /** A gate's subscription and state for a surface that has none. */
 const NO_GATE = { subscribe: (): (() => void) => () => undefined, busy: (): string | null => null };
@@ -616,6 +630,11 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 
 	// ── Full screen (in the document) ────────────────────────────────────────
 	const [maximizeWanted, setMaximizeWanted] = useState(false);
+	// How this tab's graph is shown: kept here, so it outlives the graph view, which a hidden tab does not mount.
+	const [graphView, setGraphView] = useState<IGraphViewState>(DEFAULT_GRAPH_VIEW);
+	const setLayoutMode = useCallback((layoutMode: LayoutMode) => setGraphView((current) => ({ ...current, layoutMode })), []);
+	const setKeepPinned = useCallback((keepPinned: boolean) => setGraphView((current) => ({ ...current, keepPinned })), []);
+	const setLegendOpen = useCallback((legendOpen: boolean) => setGraphView((current) => ({ ...current, legendOpen })), []);
 	// Only the graph of a shown tab fills the document; anything else (a new result opening as a Table, the tab
 	// hidden) leaves full screen.
 	const maximized = maximizeWanted && active && tab === 'graph' && result !== null;
@@ -773,6 +792,12 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 										onNewQuery={onNewQuery}
 										maximized={maximized}
 										onToggleMaximized={toggleMaximized}
+										layoutMode={graphView.layoutMode}
+										onLayoutModeChange={setLayoutMode}
+										keepPinned={graphView.keepPinned}
+										onKeepPinnedChange={setKeepPinned}
+										legendOpen={graphView.legendOpen}
+										onLegendOpenChange={setLegendOpen}
 										exportMode={isInVSCode() ? 'copy' : 'download'}
 									/>
 								) : tab === 'table' ? (
