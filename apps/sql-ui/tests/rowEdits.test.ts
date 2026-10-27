@@ -38,7 +38,12 @@ import {
 	coerceValue,
 	describeRowEdit,
 	dropApplied,
+	changesFromForm,
+	editFormFields,
+	pendingCell,
+	rowEditGate,
 	settledCount,
+	valuesFromForm,
 	emptyRowEdits,
 	pendingOf,
 	rowEditCounts,
@@ -439,5 +444,72 @@ describe('I-1: what an apply settled, so nothing that may have run is staged aga
 	it('per statement: the committed ones, and the failed one too when its outcome is unknown', () => {
 		assert.equal(settledCount({ transactional: false, results: [], failure: { ...base, committed: 1, unknown: false } }, 3), 1);
 		assert.equal(settledCount({ transactional: false, results: [], failure: { ...base, committed: 1, unknown: true } }, 3), 2);
+	});
+});
+
+// =============================================================================
+// PHASE 2: THE DATA BROWSER'S PIECES
+// =============================================================================
+
+describe('rowEditGate: editing is off, with the reason, wherever it cannot work', () => {
+	const ready = { dialect: 'postgres' as const, def: ORDERS, table: 'orders', executeState: 'on' as const, ready: true };
+
+	it('a usable connection and table: on', () => {
+		assert.equal(rowEditGate(ready), null);
+		assert.equal(rowEditGate({ ...ready, executeState: 'unknown' }), null, 'a probe in flight disables nothing');
+	});
+
+	it('no primary key, ClickHouse, schema only, and no connection (or, in the dev tool, no sidebar) each say why', () => {
+		assert.match(rowEditGate({ ...ready, def: { columns: ORDERS.columns } }) ?? '', /^orders has no primary key/);
+		assert.match(rowEditGate({ ...ready, dialect: 'clickhouse' }) ?? '', /ClickHouse/);
+		assert.equal(rowEditGate({ ...ready, executeState: 'off' }), 'Needs allow_execute on the node.');
+		assert.match(rowEditGate({ ...ready, ready: false }) ?? '', /^Not connected \(in the dev tool, the SQL Explorer sidebar must be open\)/);
+	});
+});
+
+describe('pendingCell: what a grid cell of a staged row shows (read from the pristine row, never the grid\'s)', () => {
+	const target = pg();
+	let edits = stageUpdate(emptyRowEdits(), target, ROW, { status: 'paid' });
+	edits = stageDelete(edits, target, { ...ROW, order_id: 14 });
+
+	it('an edited field shows its new value and what it was; another field of the row is marked as part of an edited row', () => {
+		assert.deepEqual(pendingCell(edits, target, ROW, 'status'), { kind: 'edited', value: 'paid', was: 'pending' });
+		assert.deepEqual(pendingCell(edits, target, ROW, 'quantity'), { kind: 'row-edited' });
+	});
+
+	it('a deleted row is marked in every cell; a row with nothing staged, or whose key cannot be read exactly, is not marked', () => {
+		assert.deepEqual(pendingCell(edits, target, { ...ROW, order_id: 14 }, 'status'), { kind: 'deleted' });
+		assert.equal(pendingCell(edits, target, { ...ROW, order_id: 6 }, 'status'), null);
+		assert.equal(pendingCell(edits, target, { ...ROW, order_id: null }, 'status'), null);
+		assert.equal(pendingCell(emptyRowEdits(), { ...target, dialect: 'clickhouse' }, ROW, 'status'), null);
+	});
+});
+
+describe('the record drawer\'s form: fields in table order, NULL as its own toggle, only what changed is staged', () => {
+	const target = pg();
+
+	it('an existing row: its values as text, NULL as a toggle, key columns read-only; a staged edit shows through', () => {
+		const fields = editFormFields(target, { ...ROW, quantity: null }, undefined);
+		assert.deepEqual(fields.map((f) => f.column), ORDERS.columns.map((c) => c.column));
+		assert.deepEqual(fields.find((f) => f.column === 'order_id'), { column: 'order_id', type: 'INTEGER', key: true, text: '5', isNull: false });
+		assert.deepEqual(fields.find((f) => f.column === 'quantity'), { column: 'quantity', type: 'INTEGER', key: false, text: '', isNull: true });
+		const staged = stageUpdate(emptyRowEdits(), target, ROW, { status: 'paid' });
+		assert.equal(editFormFields(target, ROW, staged.entries[0]).find((f) => f.column === 'status')?.text, 'paid');
+	});
+
+	it('only the fields the user changed are staged, NULL included; key columns never are', () => {
+		const before = editFormFields(target, ROW, undefined);
+		const after = before.map((f) => (f.column === 'status' ? { ...f, text: 'paid' } : f.column === 'total' ? { ...f, isNull: true } : f.column === 'order_id' ? { ...f, text: '99' } : f));
+		assert.deepEqual(changesFromForm(before, after), { total: null, status: 'paid' });
+		const edits = stageUpdate(emptyRowEdits(), target, ROW, changesFromForm(before, after));
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, [null, 'paid', 5]);
+	});
+
+	it('a new row: an empty form; empty fields are left to the default, NULL is sent only when toggled', () => {
+		const fields = editFormFields(target, null, undefined);
+		assert.ok(fields.every((f) => f.text === '' && !f.isNull));
+		const filled = fields.map((f) => (f.column === 'status' ? { ...f, text: 'new' } : f.column === 'customer_id' ? { ...f, isNull: true } : f));
+		const edits = stageInsert(emptyRowEdits(), target, valuesFromForm(filled));
+		assert.deepEqual(buildRowStatements(edits, target)[0], { sql: 'INSERT INTO "orders" ("customer_id", "status") VALUES ($1, $2)', params: [null, 'new'], expect: 1 });
 	});
 });

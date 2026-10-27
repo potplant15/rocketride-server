@@ -61,6 +61,8 @@
 // =============================================================================
 
 import type { SqlApplyResult, SqlApplyStatement, SqlDialect, SqlSchemaTable } from '../connect';
+import { executeGateReason } from '../executeGate';
+import type { ExecuteState } from '../schema/schemaStore';
 import { quoteIdent } from './paging';
 import { rrTypeFromSqlType } from './resultTypes';
 
@@ -239,6 +241,29 @@ export function rowEditability(dialect: SqlDialect, def: SqlSchemaTable | null |
 		return { editable: false, reason: 'This table has no primary key, so a row cannot be picked out exactly. Rows can be edited only in tables with a primary key.' };
 	}
 	return { editable: true, pk: [...pk] };
+}
+
+/**
+ * Why rows of a table cannot be changed now, or null when they can: the
+ * table (no primary key, ClickHouse, an engine that did not report its
+ * type), a schema-only node, or no connection (in the dev tool, also no
+ * sidebar to send through).
+ *
+ * @param input - What the data page knows.
+ * @param input.dialect - The connection's dialect.
+ * @param input.def - The table's reflected schema (null: not known).
+ * @param input.table - The table's name.
+ * @param input.executeState - Whether the node runs statements (sql/executeGate.ts).
+ * @param input.ready - The engine is reachable (in a dev-tool frame, its controller too).
+ * @returns The reason, or null.
+ */
+export function rowEditGate(input: { dialect: SqlDialect; def: SqlSchemaTable | null | undefined; table: string; executeState: ExecuteState; ready: boolean }): string | null {
+	const editability = rowEditability(input.dialect, input.def);
+	if (!editability.editable) return editability.reason.replace(/^This table/, input.table);
+	const off = executeGateReason(input.executeState);
+	if (off !== null) return off;
+	if (!input.ready) return 'Not connected (in the dev tool, the SQL Explorer sidebar must be open), so rows cannot be changed now.';
+	return null;
 }
 
 /**
@@ -544,6 +569,127 @@ export function settledCount(result: SqlApplyResult, total: number): number {
 export function rowEditCounts(edits: RowEdits): { edited: number; inserted: number; deleted: number; total: number } {
 	const count = (kind: RowEdit['kind']): number => edits.entries.filter((edit) => edit.kind === kind).length;
 	return { edited: count('update'), inserted: count('insert'), deleted: count('delete'), total: edits.entries.length };
+}
+
+// =============================================================================
+// THE GRID AND THE FORM
+// =============================================================================
+
+/** What a grid cell of a staged row shows. */
+export type PendingCell =
+	/** This field is edited: its new value, and what it was. */
+	| { kind: 'edited'; value: unknown; was: unknown }
+	/** Another field of this row is edited. */
+	| { kind: 'row-edited' }
+	/** The row is staged for deletion. */
+	| { kind: 'deleted' };
+
+/**
+ * What a grid cell shows for the row it belongs to. The row must be the
+ * PRISTINE row as fetched, never the object the grid was handed (Tabulator
+ * writes into those; PLAN-MAP fact 4): the caller finds it by position.
+ *
+ * @param edits - The staged changes.
+ * @param target - The table.
+ * @param row - The pristine row.
+ * @param column - The cell's column.
+ * @returns The mark, or null for a row with nothing staged (or no exact key).
+ */
+export function pendingCell(edits: RowEdits, target: RowEditTarget, row: RowValues, column: string): PendingCell | null {
+	if (edits.entries.length === 0) return null;
+	let key: string;
+	try {
+		key = rowKey(target, row);
+	} catch {
+		return null;
+	}
+	const edit = pendingOf(edits, key);
+	if (edit?.kind === 'delete') return { kind: 'deleted' };
+	if (edit?.kind !== 'update') return null;
+	return Object.prototype.hasOwnProperty.call(edit.changes, column)
+		? { kind: 'edited', value: edit.changes[column], was: edit.was[column] ?? null }
+		: { kind: 'row-edited' };
+}
+
+/** One field of the record drawer's edit form. */
+export interface FormField {
+	/** The column. */
+	column: string;
+	/** Its reflected type (shown, and what the value is typed by). */
+	type: string;
+	/** Part of the key: shown, never edited. */
+	key: boolean;
+	/** The value as text ('' when NULL, or empty in a new row). */
+	text: string;
+	/** The NULL toggle. */
+	isNull: boolean;
+}
+
+/**
+ * A value as the form's text.
+ *
+ * @param value - The value.
+ * @returns Its text.
+ */
+function formText(value: unknown): string {
+	if (value === null || value === undefined) return '';
+	return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * The edit form's fields, in table order: a row's values (with any staged
+ * edit showing through), or an empty form for a new row (with a staged new
+ * row's values when it is edited again).
+ *
+ * @param target - The table.
+ * @param row - The pristine row, or null for a new row.
+ * @param pending - The row's staged change, if any.
+ * @returns The fields.
+ */
+export function editFormFields(target: RowEditTarget, row: RowValues | null, pending: RowEdit | undefined): FormField[] {
+	const pk = target.def.primary_key ?? [];
+	return target.def.columns.map(({ column, type }) => {
+		let has = row !== null && Object.prototype.hasOwnProperty.call(row, column);
+		let value: unknown = row?.[column];
+		if (pending?.kind === 'update' && Object.prototype.hasOwnProperty.call(pending.changes, column)) {
+			has = true;
+			value = pending.changes[column];
+		} else if (pending?.kind === 'insert') {
+			has = Object.prototype.hasOwnProperty.call(pending.values, column);
+			value = pending.values[column];
+		}
+		const isNull = has && (value === null || value === undefined);
+		return { column, type, key: pk.includes(column), text: isNull ? '' : formText(value), isNull };
+	});
+}
+
+/**
+ * The fields the user changed, for {@link stageUpdate}: NULL when toggled,
+ * the text otherwise. Key columns never.
+ *
+ * @param before - The fields the form opened with.
+ * @param after - The fields as the user left them.
+ * @returns Column -> new raw value.
+ */
+export function changesFromForm(before: readonly FormField[], after: readonly FormField[]): Record<string, unknown> {
+	const changes: Record<string, unknown> = {};
+	for (const field of after) {
+		const was = before.find((f) => f.column === field.column);
+		if (field.key || !was) continue;
+		if (was.isNull !== field.isNull || (!field.isNull && was.text !== field.text)) changes[field.column] = field.isNull ? null : field.text;
+	}
+	return changes;
+}
+
+/**
+ * A new row's values, for {@link stageInsert}: NULL when toggled, the text
+ * otherwise ('' is left to the column default).
+ *
+ * @param fields - The form's fields.
+ * @returns Column -> raw value.
+ */
+export function valuesFromForm(fields: readonly FormField[]): Record<string, unknown> {
+	return Object.fromEntries(fields.map((field) => [field.column, field.isNull ? null : field.text]));
 }
 
 // =============================================================================

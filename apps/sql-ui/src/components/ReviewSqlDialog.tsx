@@ -48,6 +48,7 @@ import type { CSSProperties } from 'react';
 import { Button, ConfirmDialog, Modal } from 'shell';
 import type { SqlApplyResult, SqlApplyStatement, SqlDialect } from '../connect';
 import { EACH_COMMITS_TEXT } from '../sql/applyMode';
+import { previewSql } from '../sql/preview';
 import type { ApplyWording } from '../sql/applyMode';
 import type { RowEdits } from '../sql/rowEdits';
 import { applyButtonLabel, pendingCountText } from './PendingChangesBar';
@@ -55,6 +56,9 @@ import { applyButtonLabel, pendingCountText } from './PendingChangesBar';
 // =============================================================================
 // WORDING
 // =============================================================================
+
+// Values shown in place of `$n` (sql/preview.ts), re-exported for the review's readers.
+export { previewSql, sqlLiteral } from '../sql/preview';
 
 /**
  * A count of something, singular or plural.
@@ -102,69 +106,6 @@ export function reviewSummaryText(statements: readonly SqlApplyStatement[]): str
 export function rowStatementLabels(edits: RowEdits): string[] {
 	const what = { update: 'edited', insert: 'new', delete: 'deleted' } as const;
 	return edits.entries.map((edit) => `1 row · ${what[edit.kind]}`);
-}
-
-/**
- * A value as a SQL literal of the dialect, for reading only (Apply binds it).
- *
- * @param value - The bound value.
- * @param dialect - The dialect (MySQL and ClickHouse read a backslash as an escape).
- * @returns The literal.
- */
-export function sqlLiteral(value: unknown, dialect: SqlDialect): string {
-	if (value === null || value === undefined) return 'NULL';
-	if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-	if (typeof value === 'number') return String(value);
-	const text = typeof value === 'string' ? value : JSON.stringify(value);
-	const escaped = dialect === 'mysql' || dialect === 'clickhouse' ? text.replace(/\\/g, '\\\\') : text;
-	return `'${escaped.replace(/'/g, "''")}'`;
-}
-
-/**
- * A statement with its bound values shown in place of `$1..$n`. Placeholders
- * inside quoted text or quoted names are left alone, as the node's own
- * rewriting leaves them.
- *
- * @param statement - The statement.
- * @param dialect - The dialect.
- * @returns The text to read.
- */
-export function previewSql(statement: SqlApplyStatement, dialect: SqlDialect): string {
-	const params = statement.params ?? [];
-	if (params.length === 0) return statement.sql;
-	const sql = statement.sql;
-	let out = '';
-	let quote: string | null = null;
-	for (let i = 0; i < sql.length; i++) {
-		const ch = sql[i] as string;
-		if (quote !== null) {
-			out += ch;
-			// A doubled quote stays inside; a single one ends the quoted run.
-			if (ch === quote) {
-				if (sql[i + 1] === quote) {
-					out += quote;
-					i++;
-				} else {
-					quote = null;
-				}
-			}
-			continue;
-		}
-		if (ch === "'" || ch === '"' || ch === '`') {
-			quote = ch;
-			out += ch;
-			continue;
-		}
-		const digits = ch === '$' ? /^\d+/.exec(sql.slice(i + 1))?.[0] : undefined;
-		const n = digits === undefined ? 0 : Number(digits);
-		if (n >= 1 && n <= params.length) {
-			out += sqlLiteral(params[n - 1], dialect);
-			i += (digits as string).length;
-			continue;
-		}
-		out += ch;
-	}
-	return out;
 }
 
 /** The line that opens a transactional apply in the review. */
