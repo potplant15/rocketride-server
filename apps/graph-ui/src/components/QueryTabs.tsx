@@ -26,7 +26,7 @@
 //
 // A WAI-ARIA tab list with automatic activation: ArrowLeft and ArrowRight move
 // to the next tab and show it (wrapping), Home and End go to the first and the
-// last, Delete closes a query tab. Only the shown tab is in the Tab order. Each
+// last, Delete (or Backspace) closes a query tab. Only the shown tab is in the Tab order. Each
 // query tab has a close button for the mouse (out of the Tab order; Delete is
 // its key), and "New query" opens a tab at the end. The strip is the left part
 // of the workbench's tab row; the shown tab's run bar takes the rest.
@@ -135,7 +135,8 @@ export const QueryTabs: React.FC<IQueryTabsProps> = ({ tabs, active, idPrefix, o
 				onKeyDown={(event) => {
 					const current = (event.target as HTMLElement).getAttribute('data-tab');
 					if (current === null) return;
-					if (event.key === 'Delete') {
+					// A Mac keyboard's Delete key sends Backspace.
+					if (event.key === 'Delete' || event.key === 'Backspace') {
 						const tab = tabs.find((t) => t.id === current);
 						if (!tab?.closable) return;
 						event.preventDefault();
@@ -173,7 +174,18 @@ export const QueryTabs: React.FC<IQueryTabsProps> = ({ tabs, active, idPrefix, o
 								{tab.title}
 							</button>
 							{tab.closable && (
-								<button type="button" tabIndex={-1} aria-hidden="true" title={`Close ${tab.title}`} style={styles.close} onClick={() => onClose(tab.id)}>
+								<button
+									type="button"
+									tabIndex={-1}
+									aria-hidden="true"
+									title={`Close ${tab.title}`}
+									style={styles.close}
+									onClick={() => {
+										// The focus goes to the tab shown next, not to the page.
+										follow.current = true;
+										onClose(tab.id);
+									}}
+								>
 									<BxX size={14} />
 								</button>
 							)}

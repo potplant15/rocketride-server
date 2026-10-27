@@ -158,12 +158,12 @@ edited that tab's text, Explore opens a new one and runs the sample there.
   Only History's **Load into editor** and Saved's **Insert** change a tab you
   already have: the query tab you were in last. In the code editor that is an
   edit, so Ctrl/Cmd+Z brings the previous text back. Arrow keys move between
-  tabs and Delete closes the focused query tab; closing a tab whose text you
-  edited asks first. A workbench holds at most 8 query tabs; past that, a line
-  says to close one, and nothing is opened or closed for you. Query 1 keeps the
-  draft the workbench has always kept for the connection; the text of the other
-  tabs lasts until the tab or the document is closed. Tabs are not restored
-  when the document opens again.
+  tabs, and Delete (Backspace on a Mac keyboard) closes the focused query tab;
+  closing a tab whose text you edited asks first. A workbench holds at most 8
+  query tabs; past that, a line says to close one, and nothing is opened or
+  closed for you. Query 1 keeps the draft the workbench has always kept for the
+  connection; the text of the other tabs lasts until the tab or the document is
+  closed. Tabs are not restored when the document opens again.
 - **One request at a time.** A workbench sends one request at a time across
   all its tabs: statements and the graph's actions alike. One asked for while
   another is still on the database is not sent, and says so. A statement you
@@ -188,8 +188,9 @@ edited that tab's text, Explore opens a new one and runs the sample there.
   because an end node was not returned) is one **Notes (N)** line under the
   result, with the headlines; open it for the full sentences.
 
-Every query tab has an editor, a row limit, and three result tabs. A tab that
-has not run shows **Run a query** on its Graph tab.
+Every query tab has an editor, a row limit, and three views of its result
+(Graph, Table and Raw), switched in the run bar. A tab that has not run shows
+**Run a query**.
 
 - **Run** sends the selection, or the statement the caret is in
   (Ctrl/Cmd+Enter). **Run all** sends every statement in order

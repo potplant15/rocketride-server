@@ -50,6 +50,8 @@ export interface ISplitDividerProps {
 	onChange(split: IEditorSplit): void;
 	/** What the separator separates, for its accessible name. */
 	label: string;
+	/** The id of the editor region it sizes. */
+	controls?: string;
 }
 
 const styles = {
@@ -78,12 +80,26 @@ const styles = {
 };
 
 /**
+ * Whether an element got the focus the way that shows a ring (the keyboard), as :focus-visible says.
+ *
+ * @param el - The focused element.
+ * @returns True for keyboard focus; true too where the browser cannot say.
+ */
+function keyboardFocus(el: HTMLElement): boolean {
+	try {
+		return el.matches(':focus-visible');
+	} catch {
+		return true;
+	}
+}
+
+/**
  * The divider.
  *
  * @param props - See {@link ISplitDividerProps}.
  * @returns The separator.
  */
-export const SplitDivider: React.FC<ISplitDividerProps> = ({ split, available, onChange, label }) => {
+export const SplitDivider: React.FC<ISplitDividerProps> = ({ split, available, onChange, label, controls }) => {
 	const [focused, setFocused] = useState(false);
 	const [hovered, setHovered] = useState(false);
 	// The pointer's travel while the button is down (null: no drag). Only the line moves until release.
@@ -107,6 +123,7 @@ export const SplitDivider: React.FC<ISplitDividerProps> = ({ split, available, o
 			role="separator"
 			aria-orientation="horizontal"
 			aria-label={label}
+			aria-controls={controls}
 			aria-valuenow={aria.now}
 			aria-valuemin={aria.min}
 			aria-valuemax={Number.isFinite(aria.max) ? aria.max : undefined}
@@ -114,7 +131,7 @@ export const SplitDivider: React.FC<ISplitDividerProps> = ({ split, available, o
 			tabIndex={0}
 			title={split.collapsed ? 'Drag to resize; double-click to show the editor' : 'Drag to resize; double-click to hide the editor'}
 			style={styles.bar(focused, offset ?? 0, offset !== null)}
-			onFocus={() => setFocused(true)}
+			onFocus={(event) => setFocused(keyboardFocus(event.currentTarget))}
 			onBlur={() => setFocused(false)}
 			onMouseEnter={() => setHovered(true)}
 			onMouseLeave={() => setHovered(false)}

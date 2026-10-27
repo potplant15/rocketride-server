@@ -36,7 +36,8 @@
 // The room the results get:
 //   - in the workbench the run bar sits in the tab row (the host hands a
 //     `barHost` and the bar is portalled there), so a query tab adds only its
-//     editor above the results;
+//     editor above the results; the bar also holds the Graph / Table / Raw
+//     switch, so the results have no row of their own for it;
 //   - a divider (SplitPane.tsx) sets the editor's height, kept in the prefs
 //     (graph.editorHeight), and can hide the editor, leaving the run bar with
 //     the statement's first line;
@@ -61,11 +62,10 @@
 // search and the editor stay HERE in every mount.
 // =============================================================================
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { Banner, Button, EmptyState, StatusBadge, TabControl, ToggleGroup } from 'shell';
-import type { ViewMenu } from 'shell';
+import { Banner, Button, EmptyState, StatusBadge, ToggleGroup } from 'shell';
 import { ExplorerToolError, clock, createGeneration, formatBatchOutcome, formatPriorStatements, formatRunLabel, useStatementRunner } from 'shared/explorer';
 import type { IExplorerEndpoint, IRunTarget, IStatementRunBase } from 'shared/explorer';
 import StatementStrip from 'shared/explorer/components/StatementStrip';
@@ -167,7 +167,7 @@ const styles = {
 	// In the tab row: the same controls, right of the tabs, wrapping only when the row is too narrow.
 	runBarInRow: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end', minWidth: 0 } as CSSProperties,
 	firstLine: { maxWidth: '40%', minWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--rr-font-mono, monospace)', fontSize: 12, padding: '4px 8px', border: '1px solid var(--rr-border)', borderRadius: 4, background: 'var(--rr-bg-paper)', color: 'var(--rr-text-primary)', cursor: 'pointer', textAlign: 'left' } as CSSProperties,
-	willRun: { fontSize: 12, color: 'var(--rr-text-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
+	willRun: { flex: '0 1 auto', maxWidth: 260, fontSize: 12, color: 'var(--rr-text-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
 	notices: { padding: '6px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
 	resultsRow: { flex: 1, minHeight: 0, display: 'flex' } as CSSProperties,
 	results: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '2px 24px 6px' } as CSSProperties,
@@ -321,17 +321,25 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 
 	// Save drafts per connection (text only), debounced. A tab without a draft key keeps its text for the session.
 	const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	// The write still waiting for its timer: done at once if the surface goes (Query 1's tab closed right after typing).
+	const pendingDraft = useRef<(() => void) | null>(null);
 	const changeText = useCallback((next: string) => {
 		setText(next);
 		if (draftKey === null) return;
 		if (draftTimer.current) clearTimeout(draftTimer.current);
-		draftTimer.current = setTimeout(() => {
+		const write = (): void => {
+			pendingDraft.current = null;
 			const bag = prefs.getPref(DRAFTS_PREF_KEY);
 			const base = bag && typeof bag === 'object' ? (bag as Record<string, unknown>) : {};
 			prefs.setPref(DRAFTS_PREF_KEY, { ...base, [draftKey]: next.slice(0, 20_000) });
-		}, 600);
+		};
+		pendingDraft.current = write;
+		draftTimer.current = setTimeout(write, 600);
 	}, [prefs, draftKey]);
-	useEffect(() => () => { if (draftTimer.current) clearTimeout(draftTimer.current); }, []);
+	useEffect(() => () => {
+		if (draftTimer.current) clearTimeout(draftTimer.current);
+		pendingDraft.current?.();
+	}, []);
 
 	// What the "Will run" sentence describes: one live read of the editor, taken when the caret settles or the text changes.
 	const syncCursor = useCallback(() => {
@@ -346,6 +354,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 
 	// ── The editor's height (the divider), kept in the prefs ─────────────────
 	const rootRef = useRef<HTMLDivElement | null>(null);
+	const editorId = `graph-editor${useId().replace(/:/g, '')}`;
 	const [surfaceHeight, setSurfaceHeight] = useState<number | null>(null);
 	useEffect(() => {
 		const el = rootRef.current;
@@ -610,13 +619,14 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const strip = runner.runs.length > 1;
 	const showNotices = blocked !== null || startRefusal !== null || runner.refusal !== null || runner.failure !== null || runner.abandonNotice !== null || strip;
 
-	const menu: ViewMenu = useMemo(() => ({
-		entries: [
-			{ id: 'graph', label: 'Graph', ...(summary && summary.drawable ? { count: summary.nodeCount } : {}) },
-			{ id: 'table', label: 'Table', ...(result ? { count: result.rows.length } : {}) },
-			{ id: 'raw', label: 'Raw' },
-		],
-	}), [summary, result]);
+	// How the result is shown, with its counts: one compact switch in the run bar.
+	const views: { id: ResultTab; label: string }[] = useMemo(() => [
+		{ id: 'graph', label: summary && summary.drawable ? `Graph (${num(summary.nodeCount)})` : 'Graph' },
+		{ id: 'table', label: result ? `Table (${num(result.rows.length)})` : 'Table' },
+		{ id: 'raw', label: 'Raw' },
+	], [summary, result]);
+	// In the tab row the controls are the compact size, so the row stays one line of small buttons.
+	const inRow = barHost !== undefined;
 
 	const emptyTitle = runner.running ? 'Waiting for the node' : runner.failure ? 'Statement failed' : runner.refusal ? 'Nothing ran' : mode === 'read' ? 'Run a query' : 'Nothing executed yet';
 	const emptyText = runner.running
@@ -640,10 +650,10 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 					{firstLineOf(text) || '(empty)'}
 				</button>
 			)}
-			<Button variant="primary" disabled={runner.running || blocked !== null} onClick={() => run(false)} title="Run the selection or the statement at the caret (Ctrl/Cmd+Enter)">
+			<Button variant="primary" disabled={runner.running || blocked !== null} onClick={() => run(false)} small={inRow} title="Run the selection or the statement at the caret (Ctrl/Cmd+Enter)">
 				{mode === 'read' ? 'Run' : 'Execute'}
 			</Button>
-			<Button variant="ghost" disabled={runner.running || blocked !== null} onClick={() => run(true)} title="Run every statement in order (Ctrl/Cmd+Shift+Enter)">
+			<Button variant="ghost" disabled={runner.running || blocked !== null} onClick={() => run(true)} small={inRow} title="Run every statement in order (Ctrl/Cmd+Shift+Enter)">
 				{mode === 'read' ? 'Run all' : 'Execute all'}
 			</Button>
 			{mode === 'read' && (
@@ -654,15 +664,20 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 					aria-label="Row limit"
 				/>
 			)}
-			{runner.canStop && <Button variant="ghost" title={STOP_WAITING_NOTE} onClick={() => runner.stopWaiting()}>Stop waiting</Button>}
-			{onOpenHistory && <Button variant="ghost" ariaExpanded={historyOpen === true} onClick={onOpenHistory}>History</Button>}
-			{onOpenSaved && <Button variant="ghost" ariaExpanded={savedOpen === true} onClick={onOpenSaved}>Saved</Button>}
-			{onAsk && <Button variant="ghost" ariaExpanded={askOpen === true} title="Ask the node's language model to draft Cypher; the draft opens in a new tab, not run" onClick={onAsk}>Ask</Button>}
+			{runner.canStop && <Button variant="ghost" small={inRow} title={STOP_WAITING_NOTE} onClick={() => runner.stopWaiting()}>Stop waiting</Button>}
+			{onOpenHistory && <Button variant="ghost" small={inRow} ariaExpanded={historyOpen === true} onClick={onOpenHistory}>History</Button>}
+			{onOpenSaved && <Button variant="ghost" small={inRow} ariaExpanded={savedOpen === true} onClick={onOpenSaved}>Saved</Button>}
+			{onAsk && (
+				<span data-ask-toggle="">
+					<Button variant="ghost" small={inRow} ariaExpanded={askOpen === true} title="Ask the node's language model to draft Cypher; the draft opens in a new tab, not run" onClick={onAsk}>Ask</Button>
+				</span>
+			)}
 			{mode === 'read' && dialect && (() => {
 				const chip = rowLimitChip(limitChoice, dialect);
 				return <span title={chip.title ?? undefined}><StatusBadge variant="muted">{chip.text}</StatusBadge></span>;
 			})()}
 			<span style={styles.willRun}>{runner.running ? 'Running…' : willRun}</span>
+			<ToggleGroup options={views} value={tab} onChange={(id) => setTab(id)} aria-label="Show the result as" />
 			<Button variant="ghost" small ariaExpanded={!split.collapsed} title={split.collapsed ? 'Show the editor' : 'Hide the editor; the run bar stays'} onClick={() => (split.collapsed ? showEditor() : changeSplit(splitToggled(split)))}>
 				{split.collapsed ? 'Show editor' : 'Hide editor'}
 			</Button>
@@ -674,16 +689,16 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 			{/* In the tab row while this tab is shown (the workbench); under the editor otherwise (the write console). */}
 			{barHost !== undefined && active && barHost !== null && createPortal(runBar, barHost)}
 			<div style={styles.editorRegion(split.collapsed && barHost !== undefined)}>
-				<div style={styles.editorBox(editorHeight, split.collapsed)}>
+				<div id={editorId} style={styles.editorBox(editorHeight, split.collapsed)}>
 					<QueryEditor ref={editor} value={text} onChange={changeText} onRun={() => run(false)} onRunAll={() => run(true)} onCursorChange={syncCursor} label={mode === 'read' ? 'Cypher query' : 'Cypher statements to execute'} completion={completion} />
 				</div>
 				{barHost === undefined && runBar}
 			</div>
-			{!split.collapsed && <SplitDivider split={{ height: editorHeight, collapsed: false }} available={available} onChange={changeSplit} label="Editor and results" />}
+			{!split.collapsed && <SplitDivider split={{ height: editorHeight, collapsed: false }} available={available} onChange={changeSplit} label="Editor and results" controls={editorId} />}
 
 			{showNotices && (
 				<div style={styles.notices}>
-					{blocked && <NoticeBanner variant="warning" text={blocked} />}
+					{blocked && <NoticeBanner key={blocked} variant="warning" text={blocked} />}
 					{startRefusal && <NoticeBanner key={startRefusal} variant="warning" text={startRefusal} />}
 					{runner.refusal && <NoticeBanner key={runner.refusal} variant="warning" text={runner.refusal} />}
 					{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} onRunFrom={mode === 'read' ? runFrom : undefined} />}
@@ -695,7 +710,6 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 
 			<div style={styles.resultsRow}>
 				<div style={styles.results}>
-					<TabControl menu={menu} activeId={tab} onSelect={(id) => setTab(id as ResultTab)} />
 					<div
 						ref={bodyRef}
 						tabIndex={-1}

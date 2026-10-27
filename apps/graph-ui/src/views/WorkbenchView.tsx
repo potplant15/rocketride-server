@@ -79,7 +79,7 @@ import type { IQueryTabsState, QueryTabOrigin, TabRequest } from '../graph/query
 import { EXPLORE_CYPHER } from '../graph/templates';
 import { GraphIcon } from '../icons';
 import { styles as shared } from '../styles';
-import AskBar, { ASK_DRAFT_HEADLINE, askDraftText, askKeptText } from '../components/AskBar';
+import AskBar, { ASK_DRAFT_HEADLINE, askCheckText, askDraftText, askKeptText } from '../components/AskBar';
 import ConnectionDetailsPanel from '../components/ConnectionDetailsPanel';
 import HistoryPanel from '../components/HistoryPanel';
 import OverviewPanel from '../components/OverviewPanel';
@@ -180,8 +180,8 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const [requests] = useState(createRequestGate);
 	// Why the last tab was not opened (the limit), until a tab opens or closes.
 	const [tabsNotice, setTabsNotice] = useState<string | null>(null);
-	// The banner on each tab Ask opened, until it is dismissed.
-	const [askNotes, setAskNotes] = useState<Readonly<Record<string, string>>>({});
+	// The banner on each tab Ask opened (its line, and what the text check found), until it is dismissed.
+	const [askNotes, setAskNotes] = useState<Readonly<Record<string, { text: string; check: string | null }>>>({});
 
 	const gateNow = useRef(gate);
 	gateNow.current = gate;
@@ -235,7 +235,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const openPreview = useCallback((kind: 'label' | 'type', name: string, run: boolean) => {
 		const current = dialectNow.current;
 		if (!current) {
-			announcer.announce('This connection has not answered yet, so the preview was not run.');
+			announcer.announce('This connection cannot be browsed now, so the preview was not run.');
 			return;
 		}
 		const engine = { dialect: current.dialect, version: current.engineVersion };
@@ -266,6 +266,8 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 
 	// ── Ask (shown on demand from a tab's run bar; its draft opens a new tab) ──
 	const [askOpen, setAskOpen] = useState(false);
+	// Which Ask tab shows what the text check found.
+	const [askCheckOpen, setAskCheckOpen] = useState<string | null>(null);
 	const [askFocus, setAskFocus] = useState(0);
 	const askFrom = useRef<string | null>(null);
 	const toggleAsk = useCallback(() => {
@@ -284,7 +286,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 		const title = askTitle(question);
 		const id = deliver({ kind: 'new', origin: 'ask', title, text: cypher, run: false, ask: { question, from: from ?? '' }, activate: shown });
 		if (id === null) return false;
-		setAskNotes((current) => ({ ...current, [id]: askDraftText(question, patternCheck(cypher)) }));
+		setAskNotes((current) => ({ ...current, [id]: { text: askDraftText(question), check: askCheckText(patternCheck(cypher)) } }));
 		announcer.announce(shown ? 'The draft from Ask opened in a new tab. It has not been run.' : `The draft from Ask opened in a new tab, ${title}, behind the one shown. It has not been run.`);
 		return true;
 	}, [deliver]);
@@ -387,7 +389,17 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 						</div>
 					)}
 					<div style={askOpen ? undefined : styles.hidden}>
-						<AskBar endpoint={endpoint} focusSeq={askFocus} onAsked={() => { askFrom.current = tabsNow.current.lastQuery; }} onDraft={onDraft} onClose={() => setAskOpen(false)} />
+						<AskBar
+							endpoint={endpoint}
+							focusSeq={askFocus}
+							onAsked={() => { askFrom.current = tabsNow.current.lastQuery; }}
+							onDraft={onDraft}
+							onClose={() => {
+								setAskOpen(false);
+								// The focus was in the bar: give it to the Ask button that showed it, in the tab row.
+								barHost?.querySelector<HTMLElement>('[data-ask-toggle] button')?.focus();
+							}}
+						/>
 					</div>
 					<div style={styles.body}>
 						<div style={styles.panes}>
@@ -405,9 +417,15 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 										{note !== undefined && (
 											<div style={styles.notice}>
 												<Banner variant="info">
-													<strong>{ASK_DRAFT_HEADLINE}</strong> {note}
+													<strong>{ASK_DRAFT_HEADLINE}</strong> {note.text}
 													<div style={styles.askNote}>{from ? askKeptText(from.title) : 'Ask always opens a new tab, so no other tab changed.'}</div>
+													{note.check !== null && askCheckOpen === tab.id && <div style={styles.askNote}>{note.check}</div>}
 													<div style={styles.askActions}>
+														{note.check !== null && (
+															<Button variant="ghost" small ariaExpanded={askCheckOpen === tab.id} onClick={() => setAskCheckOpen(askCheckOpen === tab.id ? null : tab.id)}>
+																{askCheckOpen === tab.id ? 'Hide details' : 'Details'}
+															</Button>
+														)}
 														{from && (
 															<Button variant="ghost" small onClick={() => activate(from.id)}>
 																{`Back to ${from.title}`}

@@ -166,6 +166,12 @@ test('only the shown tab draws its results, puts its run bar in the tab row, and
 	assert.ok(/if \(!active\) setOpenRow\(null\);/.test(surface), 'a hidden tab closes its row panel');
 	assert.doesNotMatch(surface, /RowInspector/, 'no shared row drawer (it listens for Escape on the whole page)');
 	assert.ok(/<RowPanel /.test(surface), 'the row opens inline');
+	// I5: the results have no row of their own for Graph / Table / Raw; the switch is a compact toggle in the run bar.
+	assert.doesNotMatch(surface, /TabControl/, 'no results tab row');
+	const bar = surface.slice(surface.indexOf('const runBar = ('), surface.indexOf('return (', surface.indexOf('const runBar = (')));
+	assert.ok(/<ToggleGroup options=\{views\} value=\{tab\} onChange=\{\(id\) => setTab\(id\)\} aria-label="Show the result as" \/>/.test(bar), 'the switch is in the run bar');
+	// Query 1's draft is written when its tab closes right after typing, not dropped with the timer.
+	assert.ok(/if \(draftTimer\.current\) clearTimeout\(draftTimer\.current\);\s*pendingDraft\.current\?\.\(\);/.test(surface), 'a pending draft is flushed on unmount');
 	assert.ok(/onRunFrom=\{mode === 'read' \? runFrom : undefined\}/.test(surface), 'Run from statement N only in the read workbench: a write that may have been applied is never re-sent from the banner');
 });
 

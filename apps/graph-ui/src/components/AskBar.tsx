@@ -49,21 +49,29 @@ import { ASK_UNAVAILABLE } from '../graph/wording';
 /** The headline of the banner on a tab Ask opened. */
 export const ASK_DRAFT_HEADLINE = 'Draft from Ask, not run.';
 
-/** The most characters of a question the draft banner quotes. */
-const QUOTED_QUESTION_CHARS = 120;
+/** The most characters of a question the draft banner quotes (so the banner's line stays under 160). */
+const QUOTED_QUESTION_CHARS = 100;
 
 /**
  * What the banner on a tab Ask opened says after its headline.
  *
  * @param question - The question asked.
- * @param finding - What the text check found in the draft, or null for a read.
- * @returns The sentences.
+ * @returns The quoted question and what to do.
  */
-export function askDraftText(question: string, finding: IPatternFinding | null): string {
+export function askDraftText(question: string): string {
 	const line = question.replace(/\s+/g, ' ').trim();
 	const quoted = line.length <= QUOTED_QUESTION_CHARS ? line : `${line.slice(0, QUOTED_QUESTION_CHARS - 1).trimEnd()}\u2026`;
-	const check = finding ? ` The text check found ${finding.kind}; query tabs only read, so Run will refuse it. This is a text check, not a database safeguard.` : '';
-	return `\u201c${quoted}\u201d Check the Cypher, then Run.${check}`;
+	return `\u201c${quoted}\u201d Check the Cypher, then Run.`;
+}
+
+/**
+ * What the text check says about a draft, behind the banner's Details, or null for a read.
+ *
+ * @param finding - What the text check found in the draft, or null.
+ * @returns The sentences, or null.
+ */
+export function askCheckText(finding: IPatternFinding | null): string | null {
+	return finding ? `The text check found ${finding.kind}; query tabs only read, so Run will refuse it. This is a text check, not a database safeguard.` : null;
 }
 
 /**

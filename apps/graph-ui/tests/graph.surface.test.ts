@@ -9,6 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { ASK_DRAFT_HEADLINE, askCheckText, askDraftText } from '../src/components/AskBar';
 import { entrySummary, historyEmptyText } from '../src/components/HistoryPanel';
 import { createLoadSlot } from '../src/graph/loadSlot';
 import { GATE_BUSY_TEXT } from '../src/graph/requestGate';
@@ -142,4 +143,13 @@ test('a long notice is split into its first sentence and the rest, for a headlin
 	assert.deepEqual(splitNotice('Not sent: statement 2 looks like it changes data (CREATE). Query tabs only run reads. This is a text check.'), { headline: 'Not sent: statement 2 looks like it changes data (CREATE).', details: 'Query tabs only run reads. This is a text check.' });
 	assert.deepEqual(splitNotice('One sentence only.'), { headline: 'One sentence only.', details: '' });
 	assert.deepEqual(splitNotice('Not sent (CALL db.labels). Then more.'), { headline: 'Not sent (CALL db.labels).', details: 'Then more.' }, 'a dot inside a name does not end the sentence');
+});
+
+// M14: the Ask draft banner's line stays under 160 characters; what the text check found goes behind Details.
+test('the Ask draft banner quotes at most 100 characters of the question, and keeps the text check apart', () => {
+	const line = `${ASK_DRAFT_HEADLINE} ${askDraftText('which people work where '.repeat(20))}`;
+	assert.ok(line.length <= 160, line);
+	assert.match(line, /\u2026\u201d Check the Cypher, then Run\.$/);
+	assert.equal(askCheckText(null), null);
+	assert.match(askCheckText({ kind: 'CREATE' }) ?? '', /^The text check found CREATE; query tabs only read, so Run will refuse it\./);
 });
