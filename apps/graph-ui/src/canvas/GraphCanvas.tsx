@@ -406,7 +406,8 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 			const fill = colorFor(colors, label).fill;
 			const caption = captionOf(node, captions.get(label));
 			const shown = counts.get(id) ?? 0;
-			const dim = (focus !== null && !focus.nodes.has(id)) || (matchIds !== null && !matchIds.has(id));
+			// A selected node is never dimmed: its ring must show at full strength (a click off the path, or off a search).
+			const dim = !selected.has(id) && ((focus !== null && !focus.nodes.has(id)) || (matchIds !== null && !matchIds.has(id)));
 			const spoken = `${caption}, ${node.labels.length > 0 ? node.labels.join(' ') : 'no label'}, ${shown} ${shown === 1 ? 'relationship' : 'relationships'} shown${selected.has(id) ? ', selected' : ''}${model.expansions.has(id) ? ', expanded' : ''}${allStale || staleIds.has(id) ? ', out of date' : ''}`;
 			list.push({
 				id,
@@ -456,7 +457,7 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 				highlighted: selected.has(r.start) || selected.has(r.end) || highlighted.has(r.id),
 				selected: chosen,
 				stale,
-				dim: (focus !== null && !focus.relationships.has(r.id)) || (matchIds !== null && !matchIds.has(r.start) && !matchIds.has(r.end)),
+				dim: !chosen && ((focus !== null && !focus.relationships.has(r.id)) || (matchIds !== null && !matchIds.has(r.start) && !matchIds.has(r.end))),
 				color: typeColors.get(r.type) ?? null,
 				sourceRadius: (diameters.get(r.start) ?? NODE_DIAMETER) / 2,
 				targetRadius: (diameters.get(r.end) ?? NODE_DIAMETER) / 2,

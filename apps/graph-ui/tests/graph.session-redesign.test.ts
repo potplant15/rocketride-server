@@ -147,10 +147,12 @@ test('collapse keeps a relationship that is still drawn in the inspector, and le
 test('a write marks the drawing out of date once: it is announced, the notice slot stays empty, and a refused action says the short refusal', async () => {
 	const { session, log } = rig();
 	session.load(base());
+	await session.expand('a');
+	assert.ok(session.getState().notice, 'a notice about the drawing is showing before the write');
 	session.markStale();
 	let s = session.getState();
 	assert.equal(s.stale, true);
-	assert.equal(s.notice, null, 'the out-of-date line is drawn from `stale`, not repeated as a notice');
+	assert.equal(s.notice, null, 'the out-of-date line is drawn from `stale`, not repeated as a notice, and no notice about the old drawing stays');
 	assert.equal(log.said.filter((t) => t === DATA_CHANGED_TEXT).length, 1, 'screen readers hear it once');
 	session.markStale();
 	assert.equal(log.said.filter((t) => t === DATA_CHANGED_TEXT).length, 1, 'and not again');
@@ -164,7 +166,7 @@ test('a write marks the drawing out of date once: it is announced, the notice sl
 	session.toggleSelect('b');
 	await session.findPath();
 	await session.connect();
-	assert.equal(log.recipes.length, 0);
+	assert.equal(log.recipes.length, 1, 'only the Expand sent before the write');
 	assert.equal(session.getState().notice?.text, STALE_REFUSAL_TEXT);
 });
 
@@ -247,6 +249,8 @@ test('on an engine with shortestPath, Find path makes ONE call, keeps the path i
 	s = session.getState();
 	assert.equal(s.path, null);
 	assert.equal(s.highlight.size, 0);
+	// The found-path sentence ("laid out left to right; other nodes dimmed") is no longer true: it does not stay.
+	assert.equal(s.notice?.text, 'Path cleared.');
 });
 
 test('a failed shortestPath call falls back to the depth search, which finds the path and is named as the method; an empty one is final', async () => {

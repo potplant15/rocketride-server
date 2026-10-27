@@ -146,14 +146,39 @@ function fmt(n: number): string {
 	return String(Object.is(rounded, -0) ? 0 : rounded);
 }
 
+/** What stands in for a character XML 1.0 cannot hold. */
+const REPLACEMENT = '\ufffd';
+
 /**
- * Text for XML content or an attribute value.
+ * Text for XML content or an attribute value. Besides escaping, every character XML 1.0 cannot hold becomes U+FFFD:
+ * a control character other than tab, line feed and carriage return, U+FFFE and U+FFFF, and half a surrogate pair. A
+ * property value can hold any of them, and one would make the whole SVG unreadable (and the PNG drawn from it fail).
  *
  * @param text - Any text.
- * @returns The text with `& < > " '` escaped.
+ * @returns The text, escaped and safe for XML.
  */
 function escapeXml(text: string): string {
-	return text.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] as string);
+	let out = '';
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = text.charCodeAt(i + 1);
+			if (next >= 0xdc00 && next <= 0xdfff) {
+				out += text[i] + text[i + 1];
+				i += 1;
+			} else {
+				out += REPLACEMENT;
+			}
+			continue;
+		}
+		if ((code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || (code >= 0xdc00 && code <= 0xdfff) || code === 0xfffe || code === 0xffff) {
+			out += REPLACEMENT;
+			continue;
+		}
+		const ch = text[i];
+		out += ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : ch === '"' ? '&quot;' : ch === "'" ? '&#39;' : ch;
+	}
+	return out;
 }
 
 /**

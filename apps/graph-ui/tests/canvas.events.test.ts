@@ -101,6 +101,9 @@ test('wiring: the handle centres, fits, re-lays out and exports; the layout foll
 	for (const member of ['centerOn(id: GraphId)', 'fit: refit', 'relayout: () => setRelayoutNonce((n) => n + 1)', 'exportImage: exportDrawing']) assert.ok(canvas.includes(member), member);
 	assert.match(canvas, /useGraphLayout\(model, props\.seedKey, props\.expandHint, \{ mode: props\.layoutMode \?\? 'force', nonce: relayoutNonce, keepPinned: props\.keepPinned \?\? true, root, path: path\?\.nodes \?\? null, pathTypes, diameter: largest \}\)/);
 	assert.match(canvas, /sourceRadius: \(diameters\.get\(r\.start\) \?\? NODE_DIAMETER\) \/ 2/);
+	// A selected node (or relationship) is never dimmed by a path or a search: its ring shows at full strength.
+	assert.match(canvas, /const dim = !selected\.has\(id\) && \(/);
+	assert.match(canvas, /dim: !chosen && \(/);
 	const hook = source('canvas', 'useGraphLayout.ts');
 	assert.match(hook, /if \(mode !== 'force'\) \{[\s\S]*?layeredLayout\(/, 'tree and left to right run on the main thread');
 	assert.doesNotMatch(hook, /from 'd3-force'/, 'the force simulation never runs here');

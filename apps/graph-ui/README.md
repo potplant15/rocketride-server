@@ -222,7 +222,11 @@ the part in view, on the canvas background, in the colours of the current theme
 and in the system font. Captions are cut at 24 characters, and relationship labels
 are written when no more than 200 relationships are drawn. A PNG is twice the
 drawing's size, or smaller for a very large drawing, so that it stays within what
-a browser canvas can hold (16.7 million pixels, Safari's limit).
+a browser canvas can hold (16.7 million pixels, Safari's limit). A drawing so large
+that its PNG would be under a quarter of its size (more than 65,536 units on a
+side, or more than about 16,000 by 16,000) gets no PNG: save the SVG, which has no
+such limit. A very wide Tree level (a few hundred neighbours of one node) can be
+that large.
 
 **Layout.** There are three: Force (the default), Tree (top down) and Left to
 right. Force is computed off the main thread, in a Web Worker running d3-force

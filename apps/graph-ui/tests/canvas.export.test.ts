@@ -59,6 +59,32 @@ test('text is escaped, long captions are cut, and a colour that cannot be resolv
 	assert.doesNotMatch(out.svg, /var\(/);
 });
 
+// XML 1.0 has no place for most control characters or for half a surrogate pair: one of them in a caption (a property
+// value can hold anything) makes the whole SVG unreadable, and the PNG, drawn from it, silently fails.
+test('characters XML cannot hold become U+FFFD, so one odd property value never breaks the file', () => {
+	const odd = `A\u0001B\u0008C\u000bD\u000cE\u001fF\ufffeG\uffffH\ud800I\udc00J`;
+	const out = buildSvg([nodeAt('a', 0, odd), nodeAt('b', 300, 'Tab\tand\nnewline', { badge: '\u0000' })], [edge({ type: 'T\u0002' })], THEME, { resolve, labels: true });
+	assert.ok(out);
+	assert.match(out.svg, />A\ufffdB\ufffdC\ufffdD\ufffdE\ufffdF\ufffdG\ufffdH\ufffdI\ufffdJ<\/text>/);
+	assert.match(out.svg, />T\ufffd<\/text>/);
+	assert.match(out.svg, />\ufffd<\/text>/, 'a badge too');
+	assert.match(out.svg, /Tab\tand\nnewline/, 'tab and newline are allowed in XML and kept');
+	const emoji = buildSvg([nodeAt('a', 0, 'Smile 😀')], [], THEME, { resolve, labels: true });
+	assert.match(emoji?.svg ?? '', />Smile 😀<\/text>/, 'a whole surrogate pair is kept');
+	// Nothing XML 1.0 forbids is left anywhere in the file.
+	for (let i = 0; i < out.svg.length; i++) {
+		const code = out.svg.charCodeAt(i);
+		assert.ok(!(code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) && code !== 0xfffe && code !== 0xffff, `U+${code.toString(16)} at ${i}`);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = out.svg.charCodeAt(i + 1);
+			assert.ok(next >= 0xdc00 && next <= 0xdfff, `half a surrogate pair at ${i}`);
+			i += 1;
+		} else {
+			assert.ok(!(code >= 0xdc00 && code <= 0xdfff), `half a surrogate pair at ${i}`);
+		}
+	}
+});
+
 test('what the canvas shows is what is exported: badges by mode, the selection ring, dashed out-of-date lines, dimmed elements, labels only when asked', () => {
 	const out = buildSvg(
 		[nodeAt('a', 0, 'A', { badgeMode: 'dot', selected: true }), nodeAt('b', 300, 'B', { badgeMode: 'none', dim: true, stale: true })],

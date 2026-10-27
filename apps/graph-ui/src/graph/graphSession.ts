@@ -638,7 +638,8 @@ export function createGraphSession(deps: IGraphSessionDeps): IGraphSession {
 		clearPath() {
 			if (state.path === null) return;
 			set({ path: null, highlight: new Set() });
-			deps.announce('Path cleared.');
+			// Said as the notice too: the found-path sentence ("laid out left to right; other nodes dimmed") is no longer true.
+			say('Path cleared.');
 		},
 
 		stopWaiting() {
@@ -668,7 +669,8 @@ export function createGraphSession(deps: IGraphSessionDeps): IGraphSession {
 			epoch += 1;
 			search?.stop();
 			search = null;
-			set({ stale: true, busy: null, progress: null, highlight: new Set(), path: null });
+			// Every notice was about the drawing that is now out of date (a found path, an expansion): none of it stays.
+			set({ stale: true, busy: null, progress: null, highlight: new Set(), path: null, notice: null });
 			// Announced, not set as the notice: the out-of-date line is rendered from `stale`, once.
 			deps.announce(DATA_CHANGED_TEXT);
 		},
