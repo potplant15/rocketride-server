@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildSvg, pngScale } from '../src/canvas/exportImage';
+import { buildSvg, exportResult, pngScale } from '../src/canvas/exportImage';
 import type { IExportEdge, IExportNode, IExportTheme } from '../src/canvas/exportImage';
 import { edgeSlots } from '../src/graph/geometry';
 
@@ -108,4 +108,29 @@ test('nothing drawn, nothing to export; the PNG scale stays inside what a browse
 	assert.ok(pngScale(9000, 9000) ** 2 * 9000 * 9000 <= 16_777_216 + 1, 'within Safari\'s canvas area');
 	assert.ok(pngScale(3000, 2000) ** 2 * 3000 * 2000 <= 16_777_216 + 1);
 	assert.equal(pngScale(2e6, 10), 0, 'too big to draw at any useful size');
+});
+
+// "No image" has several causes and the view words each one: only a PNG that would be under a quarter of its size is
+// "too large"; nothing laid out yet is "not ready"; a browser that could not draw it is "render failed".
+test('exportResult says why there is no image: too large only for a PNG past the canvas limit, not ready with nothing drawn, render failed when the browser could not draw it', async () => {
+	const built = buildSvg([nodeAt('a', 0, 'A'), nodeAt('b', 300, 'B')], [edge()], THEME, { resolve, labels: true });
+	assert.ok(built);
+	const png = new Blob(['png'], { type: 'image/png' });
+	const asked: number[] = [];
+	const ok = await exportResult('png', built, async (_svg, _w, _h, scale) => {
+		asked.push(scale);
+		return png;
+	});
+	assert.equal(ok.blob, png);
+	assert.deepEqual(asked, [2], 'drawn at twice the size');
+	const svg = await exportResult('svg', built, async () => assert.fail('an SVG is not rasterised'));
+	assert.equal(svg.blob?.type, 'image/svg+xml');
+	assert.equal(await svg.blob?.text(), built.svg);
+	assert.deepEqual(await exportResult('png', null, async () => png), { blob: null, reason: 'not-ready' });
+	assert.deepEqual(await exportResult('svg', null, async () => png), { blob: null, reason: 'not-ready' });
+	const huge = { svg: '<svg/>', width: 70_000, height: 100 };
+	assert.deepEqual(await exportResult('png', huge, async () => assert.fail('not tried')), { blob: null, reason: 'too-large' });
+	assert.equal((await exportResult('svg', huge, async () => png)).blob?.type, 'image/svg+xml', 'the SVG has no size limit');
+	assert.deepEqual(await exportResult('png', built, async () => null), { blob: null, reason: 'render-failed' }, 'no 2D context, an image that did not load, toBlob gave nothing');
+	assert.deepEqual(await exportResult('png', built, async () => { throw new Error('tainted'); }), { blob: null, reason: 'render-failed' });
 });

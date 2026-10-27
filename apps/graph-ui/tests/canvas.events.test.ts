@@ -121,3 +121,14 @@ test('wiring: Escape is the canvas\'s only while something can be cleared, and t
 	assert.match(focusNode, /\.react-flow__node\[data-id=/, 'scoped to node elements (relationship ids overlap node ids)');
 	assert.match(focusNode, /el\.focus\(\{ preventScroll: true \}\);/);
 });
+
+test('wiring: the canvas says once when it is ready (mounted, first layout placed), and its export reports why there is no image', () => {
+	const canvas = source('canvas', 'GraphCanvas.tsx');
+	assert.match(canvas, /exportImage\(format: 'svg' \| 'png'\): Promise<ExportResult>;/);
+	assert.match(canvas, /onReady\?\(\): void;/);
+	const ready = canvas.slice(canvas.indexOf('const readyTold = useRef(false);'), canvas.indexOf('}, [layout.version]);', canvas.indexOf('const readyTold = useRef(false);')));
+	assert.match(ready, /if \(layout\.version === 0 \|\| readyTold\.current\) return;\s*readyTold\.current = true;\s*latest\.current\.onReady\?\.\(\);/);
+	const drawing = canvas.slice(canvas.indexOf('const exportDrawing = useCallback'), canvas.indexOf('useImperativeHandle('));
+	assert.match(drawing, /if \(!el\) return \{ blob: null, reason: 'not-ready' \};/);
+	assert.match(drawing, /return exportResult\(format, built, rasterise\);/);
+});
