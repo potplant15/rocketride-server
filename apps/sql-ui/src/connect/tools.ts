@@ -44,10 +44,12 @@
 //                             30 s pool timeout, plus the 10 s pad)
 //   commit/rollback  60 s     (each first waits for the session's lock, behind
 //                             a statement still running in it)
-//   an Apply's       300 s EACH (the node's idle-transaction timeout: a
-//   statements                stalled statement is not waited on longer than
-//                             the node would keep an abandoned transaction,
-//                             and a long plan is not cut off as a whole)
+//   an Apply's       inside a transaction, 300 s EACH at most (the node's
+//   statements       idle-transaction timeout: a stalled statement is not
+//                    waited on longer than the node would keep an abandoned
+//                    transaction, and a long plan is not cut off as a
+//                    whole); committed one by one, as `execute` above (no
+//                    transaction to outlast, so a long ALTER is not cut off)
 //   get_sql          120 s    (Ask: the node's LLM writes a query and the node
 //                             checks it with EXPLAIN, up to five drafts; it
 //                             executes nothing, so a TASK_STOPPED refusal may
@@ -95,8 +97,9 @@ export const STATEMENT_WAIT_PAD_MS = DEFAULT_TIMEOUT_PAD_MS;
 export const NODE_TX_IDLE_MS = 300_000;
 
 /**
- * The longest one statement of an Apply is waited for (less when the node
- * publishes a shorter statement deadline). The node's reaper skips a session
+ * The longest one statement of an Apply's transaction is waited for (less
+ * when the node publishes a shorter statement deadline); a statement that
+ * commits on its own waits as `execute` does. The node's reaper skips a session
  * while a statement runs in it, so only the gap BETWEEN calls has to stay
  * under its idle timeout, which the app's back-to-back calls do: each
  * statement gets its own wait, and a long plan is not cut off as a whole. A

@@ -315,8 +315,13 @@ class SqlToolSession implements SqlSession {
 
 	/**
 	 * Send one statement of an apply, once. It waits the node's published
-	 * statement deadline (plus pad), never more than the node keeps an idle
-	 * transaction ({@link APPLY_STATEMENT_WAIT_MS}).
+	 * statement deadline (plus pad), or, when the node publishes none, as
+	 * long as it takes: the wait any statement gets, and the designer's
+	 * before applyBatch. Only inside a transaction is that capped, at the
+	 * time the node keeps an idle transaction ({@link APPLY_STATEMENT_WAIT_MS}):
+	 * a statement committed on its own holds no transaction, and a long
+	 * ALTER cut off at 5 minutes would be reported "may have run" and
+	 * dropped from the plan while it kept running.
 	 *
 	 * @param statement - The statement.
 	 * @param sessionId - The transaction session, or null to commit it on its own.
@@ -329,7 +334,8 @@ class SqlToolSession implements SqlSession {
 			...(params && params.length > 0 ? { params } : {}),
 			...(sessionId !== null ? { session_id: sessionId } : {}),
 		};
-		const waitMs = Math.min(statementWaitMs(this.session.info()) ?? APPLY_STATEMENT_WAIT_MS, APPLY_STATEMENT_WAIT_MS);
+		const deadline = statementWaitMs(this.session.info());
+		const waitMs = sessionId === null ? deadline : Math.min(deadline ?? APPLY_STATEMENT_WAIT_MS, APPLY_STATEMENT_WAIT_MS);
 		return this.session.invoke<SqlExecuteResult>('execute', input, { idempotent: false, timeoutMs: waitMs });
 	}
 

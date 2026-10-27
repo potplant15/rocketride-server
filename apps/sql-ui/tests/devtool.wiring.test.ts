@@ -332,6 +332,7 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			// A row count that does not match, so the apply's rollback is sent too.
 			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], { atomic: true });
 			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
+			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $2', params: [2] }], { atomic: false });
 			await session.execute('SELECT 1');
 			const bus = (tool: string): number | undefined => toolRequests(r.engine, tool).at(-1)?.timeoutMs;
 			assert.equal(bus('dialect'), DIALECT_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
@@ -345,6 +346,12 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			const applied = toolRequests(r.engine, 'execute').filter((request) => (request.params as { input: { session_id?: string } }).input.session_id !== undefined);
 			assert.equal(applied.length, 2);
 			for (const request of applied) assert.equal(request.timeoutMs, APPLY_STATEMENT_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS, 'each statement of an apply waits the node\'s idle-transaction time');
+			// A statement committed on its own holds no transaction: it waits as
+			// any statement does, the 24 h cap on the bus (DA-R2 I2).
+			const own = toolRequests(r.engine, 'execute').filter((request) => (request.params as { input: { sql: string; session_id?: string } }).input.sql.endsWith('$2'));
+			assert.equal(own.length, 1);
+			assert.equal((own[0]!.params as { input: { session_id?: string } }).input.session_id, undefined);
+			assert.equal(own[0]!.timeoutMs, UNBOUNDED_TOOL_TIMEOUT_MS);
 			assert.equal(DIALECT_WAIT_MS, 15_000);
 			assert.equal(GET_SCHEMA_WAIT_MS, 60_000);
 			assert.equal(REFRESH_SCHEMA_WAIT_MS, 135_000);
@@ -366,11 +373,12 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			await session.refreshSchema();
 			await session.execute('SELECT 1');
 			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
-			assert.ok(r.frameCalls.some((call) => call.op === 'sql.applyBatch'));
-			for (const call of r.frameCalls) {
-				// An apply's frame waits for its own statements (one wait each); the named entry is the longest one.
-				const expected = call.op === 'sql.applyBatch' ? applyBatchTimeoutMs(1) : SQL_OP_TIMEOUT_MS[call.op as keyof typeof SQL_OP_TIMEOUT_MS];
-				assert.equal(call.timeoutMs, expected, `${call.op} frame timeout`);
+			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: false });
+			// An apply's frame waits for its own statements (one wait each, by
+			// whether they ride a transaction); the named entry is the longest one.
+			assert.deepEqual(r.frameCalls.filter((call) => call.op === 'sql.applyBatch').map((call) => call.timeoutMs), [applyBatchTimeoutMs(1, true), applyBatchTimeoutMs(1, false)]);
+			for (const call of r.frameCalls.filter((c) => c.op !== 'sql.applyBatch')) {
+				assert.equal(call.timeoutMs, SQL_OP_TIMEOUT_MS[call.op as keyof typeof SQL_OP_TIMEOUT_MS], `${call.op} frame timeout`);
 			}
 			const at = (op: keyof typeof SQL_OP_TIMEOUT_MS): number => SQL_OP_TIMEOUT_MS[op];
 			const busOf = (wait: number): number => wait + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS;
@@ -394,10 +402,18 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			// the 24 h cap); commit; and a rollback after a failure. The frame
 			// passes the timeout for its own count; the named entry is the longest.
 			const applyOf = (n: number): number => RESOLVE_BUDGET_MS + busOf(DIALECT_WAIT_MS) + busOf(BEGIN_WAIT_MS) + n * busOf(APPLY_STATEMENT_WAIT_MS) + 2 * busOf(END_TX_WAIT_MS) + FRAME_OP_MARGIN_MS;
-			assert.equal(applyBatchTimeoutMs(3), applyOf(3));
-			assert.equal(at('sql.applyBatch'), applyOf(MAX_APPLY_STATEMENTS));
+			assert.equal(applyBatchTimeoutMs(3, true), applyOf(3));
 			assert.equal(APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS);
-			assert.ok(applyBatchTimeoutMs(1) < 15 * 60_000, `${applyBatchTimeoutMs(1)} ms for one statement`);
+			assert.ok(applyBatchTimeoutMs(1, true) < 15 * 60_000, `${applyBatchTimeoutMs(1, true)} ms for one statement`);
+			// Statement by statement there is no transaction to outlast: each
+			// statement waits as any statement does (the 24 h cap on the bus),
+			// and no begin, commit or rollback is sent (DA-R2 I2). A long list is
+			// held to the longest real timer.
+			const eachOf = (n: number): number => Math.min(RESOLVE_BUDGET_MS + busOf(DIALECT_WAIT_MS) + n * UNBOUNDED_TOOL_TIMEOUT_MS, MAX_TIMER_MS - FRAME_OP_MARGIN_MS) + FRAME_OP_MARGIN_MS;
+			assert.equal(applyBatchTimeoutMs(1, false), eachOf(1));
+			assert.ok(applyBatchTimeoutMs(1, false) > UNBOUNDED_TOOL_TIMEOUT_MS);
+			assert.equal(applyBatchTimeoutMs(MAX_APPLY_STATEMENTS, false), MAX_TIMER_MS);
+			assert.equal(at('sql.applyBatch'), Math.max(applyOf(MAX_APPLY_STATEMENTS), eachOf(MAX_APPLY_STATEMENTS)));
 			assert.ok(at('sql.applyBatch') <= MAX_TIMER_MS);
 			for (const op of Object.keys(SQL_OP_TIMEOUT_MS) as Array<keyof typeof SQL_OP_TIMEOUT_MS>) assert.notEqual(at(op), 120_000, op);
 		} finally {

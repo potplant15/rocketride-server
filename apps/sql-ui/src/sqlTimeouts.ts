@@ -42,7 +42,7 @@
 // =============================================================================
 
 import { DEFAULT_RETRY_WINDOW_MS } from 'shared/explorer/connect/session';
-import { GET_TASKS_TIMEOUT_MS, frameOpTimeoutMs, toolCallBudgetMs } from 'shared/explorer/devtool/timeouts';
+import { FRAME_OP_MARGIN_MS, GET_TASKS_TIMEOUT_MS, MAX_TIMER_MS, frameOpTimeoutMs, toolCallBudgetMs } from 'shared/explorer/devtool/timeouts';
 import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, MAX_APPLY_STATEMENTS, REFRESH_SCHEMA_WAIT_MS, GET_SQL_WAIT_MS } from './connect/tools';
 
 // =============================================================================
@@ -104,17 +104,26 @@ export const SAVED_QUERIES_LOAD_WAIT_MS = 3 * 2 * FS_TIMEOUT_MS + 1_000 + 3_000;
 // =============================================================================
 
 /**
- * The frame's timeout for an apply of `count` statements: resolve, the
- * gate's one bounded `dialect` call, `begin`, each statement's own wait
- * (APPLY_STATEMENT_WAIT_MS at most: the node's 300 s idle-transaction time,
- * never the statement's 24 h cap), then `commit`, and a `rollback` after a
- * failure (a failed commit is followed by one too). Never repeated (T10).
+ * The frame's timeout for an apply of `count` statements. Never repeated (T10).
+ *
+ * In one transaction: resolve, the gate's one bounded `dialect` call,
+ * `begin`, each statement's own wait (APPLY_STATEMENT_WAIT_MS at most: the
+ * node's 300 s idle-transaction time, never the statement's 24 h cap), then
+ * `commit`, and a `rollback` after a failure (a failed commit is followed by
+ * one too).
+ *
+ * Statement by statement: resolve, the `dialect` call, and each statement's
+ * own wait, which is any statement's (the 24 h cap on the bus): there is no
+ * transaction to outlast, and no begin, commit or rollback. A long list is
+ * held to the longest timer there is.
  *
  * @param count - How many statements the apply carries.
+ * @param atomic - Whether it asks for one transaction.
  * @returns The frame's timeout (ms).
  */
-export function applyBatchTimeoutMs(count: number): number {
+export function applyBatchTimeoutMs(count: number, atomic: boolean): number {
 	const statements = Math.max(1, Math.min(Math.trunc(count), MAX_APPLY_STATEMENTS));
+	if (!atomic) return frameOpTimeoutMs(Math.min(RESOLVE_BUDGET_MS + toolCallBudgetMs(DIALECT_WAIT_MS) + statements * toolCallBudgetMs(null), MAX_TIMER_MS - FRAME_OP_MARGIN_MS));
 	return frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(DIALECT_WAIT_MS) + toolCallBudgetMs(BEGIN_WAIT_MS) + statements * toolCallBudgetMs(APPLY_STATEMENT_WAIT_MS) + 2 * toolCallBudgetMs(END_TX_WAIT_MS));
 }
 
@@ -132,9 +141,10 @@ export const SQL_OP_TIMEOUT_MS = {
 	// refresh_schema, then (on any failure) get_schema.
 	'sql.refreshSchema': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(REFRESH_SCHEMA_WAIT_MS) + toolCallBudgetMs(GET_SCHEMA_WAIT_MS)),
 	'sql.dialect': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(DIALECT_WAIT_MS)),
-	// The longest apply: MAX_APPLY_STATEMENTS statements (see
-	// applyBatchTimeoutMs; a frame passes the timeout for its own count).
-	'sql.applyBatch': applyBatchTimeoutMs(MAX_APPLY_STATEMENTS),
+	// The longest apply: MAX_APPLY_STATEMENTS statements, whichever way they
+	// are sent (see applyBatchTimeoutMs; a frame passes the timeout for its
+	// own count and mode).
+	'sql.applyBatch': Math.max(applyBatchTimeoutMs(MAX_APPLY_STATEMENTS, true), applyBatchTimeoutMs(MAX_APPLY_STATEMENTS, false)),
 	'sql.getService': frameOpTimeoutMs(SERVICE_TIMEOUT_MS),
 	'sql.validate': frameOpTimeoutMs(VALIDATE_TIMEOUT_MS),
 	'sql.envKeys': frameOpTimeoutMs(ENV_KEYS_TIMEOUT_MS),

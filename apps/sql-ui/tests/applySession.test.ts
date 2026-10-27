@@ -40,7 +40,7 @@ import type { IExplorerClient, IExplorerEndpoint } from 'shared/explorer/types';
 import { ExplorerToolError } from 'shared/explorer/errors';
 import type { SqlApplyStatement, SqlSession } from '../src/connect';
 import { createSqlSession } from '../src/connect/session';
-import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, END_TX_WAIT_MS, NODE_TX_IDLE_MS, TRANSACTIONS_UNAVAILABLE_CODE, isTransactionsUnavailable } from '../src/connect/tools';
+import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, END_TX_WAIT_MS, NODE_TX_IDLE_MS, STATEMENT_WAIT_PAD_MS, TRANSACTIONS_UNAVAILABLE_CODE, isTransactionsUnavailable } from '../src/connect/tools';
 import { currentRows, describeEndpoint, registerEndpoint, resetEndpoints, sqlEndpoints } from './support';
 
 /** The SDK is told to wait this much longer than the session (shared session.ts). */
@@ -223,6 +223,68 @@ describe('apply in one transaction', () => {
 		assert.deepEqual(timeout('rollback'), [END_TX_WAIT_MS + SDK_SLACK_MS]);
 		// Each statement gets its own wait (not what is left of a shared one), so a long plan is not cut off as a whole.
 		assert.deepEqual(timeout('execute'), [APPLY_STATEMENT_WAIT_MS + SDK_SLACK_MS, APPLY_STATEMENT_WAIT_MS + SDK_SLACK_MS, APPLY_STATEMENT_WAIT_MS + SDK_SLACK_MS]);
+	});
+});
+
+// =============================================================================
+// DA-R2 I2: ONLY A TRANSACTION CAPS A STATEMENT'S WAIT
+// =============================================================================
+//
+// The 5-minute cap is the node's idle-transaction time: a statement inside a
+// transaction is not waited on longer than the node would keep that
+// transaction. A statement that commits on its own holds no transaction, and
+// before applyBatch the designer sent each one with a plain execute: the
+// node's published deadline plus the pad, or no client timeout at all. Capped
+// at 5 minutes, a long MySQL ALTER was reported "may have run" and dropped
+// from the plan while it kept running.
+// =============================================================================
+
+/**
+ * Make the node publish a statement deadline: probe the endpoint through a
+ * client whose `dialect` answer carries it, as the session reads it there.
+ *
+ * @param deadlineMs - The deadline the node publishes.
+ */
+async function publishDeadline(deadlineMs: number): Promise<void> {
+	resetEndpoints();
+	await registerEndpoint('apply-deadline');
+	const prober: IExplorerClient = {
+		getTasks: async () => currentRows() as unknown as Array<Record<string, unknown>>,
+		getTaskPipeline: async () => undefined,
+		tool: async () => ({ dialect: 'mysql', limits: { statement_timeout_ms: deadlineMs } }) as never,
+	};
+	await sqlEndpoints.refresh(prober, { reprobe: true });
+	endpoint = sqlEndpoints.getState().endpoints.find((e) => e.projectId === 'apply-deadline')!;
+}
+
+describe('DA-R2 I2: the per-statement path waits as a statement always did; only a transaction caps it', () => {
+	it('a node that publishes no deadline: each statement committed on its own gets no client timeout', async () => {
+		const fake = fakeClient(node());
+		await sessionOn(fake.client).applyBatch(EDITS, { atomic: false });
+		const waits = fake.calls.filter((call) => call.tool === 'execute').map((call) => call.timeout);
+		assert.deepEqual(waits, [undefined, undefined, undefined], 'not the transaction\'s 5-minute cap');
+	});
+
+	it('a node that publishes a deadline longer than 5 minutes: the statement waits all of it, plus the pad; inside a transaction it is still capped', async () => {
+		const deadline = 2 * 60 * 60_000;
+		await publishDeadline(deadline);
+		const fake = fakeClient(node());
+		const session = sessionOn(fake.client);
+		await session.applyBatch(EDITS.slice(0, 1), { atomic: false });
+		await session.applyBatch(EDITS.slice(0, 1), { atomic: true });
+		const waits = fake.calls.filter((call) => call.tool === 'execute').map((call) => [call.input.session_id === undefined ? 'own' : 'tx', call.timeout]);
+		assert.deepEqual(waits, [['own', deadline + STATEMENT_WAIT_PAD_MS + SDK_SLACK_MS], ['tx', APPLY_STATEMENT_WAIT_MS + SDK_SLACK_MS]]);
+	});
+
+	it('a node that publishes a shorter deadline: both paths wait that', async () => {
+		const deadline = 30_000;
+		await publishDeadline(deadline);
+		const fake = fakeClient(node());
+		const session = sessionOn(fake.client);
+		await session.applyBatch(EDITS.slice(0, 1), { atomic: false });
+		await session.applyBatch(EDITS.slice(0, 1), { atomic: true });
+		const waits = fake.calls.filter((call) => call.tool === 'execute').map((call) => call.timeout);
+		assert.deepEqual(waits, [deadline + STATEMENT_WAIT_PAD_MS + SDK_SLACK_MS, deadline + STATEMENT_WAIT_PAD_MS + SDK_SLACK_MS]);
 	});
 });
 

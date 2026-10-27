@@ -236,7 +236,7 @@ function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint, owne
 				...(statement.expect !== undefined ? { expect: statement.expect } : {}),
 			})),
 			atomic: opts.atomic,
-		}, { timeoutMs: applyBatchTimeoutMs(statements.length) }),
+		}, { timeoutMs: applyBatchTimeoutMs(statements.length, opts.atomic) }),
 		getSql: (question: string): Promise<SqlGetSqlResult> => caller.callReply('sql.getSql', { connId, question }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.getSql'] }),
 	};
 }
