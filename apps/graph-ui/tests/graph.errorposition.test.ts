@@ -30,6 +30,25 @@ test('AGE: a syntax error gives the first position, with its 0-based column made
 	assert.deepEqual(failurePosition('Invalid Cypher for Apache AGE\nCypher syntax error: line 3:7 mismatched input', 'age'), { line: 3, column: 8 });
 });
 
+/** The text FalkorDB 4.22.2 returned live for `MATCH (n RETURN n` (gxr live tester, err-fal). */
+const FALKOR_LIVE = "Query failed\nerrMsg: Invalid input 'R': expected a label, '{', a parameter or ')' line: 1, column: 10, offset: 9 errCtx: MATCH (n RETURN n) errCtxOffset: 9";
+
+test('FalkorDB 4.22.2: the live error text gives line 1, column 10, and the marker underlines RETURN', () => {
+	assert.deepEqual(failurePosition(FALKOR_LIVE, 'falkordb'), { line: 1, column: 10 });
+	assert.deepEqual(failurePosition(FALKOR_LIVE, null), { line: 1, column: 10 });
+	assert.equal(failurePosition(FALKOR_LIVE, 'neo4j'), null);
+	assert.equal(failurePosition(FALKOR_LIVE, 'age'), null);
+	const buffer = 'MATCH (n RETURN n';
+	const [statement] = splitStatements(buffer);
+	const at = locateFailure(buffer, statement, FALKOR_LIVE, 'falkordb');
+	assert.ok(at);
+	assert.equal(buffer.slice(at.start, at.end), 'RETURN');
+});
+
+test('a position-looking phrase in FalkorDB\'s echo of the query is not read', () => {
+	assert.equal(failurePosition("Query failed\nerrMsg: Invalid input errCtx: RETURN 'line: 1, column: 5, offset: 4' errCtxOffset: 9", 'falkordb'), null);
+});
+
 test('FalkorDB and every text without a position give null', () => {
 	for (const text of Object.values(falkor)) assert.equal(failurePosition(text, 'falkordb'), null);
 	assert.equal(failurePosition(neo4j.refused_write, 'neo4j'), null);
