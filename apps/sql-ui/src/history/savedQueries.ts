@@ -108,10 +108,20 @@ export type SavedQueryEdit =
 /** Where the dev tool's controller keeps saved queries: its file, this session only (the file could not be read), or nowhere (nobody signed in). */
 export type SavedQueriesStorage = 'file' | 'session' | 'none';
 
+/** Where reading one connection's saved queries stands. */
+export type SavedQueriesReadState =
+	| { status: 'loading' }
+	| { status: 'ready' }
+	| { status: 'failed'; message: string };
+
 /** One connection's saved queries, as the views use them (from SqlEnv). */
 export interface SqlSavedQueriesApi {
 	/** Subscribe to one connection's saved queries, newest first (a hook). */
 	useSavedQueries(endpoint: SqlEndpoint): SavedQuery[];
+	/** Subscribe to where reading them stands (a hook): an empty list means "none" only once this is ready. */
+	useReadState(endpoint: SqlEndpoint): SavedQueriesReadState;
+	/** Read one connection's saved queries again (after a failure). */
+	retry(endpoint: SqlEndpoint): void;
 	/** Where saved queries are kept, in one sentence: the panel's privacy line (a hook). */
 	usePrivacyNotice(): string;
 	/** Save one; rejects, saving nothing, past a cap or when nobody is signed in. */

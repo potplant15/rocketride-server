@@ -296,6 +296,7 @@ export const SavedQueriesPanel: React.FC<SavedQueriesPanelProps> = ({ endpoint, 
 	const pageNav = useSqlPageNav();
 	const saved = useSqlEnv().savedQueries;
 	const queries = saved.useSavedQueries(endpoint);
+	const readState = saved.useReadState(endpoint);
 	const privacyNotice = saved.usePrivacyNotice();
 
 	const [search, setSearch] = useState('');
@@ -355,6 +356,21 @@ export const SavedQueriesPanel: React.FC<SavedQueriesPanelProps> = ({ endpoint, 
 	 * @returns The list content.
 	 */
 	const renderList = (): React.ReactNode => {
+		// "None yet" only once a read has answered: before that, or after a
+		// failed read, an empty list says nothing about what is saved.
+		if (queries.length === 0 && readState.status === 'loading') {
+			return <EmptyState icon={<DatabaseIcon />} title="Loading saved queries…" description="Reading this connection's saved queries." />;
+		}
+		if (queries.length === 0 && readState.status === 'failed') {
+			return (
+				<EmptyState
+					icon={<DatabaseIcon />}
+					title="Could not read saved queries"
+					description={readState.message}
+					action={<Button variant="secondary" small onClick={() => saved.retry(endpoint)}>Retry</Button>}
+				/>
+			);
+		}
 		if (queries.length === 0) {
 			return (
 				<EmptyState
@@ -428,6 +444,14 @@ export const SavedQueriesPanel: React.FC<SavedQueriesPanelProps> = ({ endpoint, 
 						onChange={(event) => setSearch(event.target.value)}
 					/>
 					{error && <Banner variant="error">{error}</Banner>}
+					{/* A list read before is still shown; the newest read failed. */}
+					{queries.length > 0 && readState.status === 'failed' && (
+						<Banner variant="warning">
+							{`These may be out of date: ${readState.message}`}
+							{' '}
+							<Button variant="ghost" small onClick={() => saved.retry(endpoint)}>Retry</Button>
+						</Banner>
+					)}
 				</div>
 
 				<Section label={`Saved (${visible.length})`}>

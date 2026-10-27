@@ -46,16 +46,23 @@ import { useSyncExternalStore } from 'react';
 import { ExplorerToolError } from 'shared/explorer/errors';
 import type { IPrefsAccessor } from 'shared/explorer/history/types';
 import { APP_SAVED_QUERIES_NOTICE, SAVED_QUERIES_PREF, editSavedQueriesIn, readSavedQueriesBag } from './savedQueries';
-import type { SavedQueriesBag, SavedQuery, SavedQueryEdit, SqlSavedQueriesApi } from './savedQueries';
+import type { SavedQueriesBag, SavedQueriesReadState, SavedQuery, SavedQueryEdit, SqlSavedQueriesApi } from './savedQueries';
 import type { SqlEndpoint } from '../connect';
 
 /** Shared empty list, so an unknown connection keeps a stable snapshot. */
 const NO_QUERIES: SavedQuery[] = [];
 
-/** The full app's saved queries, with a read outside React (tests, diagnostics). */
+/** The read states (shared, so snapshots stay stable). */
+const READY: SavedQueriesReadState = { status: 'ready' };
+const NOBODY: SavedQueriesReadState = { status: 'failed', message: 'Not signed in to a RocketRide server.' };
+const ANOTHER: SavedQueriesReadState = { status: 'failed', message: 'Another account signed in after this page read its saved queries. Reload the page to see this account\'s saved queries.' };
+
+/** The full app's saved queries, with reads outside React (tests, diagnostics). */
 export interface LocalSavedQueries extends SqlSavedQueriesApi {
 	/** One connection's saved queries for the account signed in now (outside React). */
 	entriesOf(endpoint: SqlEndpoint): SavedQuery[];
+	/** Where reading stands (outside React): at once, unless nobody or another account is signed in. */
+	readStateOf(endpoint: SqlEndpoint): SavedQueriesReadState;
 }
 
 /**
@@ -111,6 +118,17 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 	 * @param change - The change.
 	 * @param verb - What it does, for the refusal ('saved', 'renamed', 'deleted').
 	 */
+	/**
+	 * Where reading stands: the preferences answer at once, so only who is
+	 * signed in can make it fail.
+	 *
+	 * @returns The read state.
+	 */
+	const readState = (): SavedQueriesReadState => {
+		if (ownerNow() === null) return NOBODY;
+		return owned() === null ? ANOTHER : READY;
+	};
+
 	const edit = async (endpoint: SqlEndpoint, change: SavedQueryEdit, verb: string): Promise<void> => {
 		if (ownerNow() === null) throw new ExplorerToolError({ kind: 'unavailable', tool: 'savedQueryEdit', message: `Not signed in to a RocketRide server, so nothing was ${verb}.` });
 		// Checked right before the write: nothing awaits between it and the write.
@@ -125,10 +143,16 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 		useSavedQueries(endpoint) {
 			return useSyncExternalStore(subscribe, () => bag()[endpoint.key] ?? NO_QUERIES);
 		},
+		useReadState() {
+			return useSyncExternalStore(subscribe, readState);
+		},
+		// Nothing to read again: the preferences answer at once; a re-render shows what they hold now.
+		retry: () => listeners.forEach((listener) => listener()),
 		usePrivacyNotice: () => APP_SAVED_QUERIES_NOTICE,
 		save: (endpoint, query) => edit(endpoint, { action: 'add', query }, 'saved'),
 		rename: (endpoint, id, name) => edit(endpoint, { action: 'rename', id, name }, 'renamed'),
 		remove: (endpoint, id) => edit(endpoint, { action: 'remove', id }, 'deleted'),
 		entriesOf: (endpoint) => bag()[endpoint.key] ?? NO_QUERIES,
+		readStateOf: () => readState(),
 	};
 }

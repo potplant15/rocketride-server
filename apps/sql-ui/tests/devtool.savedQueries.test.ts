@@ -316,6 +316,96 @@ describe('saved queries in a dev tool: frames follow a small revision topic, and
 	});
 });
 
+describe('saved queries: what a view says while it reads (review M1, M2)', () => {
+	/**
+	 * A caller whose `sql.savedQueries` answers come from a script, one per read.
+	 *
+	 * @param reads - Each read's answer in turn: a list, an error, or 'never' (an orphaned read).
+	 * @returns The caller and the ops it saw.
+	 */
+	const scriptedCaller = (reads: Array<SavedQuery[] | Error | 'never'>) => {
+		const ops: string[] = [];
+		let stored: SavedQuery[] = [];
+		const caller = {
+			callReply: (op: string, params: { edit?: { query: SavedQuery } }) => {
+				ops.push(op);
+				if (op === 'sql.savedQueries') {
+					const next = reads.shift();
+					if (next === 'never') return new Promise(() => undefined);
+					if (next instanceof Error) return Promise.reject(next);
+					return Promise.resolve({ storage: 'file', queries: next ?? stored });
+				}
+				stored = [params.edit!.query, ...stored];
+				return Promise.resolve(null);
+			},
+		};
+		return { caller: caller as never, ops };
+	};
+
+	it('the latest read wins: a read that is never answered does not hold back the next one (CE4)', async () => {
+		const { caller, ops } = scriptedCaller(['never']);
+		const view = createRemoteSavedQueries({ caller, owner: () => FP_A });
+		view.watch(ENDPOINT);
+		await view.save(ENDPOINT, saved('q'));
+		await until(() => view.entriesOf(ENDPOINT).length === 1, 'the save to show');
+		assert.deepEqual(ops, ['sql.savedQueries', 'sql.savedQueryEdit', 'sql.savedQueries']);
+		assert.equal(view.readStateOf(ENDPOINT).status, 'ready');
+	});
+
+	it('an older answer that arrives after a newer one is dropped', async () => {
+		let release: (value: unknown) => void = () => undefined;
+		const answers: Array<Promise<unknown>> = [new Promise((resolve) => { release = resolve; }), Promise.resolve({ storage: 'file', queries: [saved('new')] })];
+		const view = createRemoteSavedQueries({ caller: { callReply: () => answers.shift()! } as never, owner: () => FP_A });
+		view.watch(ENDPOINT);
+		view.retry(ENDPOINT);
+		await until(() => view.entriesOf(ENDPOINT).length === 1, 'the newer read');
+		release({ storage: 'file', queries: [saved('old'), saved('older')] });
+		await settle();
+		assert.deepEqual(view.entriesOf(ENDPOINT).map((q) => q.id), ['new']);
+	});
+
+	it('loading until the first answer; a failed read says why, and Retry reads again', async () => {
+		const failure = new ExplorerToolError({ kind: 'unavailable', tool: 'savedQueries', message: 'Your saved queries could not be read from the server yet. Try again.' });
+		let fail: (error: Error) => void = () => undefined;
+		const pending = new Promise<never>((_resolve, reject) => { fail = reject; });
+		const reads: Array<Promise<unknown>> = [pending, Promise.resolve({ storage: 'file', queries: [saved('s1')] })];
+		const view = createRemoteSavedQueries({ caller: { callReply: () => reads.shift()! } as never, owner: () => FP_A });
+		view.watch(ENDPOINT);
+		assert.deepEqual(view.readStateOf(ENDPOINT), { status: 'loading' });
+		fail(failure);
+		await until(() => view.readStateOf(ENDPOINT).status === 'failed', 'the failure');
+		assert.deepEqual(view.readStateOf(ENDPOINT), { status: 'failed', message: failure.message });
+		assert.deepEqual(view.entriesOf(ENDPOINT), []);
+		view.retry(ENDPOINT);
+		await until(() => view.readStateOf(ENDPOINT).status === 'ready', 'the retry');
+		assert.deepEqual(view.entriesOf(ENDPOINT).map((q) => q.id), ['s1']);
+	});
+
+	it('the full app reads at once; nobody signed in, or another account, is a failure that says why', () => {
+		const prefs: IPrefsAccessor = { getPref: () => ({ [KEY]: [saved('a1')] }), setPref: () => undefined };
+		let owner: string | null = null;
+		const view = createLocalSavedQueries(prefs, () => owner);
+		assert.deepEqual(view.readStateOf(ENDPOINT), { status: 'failed', message: 'Not signed in to a RocketRide server.' });
+		owner = FP_A;
+		assert.deepEqual(view.readStateOf(ENDPOINT), { status: 'ready' });
+		owner = FP_B;
+		assert.equal(view.readStateOf(ENDPOINT).status, 'failed');
+		assert.match((view.readStateOf(ENDPOINT) as { message: string }).message, /Reload the page/);
+	});
+
+	it('the drawer says Loading, or the failure with Retry, instead of "No saved queries yet"', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const panel = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'components', 'SavedQueriesPanel.tsx'), 'utf8');
+		assert.match(panel, /const readState = saved\.useReadState\(endpoint\);/);
+		assert.match(panel, /readState\.status === 'loading'/);
+		assert.match(panel, /readState\.status === 'failed'/);
+		assert.match(panel, /onClick=\{\(\) => saved\.retry\(endpoint\)\}>Retry<\/Button>/);
+		// "None yet" only once the read has answered.
+		assert.ok(panel.indexOf("readState.status === 'loading'") < panel.indexOf('No saved queries yet'));
+	});
+});
+
 // =============================================================================
 // T7 — NEVER ACROSS ACCOUNTS, IN ANY ORDER
 // =============================================================================

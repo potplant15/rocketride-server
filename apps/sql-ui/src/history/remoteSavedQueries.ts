@@ -35,6 +35,13 @@
 //            frame belongs to; the controller refuses a write for anyone
 //            else, and a refusal (a cap, a query gone) reaches the caller.
 //
+// THE LATEST READ WINS. Every read is sent (none waits for another in
+// flight) and only the answer to the newest one is used: a read that is
+// never answered (its controller went away) cannot hold back the next, and
+// an older answer that arrives late cannot replace a newer one. Until the
+// first answer the view says it is loading; a failed read says why, and
+// `retry` reads again.
+//
 // Without the frame's channel the view still works, reading again after its
 // own changes only. Nothing here touches the shell's preferences.
 // =============================================================================
@@ -46,10 +53,14 @@ import type { SqlEndpoint } from '../connect';
 import type { SavedQueriesState, SqlEventMap, SqlOps, SqlStateMap } from '../ops';
 import { SQL_OP_TIMEOUT_MS } from '../sqlTimeouts';
 import { devToolSavedQueriesNotice } from './savedQueries';
-import type { SavedQueriesStorage, SavedQuery, SavedQueryEdit, SqlSavedQueriesApi } from './savedQueries';
+import type { SavedQueriesReadState, SavedQueriesStorage, SavedQuery, SavedQueryEdit, SqlSavedQueriesApi } from './savedQueries';
 
 /** Shared empty list, so an unread connection keeps a stable snapshot. */
 const NO_QUERIES: SavedQuery[] = [];
+
+/** The read states with nothing to say (shared, so snapshots stay stable). */
+const LOADING: SavedQueriesReadState = { status: 'loading' };
+const READY: SavedQueriesReadState = { status: 'ready' };
 
 /** A frame's saved-queries view, with its lifetime. */
 export interface RemoteSavedQueries extends SqlSavedQueriesApi {
@@ -57,6 +68,8 @@ export interface RemoteSavedQueries extends SqlSavedQueriesApi {
 	watch(endpoint: SqlEndpoint): void;
 	/** One connection's queries as last read (outside React). */
 	entriesOf(endpoint: SqlEndpoint): SavedQuery[];
+	/** Where reading one connection's queries stands (outside React). */
+	readStateOf(endpoint: SqlEndpoint): SavedQueriesReadState;
 	/** Whether one connection's queries have been read (outside React). */
 	loaded(endpoint: SqlEndpoint): boolean;
 	/** The privacy line as of the last answer ('' before the controller said where they are kept; outside React). */
@@ -84,9 +97,10 @@ interface Slot {
 	/** The revision the last read answered for (null: not read yet). */
 	rev: number | null;
 	loaded: boolean;
-	loading: boolean;
-	/** Read again once the read in flight settles. */
-	again: boolean;
+	/** The newest read sent: only its answer is used. */
+	seq: number;
+	/** Where reading stands. */
+	readState: SavedQueriesReadState;
 }
 
 /**
@@ -117,29 +131,26 @@ export function createRemoteSavedQueries(opts: RemoteSavedQueriesOptions): Remot
 	const fetch = (key: string): void => {
 		const slot = read.get(key);
 		if (!slot || typeof slot.endpoint.connId !== 'string') return;
-		if (slot.loading) {
-			slot.again = true;
-			return;
-		}
-		slot.loading = true;
+		slot.seq += 1;
+		const seq = slot.seq;
 		const asked = epoch;
 		const rev = state?.rev ?? null;
+		// Only the newest read of a view that was not reset since counts.
+		const current = (): boolean => asked === epoch && read.get(key) === slot && seq === slot.seq;
 		caller.callReply('sql.savedQueries', { connId: slot.endpoint.connId, owner: owner() }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.savedQueries'] })
 			.then((answer) => {
-				if (asked !== epoch || read.get(key) !== slot) return;
+				if (!current()) return;
 				slot.queries = Array.isArray(answer?.queries) ? answer.queries : NO_QUERIES;
 				slot.rev = rev;
 				slot.loaded = true;
+				slot.readState = READY;
 				if (state === undefined && typeof answer?.storage === 'string') storage = answer.storage;
 				notify();
 			})
-			.catch(() => undefined)
-			.finally(() => {
-				slot.loading = false;
-				if (slot.again && asked === epoch) {
-					slot.again = false;
-					fetch(key);
-				}
+			.catch((error: unknown) => {
+				if (!current()) return;
+				slot.readState = { status: 'failed', message: error instanceof Error ? error.message : String(error) };
+				notify();
 			});
 	};
 
@@ -160,7 +171,7 @@ export function createRemoteSavedQueries(opts: RemoteSavedQueriesOptions): Remot
 		const value = snapshot !== null && typeof snapshot === 'object' ? (snapshot as { fingerprint?: unknown }).fingerprint : undefined;
 		if (typeof value !== 'string' || value === '') return;
 		for (const [key, slot] of read) {
-			if (!slot.loaded && !slot.loading) fetch(key);
+			if (!slot.loaded) fetch(key);
 		}
 	});
 
@@ -171,7 +182,23 @@ export function createRemoteSavedQueries(opts: RemoteSavedQueriesOptions): Remot
 	 */
 	const watch = (endpoint: SqlEndpoint): void => {
 		if (read.has(endpoint.key)) return;
-		read.set(endpoint.key, { endpoint, queries: NO_QUERIES, rev: null, loaded: false, loading: false, again: false });
+		read.set(endpoint.key, { endpoint, queries: NO_QUERIES, rev: null, loaded: false, seq: 0, readState: LOADING });
+		fetch(endpoint.key);
+	};
+
+	/**
+	 * Read one connection again (the drawer's Retry).
+	 *
+	 * @param endpoint - The connection.
+	 */
+	const retry = (endpoint: SqlEndpoint): void => {
+		const slot = read.get(endpoint.key);
+		if (!slot) {
+			watch(endpoint);
+			return;
+		}
+		if (!slot.loaded) slot.readState = LOADING;
+		notify();
 		fetch(endpoint.key);
 	};
 
@@ -197,6 +224,12 @@ export function createRemoteSavedQueries(opts: RemoteSavedQueriesOptions): Remot
 			useEffect(() => { watch(endpoint); }, [endpoint, seen]);
 			return useSyncExternalStore(subscribe, () => read.get(endpoint.key)?.queries ?? NO_QUERIES);
 		},
+		useReadState(endpoint) {
+			const seen = useSyncExternalStore(subscribe, () => epoch);
+			useEffect(() => { watch(endpoint); }, [endpoint, seen]);
+			return useSyncExternalStore(subscribe, () => read.get(endpoint.key)?.readState ?? LOADING);
+		},
+		retry,
 		usePrivacyNotice() {
 			return useSyncExternalStore(subscribe, notice);
 		},
@@ -206,6 +239,7 @@ export function createRemoteSavedQueries(opts: RemoteSavedQueriesOptions): Remot
 		watch,
 		entriesOf: (endpoint) => read.get(endpoint.key)?.queries ?? NO_QUERIES,
 		loaded: (endpoint) => read.get(endpoint.key)?.loaded === true,
+		readStateOf: (endpoint) => read.get(endpoint.key)?.readState ?? LOADING,
 		privacyNotice: notice,
 		reset() {
 			epoch += 1;
