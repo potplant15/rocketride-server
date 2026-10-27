@@ -48,7 +48,7 @@
 // (followAssignments), written only then.
 // =============================================================================
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { AppLayout, Button, ConnectionManager, DocSplitLayout, DocTabs, EmptyState, commonStyles, usePrefs, useShellConnection, useWorkspace } from 'shell';
 import type { Documents, ShellAppProps } from 'shell';
@@ -148,8 +148,9 @@ const GraphApp: React.FC<ShellAppProps> = ({ identity }) => {
 	// A different user, organization or team (or a sign-out) must find nothing from before: no schema, and no
 	// workbench or write console still showing the previous identity's results (the store forgets its endpoints).
 	// On the first run the documents do not exist yet, so only the schema snapshots are cleared.
-	// Colour slots wanted for the previous account are never written for this one.
-	useEffect(() => {
+	// Colour slots wanted for the previous account are never written for this one. A layout effect, so it runs before
+	// anything can land between this render and a passive effect (a late schema answer for the previous account).
+	useLayoutEffect(() => {
 		forgetConnections(getDocs(), { schemas });
 		pinned.userData.forget();
 	}, [pinned, fingerprint]);

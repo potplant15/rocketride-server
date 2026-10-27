@@ -196,7 +196,7 @@ test('the landing renders its cards whenever there are any, under its message, a
 test('a change of identity closes every connection document and clears the per-connection caches', () => {
 	const app = code(read('GraphApp.tsx'));
 	assert.ok(/const fingerprint = identityFingerprint\(identityFromConnectResult\(identity\)\);/.test(app), 'the app tracks the fingerprint the shared store tracks');
-	assert.ok(/useEffect\(\(\) => \{\s*forgetConnections\(getDocs\(\), \{ schemas \}\);\s*pinned\.userData\.forget\(\);\s*\}, \[pinned, fingerprint\]\);/.test(app), 'every change of it forgets the connections, and the colour slots wanted for them');
+	assert.ok(/useLayoutEffect\(\(\) => \{\s*forgetConnections\(getDocs\(\), \{ schemas \}\);\s*pinned\.userData\.forget\(\);\s*\}, \[pinned, fingerprint\]\);/.test(app), 'every change of it forgets the connections, and the colour slots wanted for them, before the next paint');
 });
 
 // #2625 9bd5d931f gave Documents a dirty-close policy and moved every app's group close onto it; the full app follows.

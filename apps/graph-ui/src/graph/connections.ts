@@ -270,28 +270,57 @@ function counted(value: { sum: number; estimated: boolean }, one: string, many: 
 }
 
 /**
+ * One part of the size (nodes, or relationships): its total, or why there is none.
+ *
+ * @param items - The labels, or the relationship types.
+ * @param one - The singular noun.
+ * @param many - The plural noun.
+ * @param per - Words after the total (`(per label)` for nodes).
+ * @param atLeast - The listing was cut short.
+ * @returns The text, and whether no item has a count at all; null when there are no items.
+ */
+function sizePart(items: ReadonlyArray<{ count: number | null; countEstimated: boolean }>, one: string, many: string, per: string, atLeast: boolean): { text: string; counted: boolean; none: boolean } | null {
+	if (items.length === 0) return null;
+	const sum = total(items);
+	if (sum) return { text: `${counted(sum, one, many, atLeast)}${per}`, counted: true, none: false };
+	const none = items.every((item) => item.count === null);
+	return { text: none ? `${many} not reported` : `some ${one} counts not reported`, counted: false, none };
+}
+
+/** Said after the counts of a stale schema: they are the last successful read's. */
+export const AS_OF_LAST_READ = ' (as of the last read)';
+
+/**
  * A connection's size from the schema read in this session, in the words the cards, the drawer and the Overview share:
- * `60 nodes (per label) · 92 relationships`. A part with any count absent (AGE before its tables were analysed) says
- * `nodes not reported` or `relationships not reported`, and `counts not reported` when no part has its counts. When
- * the node listed only part of a very large schema, the totals are lower bounds and say `at least`.
+ * `60 nodes (per label) · 92 relationships`. A part with every count absent (AGE before its tables were analysed) says
+ * `nodes not reported` or `relationships not reported`, one with only some absent `some node counts not reported`;
+ * when no part has a total, `counts not reported` (or `some counts not reported` when some counts exist). When the
+ * node listed only part of a very large schema, the totals are lower bounds and say `at least`; a stale schema's
+ * counts are its last successful read's, and say so.
  *
  * @param schema - The schema, or null when it was not read (then nothing is said, and nothing is asked for).
  * @returns The text; '' when the schema was not read, or lists no label and no relationship type.
  */
 export function countsText(schema: ISchemaView | null): string {
 	if (!schema) return '';
-	const parts: Array<{ text: string; counted: boolean }> = [];
-	if (schema.labels.length > 0) {
-		const nodes = total(schema.labels);
-		parts.push(nodes ? { text: `${counted(nodes, 'node', 'nodes', schema.truncated)} (per label)`, counted: true } : { text: 'nodes not reported', counted: false });
-	}
-	if (schema.relationshipTypes.length > 0) {
-		const relationships = total(schema.relationshipTypes);
-		parts.push(relationships ? { text: counted(relationships, 'relationship', 'relationships', schema.truncated), counted: true } : { text: 'relationships not reported', counted: false });
-	}
+	const parts = [sizePart(schema.labels, 'node', 'nodes', ' (per label)', schema.truncated), sizePart(schema.relationshipTypes, 'relationship', 'relationships', '', schema.truncated)].filter((part) => part !== null);
 	if (parts.length === 0) return '';
-	if (parts.every((part) => !part.counted)) return 'counts not reported';
-	return parts.map((part) => part.text).join(' \u00b7 ');
+	if (parts.every((part) => !part.counted)) return parts.every((part) => part.none) ? 'counts not reported' : 'some counts not reported';
+	return `${parts.map((part) => part.text).join(' \u00b7 ')}${schema.evidence === 'stale' ? AS_OF_LAST_READ : ''}`;
+}
+
+/**
+ * What the drawer says instead of a schema line when the read lists nothing and proves nothing (an empty list from a
+ * failed or unsupported read is not an empty graph).
+ *
+ * @param schema - The schema that was read.
+ * @returns `Could not be read`, `Not reported by this node`, or null when the lists can be shown as they are.
+ */
+export function unreadSchemaText(schema: ISchemaView): string | null {
+	if (schema.labels.length > 0 || schema.relationshipTypes.length > 0 || schema.evidence === 'fresh' || schema.evidence === 'stale') return null;
+	// An incapable node, or an old node's legacy answer, cannot say; an error, or a load that failed outright (the
+	// empty unknown view), could not read.
+	return schema.evidence === 'incapable' || schema.legacy ? 'Not reported by this node' : 'Could not be read';
 }
 
 /** The drawer's and the details panel's rows: the summary first, the plumbing behind a disclosure. */
@@ -319,8 +348,13 @@ export function detailSections(endpoint: IExplorerEndpoint, probe: IProbeResult 
 		else if (dialect.database) summary.push({ label: 'Database', value: dialect.database });
 	}
 	if (schema) {
-		summary.push({ label: 'Size', value: sizeText(schema) });
-		summary.push({ label: 'Schema', value: schemaSummaryText(schema) });
+		const unread = unreadSchemaText(schema);
+		if (unread !== null) {
+			summary.push({ label: 'Schema', value: unread });
+		} else {
+			summary.push({ label: 'Size', value: sizeText(schema) });
+			summary.push({ label: 'Schema', value: schemaSummaryText(schema) });
+		}
 	}
 	const plumbing = view.details.filter((row) => row.label !== 'Engine' && row.label !== 'Target');
 	return { summary, plumbing };
@@ -348,7 +382,7 @@ export function schemaSummaryText(schema: ISchemaView): string {
 	const keys = new Set<string>();
 	for (const item of [...schema.labels, ...schema.relationshipTypes]) for (const property of item.properties) keys.add(property.name);
 	const n = (count: number, one: string, many: string): string => `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`;
-	return `${n(schema.labels.length, 'label', 'labels')} \u00b7 ${n(schema.relationshipTypes.length, 'relationship type', 'relationship types')} \u00b7 ${n(keys.size, 'property key', 'property keys')}${schema.sampled ? ' (sampled)' : ''}`;
+	return `${n(schema.labels.length, 'label', 'labels')} \u00b7 ${n(schema.relationshipTypes.length, 'relationship type', 'relationship types')} \u00b7 ${n(keys.size, 'property key', 'property keys')}${schema.sampled ? ' (sampled)' : ''}${schema.evidence === 'stale' ? AS_OF_LAST_READ : ''}`;
 }
 
 // =============================================================================

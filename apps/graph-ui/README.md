@@ -78,9 +78,13 @@ A card also carries chips, each from what the node itself reports:
   counts, so on Neo4j and FalkorDB a node with two labels counts twice; the
   relationship total counts each relationship once. When the node listed only
   part of a very large schema, both totals say *at least*. A count the database
-  estimates (Apache AGE) says *about*, and a part with a count missing (AGE
-  before its tables were analysed) says *nodes not reported* or *relationships
-  not reported* (*counts not reported* when neither has one).
+  estimates (Apache AGE) says *about*. Where counts are missing (AGE before its
+  tables were analysed), a part says *nodes not reported* or *relationships not
+  reported* when it has none, and *some node counts not reported* (or
+  relationship) when only some are missing; with no total at all, the card says
+  *counts not reported* or *some counts not reported*. When the last refresh
+  failed, the counts are the last successful read's and say *(as of the last
+  read)*.
 - **Empty graph**, only when a schema read in this session lists no label and
   no relationship type. A node that could not read its schema, or an older
   node, never shows it.
@@ -90,8 +94,9 @@ comes first: the state and the chips (with **Supported (Cypher)** for a node
 that has `read_query`), the engine and version, the database or graph, and, once
 the schema was read, its size in the same words as the card, and a line such as
 "5 labels · 7 relationship types · 21 property keys (sampled)"; a fresh read
-that lists nothing says **Empty**, and one that proves nothing (an older node, a
-failed read) says **Not reported**. **Connection details** opens the rest: the pipeline, the node, whose
+that lists nothing says **Empty**. A read that lists nothing and proves nothing
+never says "0 labels": the Schema line says **Could not be read** when the read
+failed, and **Not reported by this node** for a node too old to report one. **Connection details** opens the rest: the pipeline, the node, whose
 run it is, whether writes are allowed, and a sentence on what the node's read
 path guarantees. **Test connection** asks the node again; when nothing could be
 sent (the pipeline is not running, or a check is already in progress) it says
