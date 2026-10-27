@@ -28,6 +28,9 @@
 // buttons hand a label, a type or a query text to the workbench, which decides what
 // to open and run.
 //
+// The tab's header actions (Refresh schema, Explore, New query) belong to the workbench that hosts it; this page
+// offers Refresh schema (and Explore on an empty graph) only inside its own not-ready states.
+//
 // Property keys are sampled and relationship endpoints are what the sample saw, so
 // the page says "sampled" and "observed patterns". Counts are as the engine gave
 // them: "about N" for an estimate, "not reported" when it gave none.
@@ -145,14 +148,6 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, dialect
 	const minute = Math.floor(Date.now() / 60000);
 	const model = useMemo(() => buildOverview({ view, dialect, style, endpoint: { nodeName: endpoint.nodeName, pipelineName: endpoint.pipelineName }, now: minute * 60000 }), [view, dialect, style, endpoint.nodeName, endpoint.pipelineName, minute]);
 
-	const actions = (
-		<div style={styles.actions}>
-			<Button variant="secondary" small onClick={onRefreshSchema}>Refresh schema</Button>
-			<Button variant="primary" small title="Open the Explore tab and run a sample of the graph" onClick={onExplore}>Explore</Button>
-			<Button variant="secondary" small onClick={() => onNewQuery('', 'New query')}>New query</Button>
-		</div>
-	);
-
 	return (
 		<div style={styles.page} aria-label="Overview">
 			<div style={styles.header}>
@@ -160,7 +155,6 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, dialect
 					<h2 style={styles.title}>{endpoint.nodeName}</h2>
 					{model.subtitle && <p style={styles.subtitle}>{model.subtitle}</p>}
 				</div>
-				{actions}
 			</div>
 
 			{model.state !== 'ready' ? (
@@ -168,6 +162,10 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, dialect
 					<div style={{ fontWeight: 600 }}>{model.headline}</div>
 					<div>{model.notice}</div>
 					{model.detail && <pre style={styles.pre}>{model.detail}</pre>}
+					<div style={{ ...styles.actions, marginTop: 8 }}>
+						<Button variant="secondary" small onClick={onRefreshSchema}>Refresh schema</Button>
+						{model.state === 'empty' && <Button variant="secondary" small title="Run a sample of the graph in the Explore tab" onClick={onExplore}>Explore</Button>}
+					</div>
 				</Banner>
 			) : (
 				<>
