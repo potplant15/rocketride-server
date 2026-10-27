@@ -80,6 +80,10 @@ describe('needsConfirmation: the level × kind matrix', () => {
 		['unbounded DELETE', 'DELETE FROM orders', { off: null, risky: 'DELETE without WHERE', every: 'DELETE without WHERE' }],
 		['DELETE inside a WITH clause', 'WITH gone AS (DELETE FROM orders WHERE id = 1 RETURNING *) SELECT * FROM gone', { off: null, risky: 'DELETE inside a WITH clause', every: 'DELETE inside a WITH clause' }],
 		['EXPLAIN ANALYZE runs its statement', 'EXPLAIN ANALYZE DELETE FROM orders', { off: null, risky: 'DELETE without WHERE', every: 'DELETE without WHERE' }],
+		['EXPLAIN ANALYZE of a bounded write still runs it', 'EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7', { off: null, risky: 'EXPLAIN ANALYZE', every: 'EXPLAIN ANALYZE' }],
+		['EXPLAIN (ANALYZE) option form', 'EXPLAIN (ANALYZE) DELETE FROM orders WHERE id = 7', { off: null, risky: 'EXPLAIN ANALYZE', every: 'EXPLAIN ANALYZE' }],
+		['EXPLAIN (ANALYZE true, …) option form', 'EXPLAIN (ANALYZE true, BUFFERS) UPDATE orders SET a = 1 WHERE id = 7', { off: null, risky: 'EXPLAIN ANALYZE', every: 'EXPLAIN ANALYZE' }],
+		['EXPLAIN ANALYZE of a read runs nothing that writes', 'EXPLAIN ANALYZE SELECT * FROM orders', { off: null, risky: null, every: null }],
 		['CREATE', 'CREATE TABLE t (id int)', { off: null, risky: null, every: 'a schema change' }],
 		['ALTER', 'ALTER TABLE orders ADD COLUMN note text', { off: null, risky: 'ALTER', every: 'ALTER' }],
 		['DROP', 'DROP TABLE orders', { off: null, risky: 'DROP +name', every: 'DROP +name' }],
@@ -100,6 +104,37 @@ describe('needsConfirmation: the level × kind matrix', () => {
 			assert.deepEqual(matrix(sql), expected);
 		});
 	}
+
+	it('EXPLAIN ANALYZE and DESCRIBE ANALYZE of a write never run unasked at risky or every, on every dialect (DA-R1 M4)', () => {
+		for (const dialect of ['postgres', 'mysql', 'clickhouse', 'unknown'] as SqlDialect[]) {
+			for (const sql of ['EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7', 'EXPLAIN (ANALYZE) DELETE FROM orders WHERE id = 7']) {
+				assert.ok(needsConfirmation(sql, dialect, 'risky'), `${dialect} risky: ${sql}`);
+				assert.ok(needsConfirmation(sql, dialect, 'every'), `${dialect} every: ${sql}`);
+			}
+		}
+		for (const dialect of ['mysql', 'unknown'] as SqlDialect[]) {
+			for (const sql of ['DESCRIBE ANALYZE DELETE t FROM t JOIN u ON t.id = u.id', 'DESC ANALYZE UPDATE t JOIN u ON t.id = u.id SET t.x = 0 WHERE u.y = 1']) {
+				assert.ok(needsConfirmation(sql, dialect, 'risky'), `${dialect} risky: ${sql}`);
+				assert.ok(needsConfirmation(sql, dialect, 'every'), `${dialect} every: ${sql}`);
+			}
+		}
+	});
+
+	it('the README says which spellings of ANALYZE ask', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(prose, /`TRUNCATE`, `DROP` and `ALTER`, and before an `EXPLAIN ANALYZE` of anything but a read\./);
+		assert.match(prose, /`EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7` deletes the row/);
+		assert.match(prose, /MySQL's `DESCRIBE ANALYZE` and `DESC ANALYZE`/);
+	});
+
+	it('says what EXPLAIN ANALYZE does', () => {
+		const sql = 'EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7';
+		const copy = writeConfirmCopy(needsConfirmation(sql, 'postgres', 'risky') as WriteConfirmation, sql, 'Shop Postgres');
+		assert.equal(copy.title, 'Run this EXPLAIN?');
+		assert.equal(copy.consequence, 'ANALYZE runs the statement to measure it, so what it changes is changed for real.');
+	});
 
 	it('a bounded UPDATE … WHERE asks at every and not at risky, on every dialect', () => {
 		for (const dialect of ['postgres', 'mysql', 'clickhouse', 'unknown'] as SqlDialect[]) {

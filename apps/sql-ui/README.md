@@ -444,7 +444,8 @@ under **Safety level for this connection**:
 - **Don't ask**: every statement runs as typed.
 - **Ask before risky writes** (the default): asks before `UPDATE` or
   `DELETE` with no `WHERE`, an `UPDATE` or `DELETE` inside a `WITH` clause,
-  `TRUNCATE`, `DROP` and `ALTER`.
+  `TRUNCATE`, `DROP` and `ALTER`, and before an `EXPLAIN ANALYZE` of
+  anything but a read.
 - **Ask before every write**: asks before anything that is not a read.
   Reads are `SELECT` (a `WITH … SELECT` included), `EXPLAIN`, `SHOW` and
   `DESCRIBE`. Everything else asks: `INSERT`, a bounded `UPDATE` or
@@ -509,8 +510,14 @@ clauses: `SELECT ... FOR UPDATE` locks rows, and an upsert's `ON CONFLICT
 
 `EXPLAIN ANALYZE` runs the statement it describes rather than only planning
 it, so it is checked as that statement: `EXPLAIN ANALYZE DELETE FROM orders`
-is asked about like the `DELETE` it would run. A plain `EXPLAIN` runs
-nothing and is never asked about.
+is asked about like the `DELETE` it would run. Because an `EXPLAIN` reads
+like a plan, both asking levels also ask before one that runs anything but a
+read, even when that statement alone would not ask: `EXPLAIN ANALYZE DELETE
+FROM orders WHERE id = 7` deletes the row. The same goes for every spelling
+of it: PostgreSQL's `ANALYSE` and option lists (`EXPLAIN (ANALYZE)`,
+`EXPLAIN (ANALYZE true, BUFFERS)`), and MySQL's `DESCRIBE ANALYZE` and `DESC
+ANALYZE`. A plain `EXPLAIN`, `DESCRIBE` or `DESC` runs nothing and is never
+asked about.
 
 Read "a check on the statement text" literally. It never consults the
 database for permission, does not know what a `WHERE` clause actually

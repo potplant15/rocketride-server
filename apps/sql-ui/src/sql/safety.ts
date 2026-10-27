@@ -30,7 +30,8 @@
 //   - `off`   — none.
 //   - `risky` — the shapes the pattern check flags (classify.ts): UPDATE or
 //               DELETE without WHERE or inside a WITH clause, TRUNCATE, DROP,
-//               ALTER.
+//               ALTER, and EXPLAIN ANALYZE (DESCRIBE ANALYZE) of anything
+//               but a read, since ANALYZE runs it.
 //   - `every` — every statement the classifier does not call a read: the
 //               `write`, `ddl` and `other` kinds (CALL, GRANT, SET, DO,
 //               VALUES…, since a procedure can change rows), and everything
@@ -567,6 +568,7 @@ function plainConsequence(kind: string): string {
 	if (kind === 'DELETE without WHERE') return 'No WHERE clause: this deletes every row in the table.';
 	const inWith = /^(UPDATE|DELETE) inside a WITH clause$/.exec(kind);
 	if (inWith) return `A WITH clause in it runs ${inWith[1]}; this check cannot tell which rows that reaches.`;
+	if (kind === 'EXPLAIN ANALYZE') return 'ANALYZE runs the statement to measure it, so what it changes is changed for real.';
 	if (kind === 'ALTER' || kind === 'a schema change') return 'It changes the schema.';
 	if (kind === NOT_A_READ) return 'It is not a read, so it may change data.';
 	return 'It changes data.';
