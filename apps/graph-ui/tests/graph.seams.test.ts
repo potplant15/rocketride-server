@@ -69,13 +69,14 @@ test('selectRelationship inspects the relationship and selecting a node clears i
 	assert.equal(session.getState().selectedRelationship, null);
 });
 
-test('the stubs answer "nothing yet": expandByType says so and sends nothing, queryTextFor is null, clearPath with no path is a no-op', async () => {
+test('the redesign members answer for real: expandByType sends for a drawn node, queryTextFor writes a query, clearPath with no path is a no-op', async () => {
 	const { session, said } = rig();
 	const before = session.getState();
+	await session.expandByType('gone', 'T');
+	assert.equal(session.getState().model, before.model, 'a node that is not drawn is not expanded');
 	await session.expandByType('a', 'T');
-	assert.match(said.at(-1) ?? '', /not available yet/);
-	assert.equal(session.getState().model, before.model);
-	assert.equal(session.queryTextFor({ kind: 'node', id: 'a' }), null);
+	assert.match(said.at(-1) ?? '', /^A is no longer found/, 'the node answered nothing, so the id no longer finds it');
+	assert.match(session.queryTextFor({ kind: 'node', id: 'a' }) ?? '', /\nMATCH \(n\) WHERE elementId\(n\) = 'a' OPTIONAL MATCH \(n\)-\[r\]-\(m\) RETURN n, r, m LIMIT 25$/);
 	const state = session.getState();
 	session.clearPath();
 	assert.equal(session.getState(), state);

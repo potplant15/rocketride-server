@@ -157,58 +157,107 @@ budget or its value budget.
 
 ## The graph
 
-Nodes are coloured by their first label, with the first letter of the label
-inside, and a legend lists every label next to its colour. Colour is never the
-only carrier of meaning. How colours were chosen, and the contrast measured
+Nodes are coloured by their first label, with the label's badge inside, and a
+legend lists every label next to its colour. Colour is never the only carrier of
+meaning. How colours were chosen, and the contrast measured
 against every shipped theme, is in
 [docs/contrast.md](https://github.com/rocketride-org/rocketride-server/blob/develop/apps/graph-ui/docs/contrast.md).
 
+A click selects a node or a relationship on its own, and the inspector follows
+it. Shift, Ctrl or Cmd-click adds a node to the selection or takes it out (Find
+path needs two); Space does the same for the focused node. Relationships are drawn
+by the app, not by the canvas library, so each one has an invisible, wider band
+along its line that takes the click.
+
 | Action | What it does |
 |---|---|
-| Expand | Fetches up to 100 neighbours that are not already drawn. The node's relationships already on the canvas are left out of the request, so expanding again fetches the next ones, whatever the node's row limit. On Apache AGE only the first 200 drawn relationships of a node can be left out; past that, the node's row limit can stop an expansion, and it then says that expanding again returns the same rows. |
-| Collapse | Removes what hangs only from this node. |
+| Expand | Double-click a node, or `E`. Fetches up to 100 neighbours that are not already drawn. The node's relationships already on the canvas are left out of the request, so expanding again fetches the next ones, whatever the node's row limit. On Apache AGE only the first 200 drawn relationships of a node can be left out; past that, the node's row limit can stop an expansion, and it then says that expanding again returns the same rows. |
+| Expand by type | Fetches up to 100 neighbours over one relationship type, leaving out the node's relationships of that type already drawn. The type is written into the query the way the engine accepts it; a type the app cannot quote on that engine (on Apache AGE anything but letters, digits and `_`, on FalkorDB a name holding a backtick) is refused with the reason, and nothing is sent. |
+| Collapse | Removes what hangs only from this node, including what Expand by type added. |
 | Dismiss | Removes the node from the canvas. |
 | Inspect | Opens the node's labels, id and properties, exact and complete, with Copy JSON. |
 | Connect nodes | Draws the relationships among the nodes already on the canvas. When the node returns only part of them (it stops at its own row limit), it says that more may exist; connect fewer nodes to see the others. |
-| Find path | Between two selected nodes, tried at increasing depth up to 10. A node that cannot answer says so; "no path found" names the depth it searched. |
+| Find path | Between two selected nodes. On Neo4j (when the node reports that the engine has `shortestPath`), one call asks for a shortest path of up to 10 relationships in either direction; an empty answer means there is none within 10, and if the call fails the app falls back to the search below. FalkorDB and Apache AGE try depth 1, 2 and so on up to 10, one call each, and stop at the first depth that has a path, so it is a shortest one. (AGE has no `shortestPath`. FalkorDB's follows one direction only: probed on FalkorDB 4.22.2, it returned a 5-relationship path where a 3-relationship one exists.) "No path" names the depth searched. The path found is laid out left to right on a row above the rest of the drawing, everything else is dimmed, and the status line says how it was found. Clear path (or Escape, once nothing is selected) puts its nodes back where the layout had them. |
 | Show more nodes | Adds nodes the first draw left out. |
 
-The graph sends one request at a time. While Expand, Connect, Find path or an
-inspector Refresh is waiting, **Stop waiting** lets go of it: the node may still
-be working on it, and its late answer is ignored.
+The graph sends one request at a time. While Expand, Expand by type, Connect,
+Find path or an inspector Refresh is waiting, **Stop waiting** lets go of it: the
+node may still be working on it, and its late answer is ignored.
 
 **Relationship labels.** The type of a relationship is drawn along it when the canvas is at normal size or larger, or (at 60% zoom and above) when no more than 200 relationships are drawn. In a crowded, zoomed-out graph the labels would be unreadable and are the most expensive thing to repaint, so they are not drawn; every relationship still shows its type as a tooltip and in its accessible name ("KNOWS from Ada to Charles"), the inspector shows it, the Table lists it, and zooming in brings the labels back. All relationships are drawn into one SVG behind the nodes, so panning and zooming cost the page nothing beyond moving it.
 
 **Ids are live handles, not identities.** Every action that asks the database about a
-drawn element (Expand, Refresh in the inspector, Connect, Find path) sends the element's
-id. A database may hand an id out again after a delete: FalkorDB does, and Apache AGE ids
-are per-label sequences. So an answer is merged only when every element it shares an id
-with has the same labels (a relationship: the same type, start and end); otherwise
-nothing from the answer is added, the drawn copy is dashed and marked out of date, and
-you are told. A statement run in the write console marks the whole drawing out of date,
-whatever it was: Expand, Connect and Find path stop sending until the query is run
-again. **This cannot catch everything:** if an element is deleted and another with the
-same labels (or the same type and ends) is created, the app cannot tell them apart and
-the old drawing may show the new element's properties after a Refresh. Refresh re-reads
-the database, but it only shows what is there under that id now. Run the query again to
-be sure.
+drawn element (Expand, Refresh in the inspector, Connect, Find path) sends the
+element's id. A database may hand an id out again after a delete: FalkorDB does (it
+also numbers nodes and relationships separately, both from 0, so the app keeps the two
+apart in the selection, the inspector and the out-of-date marks). So an answer is
+merged only when every element it shares an id with has the same labels (a
+relationship: the same type, start and end); otherwise nothing from the answer is
+added, the drawn copy is dashed and marked out of date, and you are told. A statement
+run in the write console marks the whole drawing out of date, whatever it was: Expand,
+Connect and Find path stop sending until the query is run again, and each says "Not
+sent: this drawing is out of date. Run the query again." **This cannot catch
+everything:** if an element is deleted and another with the same labels (or the same
+type and ends) is created, the app cannot tell them apart and the old drawing may show
+the new element's properties after a Refresh. Refresh re-reads the database, but it
+only shows what is there under that id now. Run the query again to be sure.
 
 The canvas holds at most 1,000 nodes and 2,000 relationships; a result opens with
 the first 300 nodes and says how many it left out. Every query the app writes
-itself (a label preview, expand, connect, path) passes values as parameters, never
-spliced into the text, and uses the form each engine proves to work.
+and sends itself (a label preview, expand, expand by type, connect, path) passes
+values as parameters, never spliced into the text, and uses the form each engine
+proves to work. The one exception is text the app puts into the editor for you to
+read and run ("New query from here", a path's "Open as query"): the editor sends no
+parameters, so the element's id is written into the text, and only when it can be
+written safely (an integer on FalkorDB and Apache AGE; on Neo4j an id with no
+quote, backslash or control character). Otherwise there is no such text. Its first
+line is a comment saying the ids are live handles: History and Saved queries keep
+the text after the element may be gone, and a database can give a deleted
+element's id to another.
 
-**Layout** is computed off the main thread, in a Web Worker running d3-force with
-a fixed seed, so the same result lays out the same way, and the worker is stopped
-when a newer layout replaces it. If the worker cannot run, the nodes are placed
-on a grid and a notice says so. The page never falls back to computing the layout
-on the main thread.
+**Image export.** The drawing can be saved as SVG or PNG. The picture is written
+from the canvas's own positions, colours, badges, captions and relationship
+geometry, not taken from the screen, so it covers the whole drawing rather than
+the part in view, on the canvas background, in the colours of the current theme
+and in the system font. Captions are cut at 24 characters, and relationship labels
+are written when no more than 200 relationships are drawn. A PNG is twice the
+drawing's size, or smaller for a very large drawing, so that it stays within what
+a browser canvas can hold (16.7 million pixels, Safari's limit). A drawing so large
+that its PNG would be under a quarter of its size (more than 65,536 units on a
+side, or more than about 16,000 by 16,000) gets no PNG: save the SVG, which has no
+such limit. A very wide Tree level (a few hundred neighbours of one node) can be
+that large.
+
+**Layout.** There are three: Force (the default), Tree (top down) and Left to
+right. Force is computed off the main thread, in a Web Worker running d3-force
+with a fixed seed, so the same result lays out the same way, and the worker is
+stopped when a newer layout replaces it. If the worker cannot run (a VS Code
+webview has none), Force places the nodes on a grid and a notice says so; the
+page never computes the force layout on the main thread. Tree and Left to right
+are the app's own layered layout: the selected node (else the node with the most
+relationships) is the root, and each step away from it is one level further down
+(Tree) or to the right (Left to right). Relationships that close a cycle are still
+drawn but do not move nodes, each connected part of the graph gets its own tree,
+and nodes with no relationship go in a block beside the trees. It takes well
+under 50 ms at the canvas maximum (1,000 nodes, 2,000 relationships), so it runs
+on the main thread and works the same in a browser and in VS Code. Tree and Left
+to right lay the whole drawing out again when nodes are added; Force places only
+the new ones. **Re-run layout** lays out every node again; a node you dragged
+stays where you dropped it while **Keep dragged nodes pinned** is on. The view is
+fitted to the drawing when a layout lands and with the fit button, not when the
+canvas changes size: opening the inspector beside it, or moving the divider, keeps
+the view where it is, and only pans as far as it takes to keep the focused node in
+sight.
 
 **Keyboard.** The canvas is a single tab stop with roving focus: arrow keys move
 to the connected node in that direction, Enter inspects, Space selects, `E`
 expands, `C` collapses, Delete or Backspace (the Mac "delete" key) dismisses,
-`P` finds a path between two selected nodes, `?` lists every key, Tab leaves the
-canvas. Each node is spoken with its caption, labels and how many relationships
+`P` finds a path between two selected nodes, `R` shows the focused node's next
+relationship in the inspector (relationships are not tab stops, so this is how a
+keyboard reaches them), the Menu key or Shift+F10 opens the focused node's menu,
+Escape clears the selection and then a shown path, `?` lists every key, Tab leaves
+the canvas. With nothing left to clear, the canvas does not use Escape, so in full
+screen it leaves full screen. Each node is spoken with its caption, labels and how many relationships
 are shown, and each action is announced through one polite live region.
 Animations respect the reduced-motion setting. The Table tab lists the same
 result for anyone who would rather not use the canvas.
@@ -392,6 +441,13 @@ editor and an **Execute** button, and it always says what it is:
   statement timeout.
 - It does not edit the graph's schema, import or export data, or draw a result
   that has no nodes.
+- Tree and Left to right are spanning trees: a node with hundreds of neighbours
+  makes one very wide level (or a very tall column), and the tree is rooted at
+  the first selected node when a layout runs, not whenever the selection changes.
+  Re-run the layout after selecting a different root.
+- Find path makes one `shortestPath` call on Neo4j only; FalkorDB and Apache AGE
+  try depth 1 to 10, one call each, which takes longer when the path is long or
+  there is none.
 - Apache AGE 1.5.0 lacks `date()`, `duration()` and `EXISTS { }` subqueries; the
   node says so with its own text and the app shows it.
 - FalkorDB and Neo4j refuse two columns with the same name; AGE keeps them, and
@@ -407,7 +463,13 @@ editor and an **Execute** button, and it always says what it is:
   panning or dragging at any of these. With the CPU slowed 4x in Chrome, as a
   stand-in for a slower device, panning a fully drawn 1,000-node graph stutters,
   which is one reason the first draw is capped at 300. No real low-end device
-  was measured.
+  was measured. Those checks were made before relationships could be clicked.
+  Each relationship now also has an invisible hit path, so the browser tests
+  the pointer against one more shape per relationship on every move. In a
+  synthetic page shaped like the canvas (headless Chrome 156, Apple M4 Pro), one
+  such hit test took 0.068 ms without the hit paths and 0.074 ms with them at
+  1,000 nodes and 2,000 relationships (0.036 and 0.039 ms at 300 and 600), against
+  the 16.7 ms of a frame. The app itself has not been re-measured.
 - Browsers: the production checks ran in Chrome 154, Firefox 141 and WebKit 26
   (Playwright). WebKit is the engine Safari uses, but it is not Safari, and
   Safari itself has not been tried. The build declares Safari 13 as its floor,

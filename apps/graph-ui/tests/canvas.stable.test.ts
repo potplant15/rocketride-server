@@ -79,7 +79,7 @@ test('the canvas stylesheet hides labels when the container says off, takes the 
 test('wiring: React Flow draws no edges of its own (the single-svg layer does), and the layer reads only the node centres, never the viewport', () => {
 	const canvas = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'canvas', 'GraphCanvas.tsx'), 'utf8');
 	assert.match(canvas, /edges=\{NO_EDGES\}/);
-	assert.match(canvas, /<EdgeLayer edges=\{edges\} centers=\{centers\} \/>/);
+	assert.match(canvas, /<EdgeLayer edges=\{edges\} centers=\{centers\} onEdgeClick=\{interactiveEdges \? onEdgeClick : undefined\} onEdgeContextMenu=\{interactiveEdges \? onEdgeContextMenu : undefined\} \/>/);
 	const layer = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'canvas', 'EdgeLayer.tsx'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 	assert.doesNotMatch(layer, /useStore|useViewport|useInternalNode|useReactFlow/, 'the layer subscribes to nothing in React Flow');
 	assert.match(layer, /role="img" aria-label=\{ariaLabel\}/, 'each relationship keeps its accessible name');
