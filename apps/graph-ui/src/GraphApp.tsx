@@ -38,9 +38,15 @@
 // mount provides the LOCAL one (localEnv.ts) over the app's module-level stores, the
 // realm's bus-backed client and the workspace prefs; the sidebar is rendered by the
 // shell's chrome, outside this tree, so it gets its own provider.
+//
+// What the app keeps in the workspace prefs itself (drafts, captions, grid layouts,
+// label styles and saved queries) goes through the page's pin (graph/workspacePin.ts):
+// the shell reads the prefs once per page, so after another account signs in without a
+// reload they are still the first account's, and nothing is read or written for anyone
+// else. New labels in a loaded schema get their colour slots here (followAssignments).
 // =============================================================================
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { AppLayout, Button, ConnectionManager, DocSplitLayout, DocTabs, EmptyState, commonStyles, usePrefs, useShellConnection } from 'shell';
 import type { Documents, ShellAppProps } from 'shell';
@@ -51,11 +57,13 @@ import { activeConnection, appPreviews, dataVersions, graphEndpoints, graphHisto
 import { GraphHistoryPrefsBridge, useEndpointStoreLifecycle } from './adapters/react';
 import { APP_HISTORY_PRIVACY_NOTE, GraphEnvProvider, useGraphEndpoints } from './env';
 import type { DocTarget } from './env';
-import { createLocalGraphEnv } from './localEnv';
+import { APP_GRIDS, createLocalGraphEnv } from './localEnv';
 import type { IGraphStores } from './localEnv';
 import { CONNECTIONS_URI, endpointKeyFromUri, isWorkbenchUri, isWriteUri, workbenchUri, writeUri } from './graph/addresses';
 import { createDocs, destroyDocs, getDocs } from './docs';
 import { forgetConnections } from './graph/identityChange';
+import { followAssignments } from './graph/userData';
+import { APP_WORKSPACE_PIN, createAppUserData, pinnedGrids, pinnedPrefs } from './graph/workspacePin';
 import type { IConnectionDocPayload } from './docs';
 import GraphSidebar from './GraphSidebar';
 import RealmLiveRegion from './components/RealmLiveRegion';
@@ -123,19 +131,35 @@ const GraphApp: React.FC<ShellAppProps> = ({ identity }) => {
 	// The realm's bus-backed client (one per realm): in the shell `client.*` runs in this realm, codes intact.
 	const client = useMemo(() => (isConnected ? getBusExplorerClient(ConnectionManager.getInstance()) : null), [isConnected]);
 	useEndpointStoreLifecycle(graphEndpoints, client, identity);
+	const fingerprint = identityFingerprint(identityFromConnectResult(identity));
+	// Who is signed in now, for the pin (read at each call, never captured).
+	const owner = useRef(fingerprint);
+	owner.current = fingerprint;
 	const [prefs] = useState(forwardingPrefs);
+	// Everything the app keeps in the workspace prefs itself, behind the page's pin.
+	const [pinned] = useState(() => {
+		const ownerNow = (): string | null => owner.current;
+		return { prefs: pinnedPrefs(APP_WORKSPACE_PIN, prefs, ownerNow), grids: pinnedGrids(APP_WORKSPACE_PIN, APP_GRIDS, ownerNow), userData: createAppUserData(prefs, ownerNow) };
+	});
 	const env = useMemo(
-		() => createLocalGraphEnv({ mount: 'app', ready: isConnected, client, stores: APP_STORES, activeConnection, openDocument: openAppDocument, prefs, historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE }),
-		[isConnected, client, prefs]
+		() => createLocalGraphEnv({ mount: 'app', ready: isConnected, client, stores: APP_STORES, activeConnection, openDocument: openAppDocument, prefs: pinned.prefs, historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE, userData: pinned.userData, gridPersistence: pinned.grids }),
+		[isConnected, client, pinned]
 	);
 
 	// A different user, organization or team (or a sign-out) must find nothing from before: no schema, and no
 	// workbench or write console still showing the previous identity's results (the store forgets its endpoints).
 	// On the first run the documents do not exist yet, so only the schema snapshots are cleared.
-	const fingerprint = identityFingerprint(identityFromConnectResult(identity));
 	useEffect(() => {
 		forgetConnections(getDocs(), { schemas });
 	}, [fingerprint]);
+
+	// Styles and saved queries answer to the account signed in now: read them again when it changes.
+	useEffect(() => {
+		pinned.userData.notify();
+	}, [pinned, fingerprint]);
+
+	// New labels in a loaded schema get their colour slots once, here (the realm that owns the schema).
+	useEffect(() => followAssignments(schemas, pinned.userData), [pinned]);
 
 	useEffect(() => {
 		const docs = createDocs();

@@ -43,12 +43,18 @@
 //     graph.schemaView        one connection's full schema view (bulk: an op
 //                             result; a frame re-reads it when the `schemas`
 //                             summary says a load completed)
+//     graph.userData          one connection's label styles and saved queries
+//                             (an op result), for the frame's own account
+//     graph.userDataEdit      a style or saved-query change, for the frame's
+//                             own account
 //
 //   STATE (controller -> frames; retained, each snapshot under 64 KiB)
 //     endpoints     the endpoint store's snapshot (capped; see below)
 //     schemas       per connection: status and label names only (capped)
 //     dataVersions  per connection: has a write run there?
 //     history       { rev }: a frame re-reads its list when it changes
+//     userData      { rev }: a frame re-reads styles and saved queries when it
+//                   changes (the file read, an account change, an edit)
 //     identity      { fingerprint } (frameIdentity.ts)
 //     previews      the pending sidebar preview request (graph/previews.ts)
 //
@@ -59,7 +65,10 @@
 //
 // Every op names an endpoint by its library KEY (owner-aware, token-free),
 // never by an endpoint object, and never carries a token. Bulk data (rows,
-// history lists) travels as op RESULTS, never as retained state.
+// history lists, schema views, styles, saved queries) travels as op RESULTS,
+// never as retained state. The user-data ops also carry the fingerprint of the
+// account the frame belongs to (`owner`): the controller serves and changes
+// only that account's data, checked again after every wait.
 // =============================================================================
 
 import type { ToolOpMap, ToolOpSpec } from 'shell';
@@ -75,6 +84,7 @@ import type { IGraphPreview } from '../graph/previews';
 import type { ISchemaView } from '../graph/schema';
 import type { ISchemaEntry } from '../graph/schemaStore';
 import type { ReadQueryResult } from '../graph/types';
+import type { IConnectionStyle, ISavedQueriesView, SavedEdit, StyleEdit } from '../graph/userData';
 
 /** The tool's app id (also the manifest id). */
 export const GRAPH_APP_ID = 'rocketride.graph';
@@ -95,6 +105,8 @@ export const OP = {
 	historyEdit: 'graph.historyEdit',
 	writeAbandoned: 'graph.writeAbandoned',
 	schemaView: 'graph.schemaView',
+	userData: 'graph.userData',
+	userDataEdit: 'graph.userDataEdit',
 } as const;
 
 /** One connection's history as a frame shows it. */
@@ -114,6 +126,16 @@ export type HistoryEdit =
 	| { action: 'clear' }
 	| { action: 'recording'; on: boolean };
 
+/** One connection's styles and saved queries as a frame reads them, with where they are kept (one sentence). */
+export interface IUserDataAnswer {
+	style: IConnectionStyle;
+	saved: ISavedQueriesView;
+	privacyNote: string;
+}
+
+/** A user-data change a frame asks for. */
+export type UserDataChange = { target: 'style'; edit: StyleEdit } | { target: 'saved'; edit: SavedEdit };
+
 /** The ops a frame calls. */
 export interface GraphOps extends ToolOpMap {
 	'graph.refreshEndpoints': ToolOpSpec<IDeadline & { reprobe?: boolean }, Reply<null>>;
@@ -126,6 +148,8 @@ export interface GraphOps extends ToolOpMap {
 	'graph.historyEdit': ToolOpSpec<IDeadline & { key: string; edit: HistoryEdit }, Reply<null>>;
 	'graph.writeAbandoned': ToolOpSpec<IDeadline & { key: string }, Reply<null>>;
 	'graph.schemaView': ToolOpSpec<IDeadline & { key: string }, Reply<ISchemaView | null>>;
+	'graph.userData': ToolOpSpec<IDeadline & { key: string; owner: string | null }, Reply<IUserDataAnswer>>;
+	'graph.userDataEdit': ToolOpSpec<IDeadline & { key: string; owner: string | null; change: UserDataChange }, Reply<null>>;
 }
 
 // =============================================================================
@@ -140,6 +164,7 @@ export const STATE = {
 	history: 'history',
 	identity: 'identity',
 	previews: 'previews',
+	userData: 'userData',
 } as const;
 
 /** The endpoint store's snapshot as it crosses: `omitted` endpoints did not fit the cap. */
@@ -168,6 +193,7 @@ export interface GraphStateMap {
 	history: { rev: number };
 	identity: IIdentityState;
 	previews: { pending: IGraphPreview | null };
+	userData: { rev: number };
 }
 
 /** Event names (disjoint from every op name: the op server would run an event named like an op). */
@@ -193,6 +219,14 @@ export const NO_ENDPOINTS: IGraphEndpointsState = { status: 'idle', endpoints: [
 
 /** What the controller answers from memory (a refresh or schema load it starts, history, marks). */
 export const CONTROLLER_LOCAL_OP_MS = 10_000;
+
+/**
+ * How long a user-data op may wait for the account's file to be read: the dev-tool library's whole load
+ * (shared/explorer/devtool/prefs: three attempts of a stat and a read, each 15 s, with 1 s and then 3 s between them).
+ * Spelled out because frames import this module and must not import that one (it reaches the bus client); a test
+ * pins the numbers.
+ */
+export const USER_DATA_LOAD_WAIT_MS = 3 * 2 * 15_000 + 1_000 + 3_000;
 
 /**
  * The session wait of a statement on a node (read_query and execute): its published statement deadline plus the
@@ -224,6 +258,10 @@ export function frameTimeoutFor(op: keyof GraphOps & string, info: Record<string
 			return frameOpTimeoutMs(toolCallBudgetMs(statementWaitMs(info)));
 		case OP.ask:
 			return frameOpTimeoutMs(toolCallBudgetMs(DEFAULT_TOOL_TIMEOUTS.get_query));
+		case OP.userData:
+		case OP.userDataEdit:
+			// The account's file is read first (a change is written later, debounced).
+			return frameOpTimeoutMs(USER_DATA_LOAD_WAIT_MS + CONTROLLER_LOCAL_OP_MS);
 		default:
 			// refreshEndpoints and loadSchema START work whose results arrive as state; the rest (history, the schema view,
 			// marks) are answered from memory.

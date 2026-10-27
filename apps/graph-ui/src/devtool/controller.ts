@@ -50,6 +50,13 @@
 //               cut by the protocol (protocol.ts) and kept by the base guard
 //               under 64 KiB each and 128 KiB together, degraded through the
 //               same cuts; a result over maxResultBytes is refused, not sent.
+//   USER DATA   Label styles and saved queries live in their own file, one
+//               section per account (graph/userDataFile.ts), read like
+//               history once the tool is activated and an identity is known.
+//               Frames read and change them with owned ops (the caller's
+//               account is checked before and after every wait) and follow a
+//               `{rev}` topic. A loaded schema's new labels get their colour
+//               slots here (followAssignments).
 // =============================================================================
 
 import type { DevToolProps, IToolOpServer, ToolChannel } from 'shell';
@@ -80,14 +87,16 @@ import { countWrite, createDataVersions } from '../graph/dataVersion';
 import { canWrite, parseDialect } from '../graph/dialect';
 import { createPreviewStore } from '../graph/previews';
 import { createSchemaStore } from '../graph/schemaStore';
-import { SESSION_USER_DATA_NOTE, createMemoryUserData } from '../graph/userData';
+import { createStoredUserData, followAssignments } from '../graph/userData';
+import { createUserDataFile } from '../graph/userDataFile';
+import { checkSavedEdit, checkStyleEdit } from '../graph/userDataStore';
 import type { ReadQueryResult } from '../graph/types';
 import { createLocalGraphEnv, schemaViewOf } from '../localEnv';
 import type { IGraphStores } from '../localEnv';
 import { adoptParkedHistory, ownerNowOf, parkHistory, settleOwed } from './owedHistory';
 import type { IOwedHistory, IVouch } from './owedHistory';
-import { EVENT, GRAPH_APP_ID, OP, STATE, docKeyFor, endpointsSnapshot, field, schemasSnapshot, toWire, versionsSnapshot } from './protocol';
-import type { GraphOps, HistoryEdit, IGraphHistoryView } from './protocol';
+import { EVENT, GRAPH_APP_ID, OP, STATE, USER_DATA_LOAD_WAIT_MS, docKeyFor, endpointsSnapshot, field, schemasSnapshot, toWire, versionsSnapshot } from './protocol';
+import type { GraphOps, HistoryEdit, IGraphHistoryView, IUserDataAnswer } from './protocol';
 
 /** What the controller needs from its realm's ConnectionManager (structural; tests pass the base's fake realms). */
 export type IGraphRealm = IIdentityBus & IActivationBus & IDiscoveryBus & IExplorerBus;
@@ -247,6 +256,37 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 		return edit as HistoryEdit;
 	};
 
+	// ── User data: styles and saved queries in their own file, per account ─────────────────────
+	let userDataRev = 0;
+	// The file tells its first change while it is made: publishing waits until the channel below is up.
+	let userDataLive = false;
+	const userDataFile = createUserDataFile({
+		cm,
+		identity,
+		activation,
+		loadWaitMs: USER_DATA_LOAD_WAIT_MS,
+		onChange: () => {
+			userDataRev += 1;
+			if (!userDataLive) return;
+			publishUserData();
+			userData.notify();
+		},
+		onError: (error, phase) => report(error, `user data ${phase}`),
+	});
+	const userData = createStoredUserData(userDataFile, now);
+	/**
+	 * Refuse a user-data call from a frame that does not belong to who is signed in now.
+	 *
+	 * @param owner - The calling frame's fingerprint.
+	 * @param tool - The op.
+	 */
+	const requireOwner = (owner: unknown, tool: string): void => {
+		const snapshot = identity.get();
+		const outcome = tool === OP.userData ? 'no style or saved query was read' : 'nothing was changed';
+		if (!snapshot.known) throw new ExplorerToolError({ kind: 'unavailable', tool, message: `Not signed in to a RocketRide server, so ${outcome}.` });
+		if (owner !== snapshot.fingerprint) throw new ExplorerToolError({ kind: 'stale', tool, message: `The signed-in account changed since this document opened, so ${outcome}.` });
+	};
+
 	// Every op has a handler (RequiredControllerHandlers): a frame never meets "No handler serves".
 	const handlers: RequiredControllerHandlers<GraphOps> = {
 		[OP.refreshEndpoints]: (params) => {
@@ -302,6 +342,29 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			return replyOk(null);
 		},
 		[OP.schemaView]: (params) => replyOk(sized(toWire(schemaViewOf(stores.schemas.get(keyOf(params, OP.schemaView)))), OP.schemaView)),
+		[OP.userData]: async (params) => {
+			// Only the frame's own account's, checked again after the wait: a frame bound to A is never served B's.
+			const key = keyOf(params, OP.userData);
+			const owner = field(params, 'owner');
+			requireOwner(owner, OP.userData);
+			await userDataFile.accessor(OP.userData);
+			requireOwner(owner, OP.userData);
+			const answer: IUserDataAnswer = { style: userData.style(key).get(), saved: userData.saved(key).get(), privacyNote: userData.privacyNote };
+			return replyOk(sized(toWire(answer), OP.userData));
+		},
+		[OP.userDataEdit]: async (params) => {
+			const key = keyOf(params, OP.userDataEdit);
+			const owner = field(params, 'owner');
+			requireOwner(owner, OP.userDataEdit);
+			const change = field(params, 'change');
+			const target = field(change, 'target');
+			// Again after the file's read, right before the write: a change lands in its own account's file only.
+			const check = (): void => requireOwner(owner, OP.userDataEdit);
+			if (target === 'style') await userData.editStyle(key, checkStyleEdit(field(change, 'edit')), check);
+			else if (target === 'saved') await userData.editSaved(key, checkSavedEdit(field(change, 'edit')), check);
+			else throw new ExplorerToolError({ kind: 'invalid', tool: OP.userDataEdit, message: 'Nothing was changed: the edit is not one this app makes.' });
+			return replyOk(null);
+		},
 	};
 
 	// ── The channel first, then the ONE op server (attachController, R6) ────────────────────────
@@ -359,6 +422,9 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 	let historyRev = 0;
 	const publishHistory = (): void => publish(STATE.history, { rev: historyRev });
 	const publishPreviews = (): void => publish(STATE.previews, { pending: stores.previews.get() });
+	function publishUserData(): void {
+		publish(STATE.userData, { rev: userDataRev });
+	}
 	offs.push(stores.endpoints.subscribe(publishEndpoints));
 	offs.push(stores.schemas.subscribe(publishSchemas));
 	offs.push(stores.dataVersions.subscribe(publishVersions));
@@ -372,7 +438,11 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 	publishVersions();
 	publishHistory();
 	publishPreviews();
+	userDataLive = true;
+	publishUserData();
 	offs.push(publishIdentityState(channel, identity));
+	// New labels in a loaded schema get their colour slots, in this realm (the one that owns the schema).
+	offs.push(followAssignments(stores.schemas, userData));
 
 	// ── Frame events: `active` (the fallback for the fronted document, and a taken preview) ─────
 	offs.push(attached.channel.onEvent(EVENT.active, (payload) => {
@@ -466,7 +536,6 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 		else documents.open(docKeyFor(target.kind, target.endpoint.key), target.kind === 'write' ? `${target.endpoint.nodeName || 'Graph'} (write)` : target.endpoint.nodeName || 'Graph');
 	};
 	const sidebarPrefs = memoryPrefs();
-	const userData = createMemoryUserData(SESSION_USER_DATA_NOTE);
 	const activeConnection: IReadable<string | null> = { get: active.get, subscribe: active.subscribe };
 	let lastEnv: { ready: boolean; env: IGraphEnv } | null = null;
 
@@ -520,6 +589,8 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			if (disposed) return;
 			disposed = true;
 			for (const off of offs.splice(0)) off();
+			// Styles and saved queries still pending are written (for the account signed in now only), then the file stops.
+			userDataFile.close();
 			// The last batch still in the history store's debounce goes to the current accessor before the detach drops
 			// it. (A disconnect or a sign-out reached the identity first: syncHistory already handed it to the HELD one.)
 			stores.history.flush();
