@@ -119,3 +119,78 @@ export function guardLayouts(inner: IDataGridPersistence, rules: LayoutRules): I
 		clear: (tableId) => inner.clear(tableId),
 	};
 }
+
+// =============================================================================
+// SESSION-ONLY RESULT LAYOUTS
+// =============================================================================
+//
+// A result grid's key is the connection, the tab id and a result counter that restarts at 1 on every page load, so a
+// stored sort or hidden column would come back, after a reload, on whatever result is first in that tab: a Table that
+// disagrees with the statement's own ORDER BY and with the export. So the results grid keeps its sort and shown
+// columns for the page session only, in this store, and never in the env's persistence (prefs or the host's files).
+
+/** The page session's layouts, by `tableId/type`. Held as JSON text: the grid writes keys into any object it is handed. */
+const SESSION = new Map<string, string>();
+
+/**
+ * Layouts kept in memory for the life of the page.
+ *
+ * @returns A persistence whose reads and writes never leave this page.
+ */
+export function createSessionLayouts(): IDataGridPersistence {
+	return {
+		read: (tableId, type) => {
+			const text = SESSION.get(`${tableId}/${type}`);
+			return text === undefined ? false : (JSON.parse(text) as unknown);
+		},
+		write: (tableId, type, data) => {
+			const text = JSON.stringify(data);
+			if (text !== undefined) SESSION.set(`${tableId}/${type}`, text);
+		},
+		clear: (tableId) => {
+			for (const key of [...SESSION.keys()]) if (key.startsWith(`${tableId}/`)) SESSION.delete(key);
+		},
+	};
+}
+
+/** The one session store the results grid uses. */
+export const RESULT_LAYOUTS: IDataGridPersistence = createSessionLayouts();
+
+/** Mounts so far in this page, for {@link nextMountNonce}. */
+let mounts = 0;
+
+/**
+ * A number no other mount of a results Table in this page has had.
+ *
+ * @returns The next nonce.
+ */
+export function nextMountNonce(): number {
+	mounts += 1;
+	return mounts;
+}
+
+/**
+ * A short signature of a result's column names, so a layout is never applied to a result with other columns.
+ *
+ * @param columns - The result's column names, in order.
+ * @returns Eight hex digits.
+ */
+export function columnSignature(columns: readonly string[]): string {
+	let hash = 5381;
+	for (const ch of `${columns.length}\u0001${columns.join('\u0001')}`) hash = ((hash * 33) ^ (ch.codePointAt(0) ?? 0)) >>> 0;
+	return hash.toString(16).padStart(8, '0');
+}
+
+/**
+ * The key a results grid keeps its layout under. A tab id and a result counter both restart when a workbench is opened
+ * again in the same page, so the key also carries this mount's nonce and the result's column signature: a layout is
+ * only ever applied to the result it was made on.
+ *
+ * @param tableKey - The connection, tab and result counter (the caller's own key).
+ * @param nonce - This mount's {@link nextMountNonce}.
+ * @param columns - The result's column names.
+ * @returns The grid's `tableId`.
+ */
+export function resultLayoutKey(tableKey: string, nonce: number, columns: readonly string[]): string {
+	return `graph-results-${tableKey}-m${nonce}-${columnSignature(columns)}`;
+}

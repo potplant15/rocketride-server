@@ -317,7 +317,7 @@ a search or a column filter in the table does not change them. Where a download 
   (or a tab or a carriage return) gets a leading `'`. Numbers keep their sign.
 
 
-The Table remembers sort and which columns are shown, but not column widths: every result column fills the space, because a grid built while its tab was hidden would otherwise save crushed widths and restore them later.
+The Table keeps its sort and shown columns only for the result on screen, while the page is open; a new or reopened result, or a new page, starts from the statement's own order. It never remembers column widths: every result column fills the space, because a grid built while its tab was hidden would otherwise save crushed widths and restore them later.
 
 ### Errors
 

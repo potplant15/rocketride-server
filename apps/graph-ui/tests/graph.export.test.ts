@@ -149,10 +149,11 @@ test('a copy over the cap is not attempted and says so; a download of any size i
 const SRC = path.resolve(__dirname, '..', 'src');
 const code = (file: string): string => fs.readFileSync(path.join(SRC, ...file.split('/')), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-test('the table drops the grid\'s own export, keeps the persistence, and hands the grid copies', () => {
+test('the table drops the grid\'s own export, keeps its layout in the session only, and hands the grid copies', () => {
 	const views = code('components/ResultViews.tsx');
 	assert.match(views, /noExport/);
-	assert.match(views, /guardLayouts\(env\.gridPersistence/);
+	assert.match(views, /guardLayouts\(RESULT_LAYOUTS,/);
+	assert.doesNotMatch(views, /gridPersistence/, 'the results layout never reaches the env\'s persistence');
 	assert.match(views, /toGridRows\(result\)/, 'the grid is given rows built fresh from the result');
 });
 
