@@ -88,6 +88,12 @@ export function rowsMeta(result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 't
 	return elapsedMs === undefined ? base : `${base} · ${(elapsedMs / 1000).toFixed(1)} s round trip`;
 }
 
+/**
+ * What is announced when a graph fills the document. A first Escape is used by what is open or selected inside the
+ * graph (a menu or the search closes, the selection or a path clears); Escape leaves full screen once nothing uses it.
+ */
+export const FULL_SCREEN_TEXT = 'Full screen; the inspector stays open. Escape leaves it once no menu or search is open and nothing is selected.';
+
 /** What the write console's result line says on Apache AGE, whose node reports result rows, not a count of changes. */
 export const AGE_AFFECTED_NOT_REPORTED = 'Affected count not reported by Apache AGE';
 

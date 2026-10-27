@@ -9,14 +9,14 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ASK_DRAFT_HEADLINE, askCheckText, askDraftText } from '../src/components/AskBar';
+import { ASK_DRAFT_HEADLINE, ASK_STOPPED_TEXT, ASK_STOP_NOTE, askCheckText, askDraftText } from '../src/components/AskBar';
 import { entrySummary, historyEmptyText } from '../src/components/HistoryPanel';
 import { createLoadSlot } from '../src/graph/loadSlot';
 import { GATE_BUSY_TEXT } from '../src/graph/requestGate';
 import { STILL_RUNNING_TEXT, affectedNotReported, historySummaryOf, limitPatch, runRefusal, settleRun, toHistoryEntry } from '../src/graph/runConfig';
 import type { IResultSummary } from '../src/graph/results';
 import type { GraphValue, ReadQueryResult } from '../src/graph/types';
-import { AGE_AFFECTED_NOT_REPORTED, NOTICE_HEADLINE_MAX, resultMeta, resultNotes, splitNotice } from '../src/graph/wording';
+import { AGE_AFFECTED_NOT_REPORTED, FULL_SCREEN_TEXT, NOTICE_HEADLINE_MAX, resultMeta, resultNotes, splitNotice } from '../src/graph/wording';
 import { node } from './support/builders';
 
 // A request left for the editor is taken from the host's slot once. De-duplicating it with a ref that starts at 0 on
@@ -152,4 +152,20 @@ test('the Ask draft banner quotes at most 100 characters of the question, and ke
 	assert.match(line, /\u2026\u201d Check the Cypher, then Run\.$/);
 	assert.equal(askCheckText(null), null);
 	assert.match(askCheckText({ kind: 'CREATE' }) ?? '', /^The text check found CREATE; query tabs only read, so Run will refuse it\./);
+});
+
+// DA-CLAIMS U-1 (FN-4): Ask counts in the workbench's request gate until the node answers, so stopping the wait does
+// not free Run. The note under Stop waiting, and what is said when it is pressed, say so, with the real bound.
+test('stopping an Ask says Run waits in every tab until the node answers, about two minutes at most', () => {
+	for (const text of [ASK_STOP_NOTE, ASK_STOPPED_TEXT]) {
+		assert.match(text, /The node may still be working on the question; until it answers \(about two minutes at most\), Run waits in every tab\.$/);
+		assert.ok(text.length <= NOTICE_HEADLINE_MAX, text);
+	}
+});
+
+// DA-CLAIMS U-2: the first Escape in full screen is used by an open menu or search, or clears the selection.
+test('the full-screen announcement says when Escape leaves it, and that the inspector stays', () => {
+	assert.equal(FULL_SCREEN_TEXT, 'Full screen; the inspector stays open. Escape leaves it once no menu or search is open and nothing is selected.');
+	assert.doesNotMatch(FULL_SCREEN_TEXT, /Esc to exit/);
+	assert.ok(FULL_SCREEN_TEXT.length <= NOTICE_HEADLINE_MAX);
 });

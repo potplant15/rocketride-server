@@ -99,7 +99,7 @@ import { inspectorTextOfRow } from '../graph/rowInspect';
 import { EDITOR_HEIGHT_PREF_KEY, clampEditorHeight, splitToggled, storedEditorHeight } from '../graph/splitPane';
 import type { IEditorSplit } from '../graph/splitPane';
 import type { ReadQueryResult } from '../graph/types';
-import { AGE_AFFECTED_NOT_REPORTED, NOTICE_HEADLINE_MAX, STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, resultNotes, splitNotice, truncationText } from '../graph/wording';
+import { AGE_AFFECTED_NOT_REPORTED, FULL_SCREEN_TEXT, NOTICE_HEADLINE_MAX, STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, resultNotes, splitNotice, truncationText } from '../graph/wording';
 import type { IResultNote } from '../graph/wording';
 import { GraphFailureBanner } from './GraphFailureBanner';
 import { GraphView } from './GraphView';
@@ -212,8 +212,6 @@ export const DEFAULT_GRAPH_VIEW: IGraphViewState = Object.freeze({ layoutMode: '
 /** A gate's subscription and state for a surface that has none. */
 const NO_GATE = { subscribe: (): (() => void) => () => undefined, busy: (): string | null => null };
 
-/** What is announced when the graph fills the document. */
-export const FULL_SCREEN_TEXT = 'Full screen · Esc to exit · the inspector stays open';
 
 /**
  * A short, unique id for a history entry.

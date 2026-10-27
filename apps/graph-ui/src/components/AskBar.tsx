@@ -90,7 +90,12 @@ export function askKeptText(from: string): string {
 }
 
 /** What the bar says while it waits. */
-export const ASK_STOP_NOTE = 'Stop waiting stops this bar from waiting; the node may still be working on the question.';
+// A question counts in the workbench's request gate until the node answers, even after Stop waiting: Ask's budget is
+// 120 s (DEFAULT_TOOL_TIMEOUTS.get_query, a retry included), a few seconds more through a dev-tool frame.
+export const ASK_STOP_NOTE = 'Stop waiting stops this bar from waiting. The node may still be working on the question; until it answers (about two minutes at most), Run waits in every tab.';
+
+/** What is said when the bar stops waiting. */
+export const ASK_STOPPED_TEXT = 'Stopped waiting. The node may still be working on the question; until it answers (about two minutes at most), Run waits in every tab.';
 
 /** Props. */
 export interface IAskBarProps {
@@ -189,7 +194,7 @@ export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onC
 	const stop = useCallback(() => {
 		ticket.current += 1;
 		setPending(false);
-		announcer.announce('Stopped waiting for the answer. If it arrives later it is ignored.');
+		announcer.announce(`${ASK_STOPPED_TEXT} A late answer is ignored.`);
 	}, []);
 
 	return (
