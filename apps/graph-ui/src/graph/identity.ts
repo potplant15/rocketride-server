@@ -26,9 +26,9 @@
 //
 // Element ids are LIVE HANDLES, not identities. A database may hand an id out again
 // once the element that held it is gone: FalkorDB reuses ids after a delete (measured:
-// CREATE, DELETE, CREATE gives the new node the old id), and Apache AGE ids are
-// per-label sequences. So "the answer contains id 7" does not mean "this is the node
-// I drew as 7".
+// CREATE, DELETE, CREATE gives the new node the old id), and numbers nodes and
+// relationships separately, both from 0. So "the answer contains id 7" does not mean
+// "this is the node I drew as 7".
 //
 // The canvas therefore never merges an answer into drawn elements without checking
 // that each element it already holds comes back as the same KIND of thing:

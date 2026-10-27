@@ -191,6 +191,17 @@ export function keyAction(context: IKeyContext, input: IKeyInput): KeyAction {
 }
 
 /**
+ * What a click on a node does: a plain click selects that node alone; with Shift, Ctrl or Cmd it adds the node to
+ * the selection or takes it out (finding a path needs two).
+ *
+ * @param input - The click's modifier keys.
+ * @returns `only` or `toggle`.
+ */
+export function clickMode(input: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }): 'only' | 'toggle' {
+	return input.shiftKey || input.ctrlKey || input.metaKey ? 'toggle' : 'only';
+}
+
+/**
  * The relationship R moves to: the one after `current` among the node's drawn relationships (in drawn order,
  * wrapping), or the first when `current` is not one of them.
  *

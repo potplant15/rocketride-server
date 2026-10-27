@@ -108,6 +108,21 @@ test('a single node with several loops: the bounds grow with each loop\'s reach 
 	assert.ok(reach(5) >= reach(3));
 });
 
+// Sizes S, M and L (per-label styles) give nodes different radii: the fit, and where each relationship meets its
+// circles, use each node's own radius.
+test('per-node radii: a large node grows the bounds by its own radius, and a relationship meets each circle at its own radius', () => {
+	const c = centers({ small: [0, 0], large: [300, 0] });
+	const edges = edgesOf([{ id: 'e', source: 'small', target: 'large' }]);
+	const radius = (id: string): number => (id === 'large' ? 38 : 20);
+	const same = contentBounds(c, edges)!;
+	const sized = contentBounds(c, edges, radius)!;
+	assert.equal(sized.x, -20, 'the small node reaches 20 to its left');
+	assert.equal(sized.x + sized.width, 338, 'the large node reaches 38 to its right');
+	assert.equal(sized.y + sized.height, 38 + CAPTION_BELOW, 'its caption sits under its own circle');
+	assert.notDeepEqual(sized, same);
+	assert.deepEqual(contentBounds(c, edges, NODE_RADIUS), same, 'a number is every node\'s radius, as before');
+});
+
 test('pairsIn reads path data and polygon points', () => {
 	assert.deepEqual(pairsIn('M1.5 2Q-3 4.25 5e1 6'), [{ x: 1.5, y: 2 }, { x: -3, y: 4.25 }, { x: 50, y: 6 }]);
 	assert.deepEqual(pairsIn('1,2 3,4 5,6'), [{ x: 1, y: 2 }, { x: 3, y: 4 }, { x: 5, y: 6 }]);
@@ -116,7 +131,7 @@ test('pairsIn reads path data and polygon points', () => {
 
 test('wiring: the automatic fit, the ResizeObserver refit and the fit button all go through contentBounds, with the same zoom cap, padding and motion rules', () => {
 	const canvas = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'canvas', 'GraphCanvas.tsx'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-	assert.match(canvas, /contentBounds\(layoutPositions\.current, edgesRef\.current\)/);
+	assert.match(canvas, /contentBounds\(layoutPositions\.current, edgesRef\.current, radiusOf\)/, 'each node at its own size');
 	assert.match(canvas, /getViewportForBounds\(bounds, el\.clientWidth, el\.clientHeight, FLOW_MIN_ZOOM, FIT_MAX_ZOOM, FIT_PADDING\)/);
 	assert.doesNotMatch(canvas, /\.fitView\(/, 'React Flow\'s node-box fit is no longer used');
 	assert.match(canvas, /const duration = reducedRef\.current \|\| document\.hidden \? 0 : 300/, 'reduced motion and hidden tabs still skip the animation');
