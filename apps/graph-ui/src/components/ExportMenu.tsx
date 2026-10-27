@@ -72,6 +72,24 @@ function moveFocus(event: React.KeyboardEvent<HTMLElement>): void {
 }
 
 /**
+ * A key pressed inside the menu. Escape is the menu's own while it is open: it is claimed (`preventDefault`, so nothing
+ * above the portal, a full screen or another panel, also acts on it), the menu closes, and focus goes back to the
+ * Export button. Other keys move between the items.
+ *
+ * @param event - The key event (only what is read).
+ * @param actions - What the menu can do.
+ */
+export function handleMenuKey(event: { key: string; preventDefault(): void }, actions: { close(): void; focusButton(): void; move(): void }): void {
+	if (event.key === 'Escape') {
+		event.preventDefault();
+		actions.close();
+		actions.focusButton();
+	} else {
+		actions.move();
+	}
+}
+
+/**
  * The Export button and its menu.
  *
  * @param props - See {@link IExportMenuProps}.
@@ -127,10 +145,7 @@ export const ExportMenu: React.FC<IExportMenuProps> = ({ result, announce }) => 
 					role="group"
 					aria-label="Export"
 					style={styles.items}
-					onKeyDown={(event) => {
-						if (event.key === 'Escape') anchor.current?.querySelector('button')?.focus();
-						else moveFocus(event);
-					}}
+					onKeyDown={(event) => handleMenuKey(event, { close: () => setOpen(false), focusButton: () => anchor.current?.querySelector('button')?.focus(), move: () => moveFocus(event) })}
 				>
 					<div style={styles.note}>{exportNote(result)}</div>
 					<Button variant="ghost" small onClick={() => run('csv')}>{copies ? 'Copy as CSV' : 'Download CSV'}</Button>
