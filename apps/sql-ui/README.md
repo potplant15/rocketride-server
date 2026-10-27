@@ -43,9 +43,10 @@ you between them; what differs in a dev tool is under
   has an **Allow direct query execution** setting (`allow_execute`), off by
   default and worth leaving off until a caller truly needs it. With it off,
   schema browsing, the diagram and the Insights page still work; statements
-  do not. The first refused statement raises a banner: `This node does not
-  allow execute (allow_execute is off). Schema browsing works; statements
-  cannot run.` For a pipeline-bound connection the setting belongs to that
+  do not. The app finds out once when a connection opens (see [The
+  connection workbench](#the-connection-workbench)) and the query page then
+  says `This node does not allow execute (allow_execute is off). Schema
+  browsing works; statements cannot run.` For a pipeline-bound connection the setting belongs to that
   pipeline's node; for a direct connection it is part of the configuration
   you enter yourself.
 
@@ -114,8 +115,9 @@ Hovering the word gives the reason. The words follow pipelines starting and
 stopping as the engine reports them; until the app has first looked at your
 running pipelines, a pipeline row says nothing.
 
-Opening a connection gives it a workbench document and fills the sidebar
-with that database's tables. Everything else hangs off a connection: query
+Opening a connection gives it a workbench document, whose Overview page lists
+that database's tables; the sidebar lists connections only. Everything else
+hangs off a connection: query
 documents, the data browser, the designer and the diagram are each pinned to
 one for life, and two documents on two connections never see each other's
 history or settings.
@@ -441,7 +443,8 @@ sets max_execute_rows) and may be slow.`
 Each saved connection has a **safety level**, set in its connection editor
 under **Safety level for this connection**:
 
-- **Don't ask**: every statement runs as typed.
+- **Don't ask**: nothing asks before a statement is sent. What is sent does
+  not change: the row limit still applies (see [The row limit](#the-row-limit)).
 - **Ask before risky writes** (the default): asks before `UPDATE` or
   `DELETE` with no `WHERE`, an `UPDATE` or `DELETE` inside a `WITH` clause,
   `TRUNCATE`, `DROP` and `ALTER`, and before an `EXPLAIN ANALYZE` of
@@ -807,8 +810,10 @@ error, because nothing went wrong on the database's side.
 
 Every number in the tree is a planner estimate. Plain `EXPLAIN` does not run
 the statement, so nothing on this page was measured; numbers are suffixed
-`est.` under the legend `Planner estimates, not measurements.` There is no
-`EXPLAIN ANALYZE`. The parsers are tested against recorded fixtures rather
+`est.` under the legend `Planner estimates, not measurements.` The drawer
+never sends `EXPLAIN ANALYZE`; one typed into a query runs as a statement
+and is checked as the statement it runs (see
+[Confirmations](#confirmations)). The parsers are tested against recorded fixtures rather
 than a live database.
 
 ## Changing a table
@@ -925,7 +930,9 @@ these differences:
   waits up to 60 seconds, re-reading it 135, and the engine check 15.
 - **No transactions.** Every statement commits on its own, and transaction
   control is refused.
-- **No `EXPLAIN ANALYZE`.** Plan numbers are estimates, never measurements.
+- **The plan drawer never runs `EXPLAIN ANALYZE`.** Its numbers are
+  estimates, never measurements. An `EXPLAIN ANALYZE` typed into a query
+  runs like any statement (see [Confirmations](#confirmations)).
 - **No `DELIMITER`.** Buffers that change the terminator split wrongly.
 - **Declared foreign keys only.** Nothing is inferred from column names, and
   ClickHouse declares no foreign keys at all.
