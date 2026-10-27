@@ -51,6 +51,7 @@ import type { IMenuItem } from '../graph/canvasMenu';
 import { nodeLooks } from '../graph/badges';
 import { labelColors, neutralColors, typeColorsOf } from '../graph/colors';
 import type { IGraphSession, IGraphState } from '../graph/graphSession';
+import { exportFailureText, exportOutcome } from '../graph/exportWording';
 import { inspectNode } from '../graph/inspector';
 import { legendOf, nodeIdsOfLabel, typeLegendOf } from '../graph/legend';
 import { searchNodes } from '../graph/search';
@@ -67,7 +68,7 @@ import { GraphStatusLine } from './GraphStatusLine';
 import { InspectorPanel } from './InspectorPanel';
 import { KeysPanel } from './KeysPanel';
 import { LegendPanel } from './LegendPanel';
-import { copyText } from './ResultViews';
+import { CopyBlocked, copyText } from './ResultViews';
 
 // The canvas is imported for its TYPES only above; the value comes through the lazy boundary.
 const GraphCanvas = lazy(() => import('../canvas/GraphCanvas'));
@@ -80,7 +81,7 @@ const styles = {
 	root: { display: 'flex', flexDirection: 'row', height: '100%', minHeight: 0 } as CSSProperties,
 	main: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 } as CSSProperties,
 	toolbar: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', padding: '8px 10px', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
-	focused: { fontSize: 12, color: 'var(--rr-text-secondary)', marginRight: 6, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
+	focused: { fontSize: 12, color: 'var(--rr-text-secondary)', marginRight: 6, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
 	spacer: { marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } as CSSProperties,
 	canvas: { flex: 1, minHeight: 0, position: 'relative' } as CSSProperties,
 	side: { width: 320, flex: '0 0 320px', minHeight: 0, overflowY: 'auto', borderLeft: '1px solid var(--rr-border)', background: 'var(--rr-bg-default)' } as CSSProperties,
@@ -139,7 +140,7 @@ function download(blob: Blob, name: string): void {
 }
 
 /** The toolbar menus. */
-type ToolMenu = 'layout' | 'export';
+type ToolMenu = 'view' | 'export';
 
 // =============================================================================
 // COMPONENT
@@ -172,6 +173,16 @@ export interface IGraphViewProps {
 	onToggleMaximized?(): void;
 	/** `copy` where the host cannot download files (VS Code): Export copies the SVG and the JSON, and PNG is not offered. */
 	exportMode?: 'download' | 'copy';
+	/**
+	 * View state a host may keep per tab, so a tab switch does not reset it. When a value is given it is used and a
+	 * change is reported; otherwise the view keeps its own.
+	 */
+	layoutMode?: LayoutMode;
+	onLayoutModeChange?(mode: LayoutMode): void;
+	keepPinned?: boolean;
+	onKeepPinnedChange?(keep: boolean): void;
+	legendOpen?: boolean;
+	onLegendOpenChange?(open: boolean): void;
 }
 
 /**
@@ -180,7 +191,7 @@ export interface IGraphViewProps {
  * @param props - See {@link IGraphViewProps}.
  * @returns The view.
  */
-export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, captions: hostCaptions, onInspect, seedKey, announce, endpointKey, meta, onRerun, onNewQuery, maximized, onToggleMaximized, exportMode = 'download' }) => {
+export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, captions: hostCaptions, onInspect, seedKey, announce, endpointKey, meta, onRerun, onNewQuery, maximized, onToggleMaximized, exportMode = 'download', layoutMode: layoutModeProp, onLayoutModeChange, keepPinned: keepPinnedProp, onKeepPinnedChange, legendOpen: legendOpenProp, onLegendOpenChange }) => {
 	const state: IGraphState = useSyncExternalStore(session.subscribe, session.getState, session.getState);
 	const env = useGraphEnv();
 	const key = endpointKey ?? '';
@@ -197,12 +208,30 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	}, [hostCaptions, style]);
 	const schema = useSchemaView(key);
 	const [layoutStatus, setLayoutStatus] = useState<LayoutStatus>({ state: 'idle' });
+	// The canvas reports its layout once it has mounted, so Export waits for that (its handle is null before).
+	const canvasReady = layoutStatus.state !== 'idle';
 	const [helpOpen, setHelpOpen] = useState(false);
 	const [helpToken, setHelpToken] = useState(0);
-	const [legendOpen, setLegendOpen] = useState(true);
+	const [legendOwn, setLegendOwn] = useState(false);
 	const [inspectToken, setInspectToken] = useState(0);
-	const [layoutMode, setLayoutMode] = useState<LayoutMode>('force');
-	const [keepPinned, setKeepPinned] = useState(true);
+	const [layoutOwn, setLayoutOwn] = useState<LayoutMode>('force');
+	const [pinnedOwn, setPinnedOwn] = useState(true);
+	const layoutMode = layoutModeProp ?? layoutOwn;
+	const keepPinned = keepPinnedProp ?? pinnedOwn;
+	const legendOpen = legendOpenProp ?? legendOwn;
+	const setLayoutMode = (mode: LayoutMode): void => {
+		setLayoutOwn(mode);
+		onLayoutModeChange?.(mode);
+	};
+	const setKeepPinned = (keep: boolean): void => {
+		setPinnedOwn(keep);
+		onKeepPinnedChange?.(keep);
+	};
+	const setLegendOpen = (open: boolean): void => {
+		setLegendOwn(open);
+		onLegendOpenChange?.(open);
+	};
+	const [blockedCopy, setBlockedCopy] = useState<string | null>(null);
 	const [pickFrom, setPickFrom] = useState<string | null>(null);
 	const [menu, setMenu] = useState<{ target: CanvasMenuTarget; x: number; y: number } | null>(null);
 	const [toolMenu, setToolMenu] = useState<ToolMenu | null>(null);
@@ -211,8 +240,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const canvasBox = useRef<HTMLDivElement>(null);
 	const handle = useRef<IGraphCanvasHandle | null>(null);
 	const searchInput = useRef<HTMLInputElement>(null);
-	const triggers = useRef<Record<ToolMenu, HTMLSpanElement | null>>({ layout: null, export: null });
-	const keysAnchor = useRef<HTMLSpanElement>(null);
+	const triggers = useRef<Record<ToolMenu, HTMLSpanElement | null>>({ view: null, export: null });
 	const toolbar = useRef<HTMLDivElement>(null);
 
 	// An informational notice leaves by itself; a warning or an error stays until the next action.
@@ -318,7 +346,11 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		setMenu({ target, x: at.x - (box?.left ?? 0), y: at.y - (box?.top ?? 0) });
 	};
 	const exportGraphJson = (): string => toJsonText({ nodes: nodes, relationships: [...state.model.relationships.values()] }, 2);
-	const say = async (text: string, ok: boolean): Promise<void> => announce(ok ? text : 'Copying was not allowed by the browser.');
+	/** Announce a copy; when the browser refused it, leave the text on screen to copy by hand. */
+	const say = async (text: string, ok: boolean, fallback?: string): Promise<void> => {
+		announce(ok ? text : 'Copying was not allowed by the browser.');
+		setBlockedCopy(ok ? null : (fallback ?? null));
+	};
 
 	const runExport = async (what: 'png' | 'svg' | 'json' | 'copy-svg' | 'copy-json'): Promise<void> => {
 		try {
@@ -333,16 +365,24 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 			return;
 		}
 		if (what === 'copy-json') {
-			await say('Copied the drawn graph as JSON.', await copyText(exportGraphJson()));
+			{
+				const text = exportGraphJson();
+				await say('Copied the drawn graph as JSON.', await copyText(text), text);
+			}
 			return;
 		}
 		const format = what === 'png' ? 'png' : 'svg';
-		const blob = (await handle.current?.exportImage(format)) ?? null;
+		const canvas = handle.current;
+		const outcome = canvas ? exportOutcome(await canvas.exportImage(format)) : { blob: null, reason: 'not-ready' as const };
+		const blob = outcome.blob;
 		if (blob === null) {
-			announce(format === 'png' ? 'Too large for a PNG; save the SVG instead.' : 'The image could not be made.');
+			announce(exportFailureText(outcome.reason ?? 'render-failed', format));
 			return;
 		}
-		if (what === 'copy-svg') await say('Copied the SVG.', await copyText(await blob.text()));
+		if (what === 'copy-svg') {
+			const text = await blob.text();
+			await say('Copied the SVG.', await copyText(text), text);
+		}
 		else download(blob, `graph.${format}`);
 	};
 
@@ -394,7 +434,12 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		if (which) restoreToolFocus(which);
 		if (id === 'force' || id === 'tree' || id === 'left-right') setLayoutMode(id);
 		else if (id === 'relayout') handle.current?.relayout();
-		else if (id === 'keep-pinned') setKeepPinned((v) => !v);
+		else if (id === 'keep-pinned') setKeepPinned(!keepPinned);
+		else if (id === 'legend') setLegendOpen(!legendOpen);
+		else if (id === 'keys') {
+			setHelpOpen(!helpOpen);
+			setHelpToken((n) => n + 1);
+		} else if (id === 'fullscreen') onToggleMaximized?.();
 		else if (id === 'png' || id === 'svg' || id === 'json' || id === 'copy-svg' || id === 'copy-json') void runExport(id);
 	};
 
@@ -432,23 +477,27 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		});
 	})();
 
-	const layoutItems: IMenuItem[] = [
-		{ id: 'force', label: 'Force', role: 'menuitemradio', checked: layoutMode === 'force' },
-		{ id: 'tree', label: 'Tree (top down)', role: 'menuitemradio', checked: layoutMode === 'tree' },
-		{ id: 'left-right', label: 'Left to right (paths)', role: 'menuitemradio', checked: layoutMode === 'left-right' },
-		{ id: 'relayout', label: 'Re-run layout', separatorBefore: true },
+	const viewItems: IMenuItem[] = [
+		{ id: 'force', label: 'Layout: Force', role: 'menuitemradio', checked: layoutMode === 'force' },
+		{ id: 'tree', label: 'Layout: Tree (top down)', role: 'menuitemradio', checked: layoutMode === 'tree' },
+		{ id: 'left-right', label: 'Layout: Left to right (paths)', role: 'menuitemradio', checked: layoutMode === 'left-right' },
+		{ id: 'relayout', label: 'Re-run layout' },
 		{ id: 'keep-pinned', label: 'Keep dragged nodes pinned', role: 'menuitemcheckbox', checked: keepPinned },
+		{ id: 'legend', label: 'Legend and styles', role: 'menuitemcheckbox', checked: legendOpen, separatorBefore: true },
+		{ id: 'keys', label: 'Keyboard shortcuts', hint: '?', role: 'menuitemcheckbox', checked: helpOpen },
+		...(onToggleMaximized ? [{ id: 'fullscreen', label: maximized ? 'Exit full screen' : 'Full screen', hint: maximized ? 'Esc' : undefined, separatorBefore: true }] : []),
 	];
+	const loading = canvasReady ? {} : { disabled: true, reason: 'The graph is still loading; try again in a moment.' };
 	const exportItems: IMenuItem[] =
 		exportMode === 'copy'
 			? [
-					{ id: 'copy-svg', label: 'Copy SVG' },
+					{ id: 'copy-svg', label: 'Copy SVG', ...loading },
 					{ id: 'copy-json', label: 'Copy the drawn graph as JSON' },
 					{ id: 'png', label: 'PNG image (needs a download; use Copy SVG)', disabled: true, reason: 'PNG needs a file download, which this host does not allow. Copy SVG instead.' },
 				]
 			: [
-					{ id: 'png', label: 'PNG image' },
-					{ id: 'svg', label: 'SVG image' },
+					{ id: 'png', label: 'PNG image', ...loading },
+					{ id: 'svg', label: 'SVG image', ...loading },
 					{ id: 'json', label: 'The drawn graph as JSON' },
 				];
 
@@ -571,14 +620,10 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 							onChoose={chooseMatch}
 							onLeave={() => restoreFocus()}
 						/>
-						{toolMenuTrigger('layout', 'Layout', layoutItems)}
 						<Button variant="ghost" small title="Fit to screen (F)" onClick={() => handle.current?.fit()}>Fit</Button>
+						{toolMenuTrigger('view', 'View', viewItems)}
 						{toolMenuTrigger('export', 'Export', exportItems)}
-						{onToggleMaximized && <Button variant="ghost" small pressed={maximized === true} title={maximized ? 'Exit full screen (Esc)' : 'Full screen'} onClick={onToggleMaximized}>{maximized ? 'Exit full screen' : 'Full screen'}</Button>}
-						<Button variant="ghost" small ariaExpanded={legendOpen} title="Show or hide the legend and its styles" onClick={() => setLegendOpen(!legendOpen)}>Legend</Button>
-						<span ref={keysAnchor}>
-							<Button variant="ghost" small ariaExpanded={helpOpen} title="Keyboard shortcuts (?)" onClick={() => { setHelpOpen(!helpOpen); setHelpToken((n) => n + 1); }}>Keys</Button>
-						</span>
+						{maximized === true && onToggleMaximized && <Button variant="ghost" small pressed title="Exit full screen (Esc)" onClick={onToggleMaximized}>Exit full screen</Button>}
 					</span>
 				</div>
 
@@ -639,9 +684,15 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 				<GraphStatusLine items={items} meta={meta} onRerun={onRerun} />
 			</div>
 
-			{(showInspector || helpOpen || legendOpen) && (
+			{(showInspector || helpOpen || legendOpen || blockedCopy !== null) && (
 				<div style={styles.side}>
 					{showInspector && <InspectorPanel state={state} session={session} captions={captions} announce={announce} onNewQuery={onNewQuery} onFindPathFrom={startPath} focusToken={inspectToken} schema={schema} onClosed={() => restoreFocus()} />}
+					{blockedCopy !== null && (
+						<section aria-label="Text to copy" style={{ padding: '8px 12px', borderTop: '1px solid var(--rr-border)' }}>
+							<CopyBlocked text={blockedCopy} />
+							<Button variant="ghost" small onClick={() => setBlockedCopy(null)}>Close</Button>
+						</section>
+					)}
 					{legendOpen && (
 						<LegendPanel
 							labels={legend}
@@ -657,7 +708,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 							privacyNote={env.userData.privacyNote}
 						/>
 					)}
-					{helpOpen && <KeysPanel focusToken={helpToken} onClose={() => { setHelpOpen(false); keysAnchor.current?.querySelector('button')?.focus(); }} />}
+					{helpOpen && <KeysPanel focusToken={helpToken} onClose={() => { setHelpOpen(false); restoreToolFocus('view'); }} />}
 				</div>
 			)}
 		</div>

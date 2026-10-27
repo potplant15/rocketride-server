@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CHART_COLOR_VARS, TYPE_COLOR_SLOTS, labelColors, neutralColors, nextAssignments, typeColorsOf } from '../src/graph/colors';
+import { CHART_COLOR_VARS, colorFor, TYPE_COLOR_SLOTS, labelColors, neutralColors, nextAssignments, typeColorsOf } from '../src/graph/colors';
 import { labelStyleEdit, legendOf, nodeIdsOfLabel, resetLabelEdit, typeLegendOf, typeStyleEdit } from '../src/graph/legend';
 import { modelFromResult } from '../src/graph/model';
 import { EMPTY_STYLE } from '../src/graph/userData';
@@ -69,7 +69,8 @@ test('type colours: only the offered slots count, and an unstyled or invalid typ
 test('until the style is read, every label is the same neutral grey with no slot', () => {
 	const colors = neutralColors(['Person', 'Company', '', 'Person']);
 	assert.equal(colors.size, 2);
-	for (const c of colors.values()) assert.deepEqual([c.fill, c.slot], ['var(--rr-grey-400)', null]);
+	for (const c of colors.values()) assert.deepEqual([c.fill, c.slot], ['var(--rr-grey-200)', null]);
+	assert.notEqual(neutralColors(['A']).get('A')?.fill, colorFor(new Map(), '').fill, 'told apart from an unlabelled node');
 });
 
 test('a style edit sends only what changed, and clears a field that went back to its default', () => {
