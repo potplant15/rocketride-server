@@ -79,7 +79,13 @@ describe('connectionStatus: a pipeline connection', () => {
 	it('is Unreachable when its node did not answer, with the store\'s own reason', () => {
 		const status = connectionStatus(PIPELINE, [found(PIPE_KEY, 'unreachable', 'The node did not answer its probe.')], {});
 		assert.deepEqual([status.kind, status.label, status.detail], ['unreachable', 'Unreachable', 'The node did not answer its probe.']);
-		assert.equal(connectionStatus(PIPELINE, [found(PIPE_KEY, 'inaccessible')], {}).kind, 'unreachable');
+	});
+
+	it('is No access when the run is up but the signed-in role may not call it (review M5)', () => {
+		const detail = 'Your role cannot call this deployment (it needs task.data; you can see it with task.monitor).';
+		const status = connectionStatus(PIPELINE, [found(PIPE_KEY, 'inaccessible', detail)], {});
+		assert.deepEqual([status.kind, status.label, status.detail], ['noaccess', 'No access', detail]);
+		assert.equal(connectionStatus(DIRECT, [found(DIRECT_KEY, 'inaccessible')], {}).label, 'No access');
 	});
 
 	it('says nothing before the first discovery has finished', () => {
@@ -251,7 +257,7 @@ describe('the sidebar\'s status source: discovery and open failures, in the real
 describe('connection status: the README says what the rows say', () => {
 	it('names every word a row can carry', () => {
 		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
-		for (const word of ['Running', 'Stopped', 'Direct', 'Open', 'Unreachable']) assert.ok(prose.includes(`**${word}**`), word);
+		for (const word of ['Running', 'Stopped', 'Direct', 'Open', 'Unreachable', 'No access']) assert.ok(prose.includes(`**${word}**`), word);
 		assert.match(prose, /from what the app already knows \(nothing is sent to find out\)/);
 	});
 });

@@ -140,7 +140,7 @@ const styles = {
 		lineHeight: '16px',
 		color: kind === 'running' || kind === 'open'
 			? 'var(--rr-color-success)'
-			: kind === 'unreachable' ? 'var(--rr-color-error)' : 'var(--rr-text-secondary)',
+			: kind === 'unreachable' ? 'var(--rr-color-error)' : kind === 'noaccess' ? 'var(--rr-color-warning)' : 'var(--rr-text-secondary)',
 	}),
 
 	/** Muted empty-list line. */

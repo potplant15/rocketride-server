@@ -36,7 +36,8 @@
 //
 // The words: a pipeline connection is Running or Stopped; a direct one is
 // Direct, or Open while its temporary pipeline runs; either is Unreachable
-// after an open failure, or while its node does not answer. Before the first
+// after an open failure, or while its node does not answer, and No access
+// while it runs but the signed-in role may not call it. Before the first
 // discovery has finished the row says nothing rather than guess.
 // =============================================================================
 
@@ -45,7 +46,7 @@ import { endpointKeyForConnection } from './connect';
 import type { SavedSqlConnection } from './connect';
 
 /** What a row can say. */
-export type ConnectionStatusKind = 'running' | 'stopped' | 'direct' | 'open' | 'unreachable' | 'unknown';
+export type ConnectionStatusKind = 'running' | 'stopped' | 'direct' | 'open' | 'unreachable' | 'noaccess' | 'unknown';
 
 /** One row's status. */
 export interface ConnectionStatus {
@@ -74,6 +75,9 @@ const LIVE: ReadonlyArray<DiscoveredStatus['state']> = ['ready', 'probing'];
 /** Endpoint states that mean the run is up but its node does not answer. */
 const TROUBLED: ReadonlyArray<DiscoveredStatus['state']> = ['unreachable', 'inaccessible'];
 
+/** What the store's `inaccessible` means: running, but this role may not call it (shared/explorer/types.ts). */
+const NO_ACCESS_DETAIL = 'The pipeline is running, but your role may not call its database node.';
+
 /** A direct connection whose temporary pipeline is not running. */
 const DIRECT: ConnectionStatus = { kind: 'direct', label: 'Direct', detail: 'Opening it starts a temporary pipeline holding just this database node.' };
 
@@ -97,6 +101,7 @@ export function connectionStatus(conn: SavedSqlConnection, discovered: ReadonlyA
 			: { kind: 'running', label: 'Running', detail: `The pipeline '${conn.pipelineName}' is running.` };
 	}
 	const troubled = runs.find((endpoint) => TROUBLED.includes(endpoint.state));
+	if (troubled?.state === 'inaccessible') return { kind: 'noaccess', label: 'No access', detail: troubled.stateDetail ?? NO_ACCESS_DETAIL };
 	if (troubled) return { kind: 'unreachable', label: 'Unreachable', detail: troubled.stateDetail ?? 'The pipeline is running, but its database node did not answer.' };
 	return conn.mode === 'direct'
 		? DIRECT

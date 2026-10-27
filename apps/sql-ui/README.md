@@ -97,14 +97,20 @@ string or a task token in anything it saves or shows: task tokens are kept in
 memory only, where the engine connection is.
 
 Each row also says how its connection stands, from what the app already
-knows (nothing is sent to find out): **Running** or **Stopped** for a
-pipeline connection, by whether your own run of that pipeline is running;
-**Direct** for a direct connection, or **Open** while its temporary pipeline
-runs; and **Unreachable** when the connection failed to open, until it
-opens or the app next sees its pipeline running, or when its pipeline runs
-but the database node does not answer. Opening a pipeline connection whose
-pipeline is not running leaves it **Stopped**: start the pipeline and the
-row turns **Running**. Hovering the word gives the reason. The words follow pipelines starting and
+knows (nothing is sent to find out):
+
+- **Running** or **Stopped**, for a pipeline connection: whether your own
+  run of that pipeline is running. Opening one whose pipeline is not
+  running leaves it Stopped; start the pipeline and the row turns Running.
+- **Direct**, for a direct connection, or **Open** while its temporary
+  pipeline runs.
+- **Unreachable**: the connection failed to open (until it opens, or the
+  app next sees its pipeline running), or its pipeline runs but the
+  database node does not answer.
+- **No access**: its pipeline runs, but your role may not call the
+  database node (a team deployment you can see but not use).
+
+Hovering the word gives the reason. The words follow pipelines starting and
 stopping as the engine reports them; until the app has first looked at your
 running pipelines, a pipeline row says nothing.
 

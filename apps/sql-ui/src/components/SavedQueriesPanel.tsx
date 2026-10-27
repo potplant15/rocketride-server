@@ -259,7 +259,7 @@ export const SaveQueryButton: React.FC<SaveQueryButtonProps> = ({ endpoint, sql,
 									maxLength={MAX_SAVED_NAME_CHARS}
 									autoFocus
 									onChange={(event) => setName(event.target.value)}
-									onKeyDown={(event) => { if (event.key === 'Enter') void save(); }}
+									onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) void save(); }}
 								/>
 							</label>
 							<div style={styles.meta}>Saved queries are kept per connection, for your account. A saved query keeps its text, not its results.</div>
@@ -394,7 +394,7 @@ export const SavedQueriesPanel: React.FC<SavedQueriesPanelProps> = ({ endpoint, 
 							autoFocus
 							onChange={(event) => setRenaming({ id: query.id, draft: event.target.value })}
 							onKeyDown={(event) => {
-								if (event.key === 'Enter') void commitRename();
+								if (event.key === 'Enter' && !event.nativeEvent.isComposing) void commitRename();
 								if (event.key === 'Escape') setRenaming(null);
 							}}
 						/>

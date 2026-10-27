@@ -248,7 +248,8 @@ export const AskBar: React.FC<{ endpoint: SqlEndpoint }> = ({ endpoint }) => {
 					maxLength={MAX_QUESTION_CHARS}
 					disabled={refusal !== null}
 					onChange={(event) => setQuestion(event.target.value)}
-					onKeyDown={(event) => { if (event.key === 'Enter') void ask(); }}
+					// Not while an input method is composing: its Enter picks a candidate.
+					onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) void ask(); }}
 				/>
 				{asking ? (
 					<Button variant="ghost" title="Stop waiting for the node's answer. It is not cancelled." onClick={stopWaiting}>Stop waiting</Button>
@@ -263,8 +264,9 @@ export const AskBar: React.FC<{ endpoint: SqlEndpoint }> = ({ endpoint }) => {
 					</Button>
 				)}
 			</div>
-			{refusal === ASK_DIRECT_TEXT ? (
-				<div style={styles.meta}>{ASK_DIRECT_TEXT}</div>
+			{/* Why the bar is disabled, as text: a tooltip alone is not an answer. */}
+			{refusal !== null ? (
+				<div style={styles.meta}>{refusal}</div>
 			) : (
 				<details style={styles.context}>
 					<summary>What Ask sends, and what it does not do</summary>

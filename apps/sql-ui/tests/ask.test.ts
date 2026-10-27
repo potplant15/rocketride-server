@@ -177,6 +177,15 @@ describe('Ask never executes anything', () => {
 		assert.doesNotMatch(bar, /\.execute\(|runTargets|onRerun|runOne|runAll/);
 	});
 
+	it('Enter during IME composition does not ask, and a refusal (not connected, direct) is visible text, not only a tooltip (review M5)', () => {
+		const bar = fs.readFileSync(path.join(SRC, 'components', 'AskBar.tsx'), 'utf8');
+		assert.match(bar, /onKeyDown=\{\(event\) => \{ if \(event\.key === 'Enter' && !event\.nativeEvent\.isComposing\) void ask\(\); \}\}/);
+		assert.match(bar, /\{refusal !== null \? \(\s*<div style=\{styles\.meta\}>\{refusal\}<\/div>/);
+		const panel = fs.readFileSync(path.join(SRC, 'components', 'SavedQueriesPanel.tsx'), 'utf8');
+		const enters = [...panel.matchAll(/event\.key === 'Enter'([^)]*)\)/g)].map((m) => m[1]);
+		assert.ok(enters.length >= 2 && enters.every((rest) => /!event\.nativeEvent\.isComposing/.test(rest!)), 'the save dialog and rename fields too');
+	});
+
 	it('the query view mounts the bar above the editor', () => {
 		const view = fs.readFileSync(path.join(SRC, 'views', 'QueryView.tsx'), 'utf8');
 		assert.match(view, /<AskBar endpoint=\{endpoint\} \/>[\s\S]*?\{\/\* Editor\. \*\/\}/);
