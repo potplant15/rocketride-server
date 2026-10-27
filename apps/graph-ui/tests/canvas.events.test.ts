@@ -118,8 +118,7 @@ test('wiring: Escape is the canvas\'s only while something can be cleared, and t
 	assert.match(canvas, /case 'clear-path':\s*p\.onClearPath\?\.\(\);/);
 	assert.doesNotMatch(canvas, /stopPropagation/, 'nothing stops an event: outer handlers read defaultPrevented');
 	const focusNode = canvas.slice(canvas.indexOf('focusNode(id: GraphId): boolean'), canvas.indexOf('fit: refit'));
-	assert.match(focusNode, /\.react-flow__node\[data-id=/, 'scoped to node elements (relationship ids overlap node ids)');
-	assert.match(focusNode, /el\.focus\(\{ preventScroll: true \}\);/);
+	assert.match(focusNode, /return focusElement\(id\);/, 'through the one focusing step (scoped to nodes, no scroll; pinned below)');
 });
 
 test('wiring: the canvas says once when it is ready (mounted, first layout placed), and its export reports why there is no image', () => {
@@ -131,4 +130,21 @@ test('wiring: the canvas says once when it is ready (mounted, first layout place
 	const drawing = canvas.slice(canvas.indexOf('const exportDrawing = useCallback'), canvas.indexOf('useImperativeHandle('));
 	assert.match(drawing, /if \(!el\) return \{ blob: null, reason: 'not-ready' \};/);
 	assert.match(drawing, /return exportResult\(format, built, rasterise\);/);
+});
+
+// Only the roving node is focusable, so a press on any other node gave DOM focus to the element around the canvas, and
+// E, C, the arrows, Delete, R and Space stopped reaching it (found live: after a second click, the focus was a DIV).
+test('wiring: a click puts keyboard focus on the clicked node, without panning, so the canvas keys keep working', () => {
+	const canvas = source('canvas', 'GraphCanvas.tsx');
+	const click = canvas.slice(canvas.indexOf('const onNodeClick = useCallback'), canvas.indexOf('const onNodeDoubleClick'));
+	assert.match(click, /focusElement\(node\.id\);/, 'the clicked node takes DOM focus');
+	assert.ok(click.indexOf('focusElement(node.id)') < click.indexOf('p.onNodeClick'), 'before the selection changes (the inspector may open)');
+	assert.match(click, /p\.onFocus\(node\.id\);/, 'and becomes the roving node');
+	assert.doesNotMatch(click, /focusFromKeyboard|setCenter|setViewport/, 'a click never pans');
+	const helper = canvas.slice(canvas.indexOf('const focusElement = useCallback'), canvas.indexOf('}, []);', canvas.indexOf('const focusElement = useCallback')));
+	assert.match(helper, /\.react-flow__node\[data-id=/, 'scoped to node elements (relationship ids overlap node ids)');
+	assert.match(helper, /if \(!el\.hasAttribute\('tabindex'\)\) el\.tabIndex = -1;/, 'a node outside the tab order can still take focus');
+	assert.match(helper, /el\.focus\(\{ preventScroll: true \}\);/);
+	const handle = canvas.slice(canvas.indexOf('focusNode(id: GraphId): boolean {'), canvas.indexOf('fit: refit'));
+	assert.match(handle, /return focusElement\(id\);/, 'the handle\'s focusNode is the same step');
 });
