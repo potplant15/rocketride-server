@@ -173,7 +173,7 @@ describe('the outcome banner says the plan ran as one transaction only when the 
 describe('C-1: TableDesignView asks again before it applies without a transaction', () => {
 	it('a transactions-unavailable refusal is remembered and opens the per-statement question; agreeing resends with atomic false', () => {
 		assert.match(VIEW, /isTransactionsUnavailable\(err\)/);
-		assert.match(VIEW, /noteNoTransactions\(endpoint\.key\)/);
+		assert.match(VIEW, /noteNoTransactions\(endpoint\.key, snapshot\.refreshedAt\)/);
 		assert.match(VIEW, /perStatementConfirmText\(noTransactionReason\)/);
 		assert.match(VIEW, /onConfirm=\{\(\) => \{ setNoTransactionReason\(null\); void apply\(false\); \}\}/);
 		// Nothing was applied, so the refusal itself is not an outcome to report.
@@ -184,7 +184,7 @@ describe('C-1: TableDesignView asks again before it applies without a transactio
 describe('TableDesignView applies through applyBatch', () => {
 	it('sends the plan in one call, atomic by the dialect, and no longer runs statements one execute at a time', () => {
 		assert.match(VIEW, /\.applyBatch\(statements\.map\(\(sql\) => \(\{ sql \}\)\), \{ atomic \}\)/);
-		assert.match(VIEW, /const mode = designApplyMode\(snapshot\.dialect, knownNoTransactions\(endpoint\.key\)\)/);
+		assert.match(VIEW, /const mode = designApplyMode\(snapshot\.dialect, knownNoTransactions\(endpoint\.key, snapshot\.refreshedAt\)\)/);
 		assert.doesNotMatch(VIEW, /for \(const sql of statements\)/);
 		assert.doesNotMatch(VIEW, /prev\.slice\(done\)/);
 		// Settled from the plan that was sent (review P4 R2-I4), keeping anything after it.

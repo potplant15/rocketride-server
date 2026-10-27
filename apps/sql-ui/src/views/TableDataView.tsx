@@ -692,7 +692,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 	 */
 	const applyMode = async (): Promise<RowApplyMode> => {
 		if (dialect === 'mysql' && engineRef.current === undefined) engineRef.current = await readTableEngine(env.getSession(endpoint), table);
-		return rowApplyMode(dialect, { engine: engineRef.current ?? null, noTransactions: knownNoTransactions(endpoint.key) });
+		return rowApplyMode(dialect, { engine: engineRef.current ?? null, noTransactions: knownNoTransactions(endpoint.key, snapshot.refreshedAt) });
 	};
 
 	/**
@@ -745,7 +745,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 				result = await env.getSession(endpoint).applyBatch(ask.statements, { atomic });
 			} catch (error) {
 				if (isTransactionsUnavailable(error)) {
-					noteNoTransactions(endpoint.key);
+					noteNoTransactions(endpoint.key, snapshot.refreshedAt);
 					setNoTransactionAsk({ reason: error instanceof Error ? error.message : String(error), ask: { ...ask, mode: { atomic: false, wording: 'each' } } });
 					return;
 				}

@@ -649,7 +649,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 	const pendingCount = createMode ? (statements.length > 0 ? 1 : 0) : ops.length;
 	// One transaction or statement by statement, and what the confirmation
 	// says happens to a plan that stops half-way (per dialect).
-	const mode = designApplyMode(snapshot.dialect, knownNoTransactions(endpoint.key));
+	const mode = designApplyMode(snapshot.dialect, knownNoTransactions(endpoint.key, snapshot.refreshedAt));
 	const dialectNote = mode.note;
 	// Confirmation impact, read from the snapshot's DECLARED foreign keys only.
 	const snapshotTime = snapshot.refreshedAt > 0 ? clockTime(snapshot.refreshedAt) : '--:--';
@@ -767,7 +767,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 				if (isTransactionsUnavailable(err)) {
 					// Nothing was sent. Remember the node, and ask before going
 					// statement by statement.
-					noteNoTransactions(endpoint.key);
+					noteNoTransactions(endpoint.key, snapshot.refreshedAt);
 					setNoTransactionReason(err instanceof Error ? err.message : String(err));
 					return;
 				}
@@ -801,7 +801,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 			setApplying(false);
 			setConfirmOpen(false);
 		}
-	}, [env, statements, endpoint, createMode, createName, table, ops]);
+	}, [env, statements, endpoint, createMode, createName, table, ops, snapshot.refreshedAt]);
 
 	// ── Outcome banner (composed against the post-refresh snapshot) ──────────
 

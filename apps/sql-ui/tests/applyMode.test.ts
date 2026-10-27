@@ -96,12 +96,18 @@ describe('the mode by dialect, and what the app has learnt about a node', () => 
 	});
 
 	it('C-1: once a node said it has no transaction tools, its next confirmation already says each change commits on its own', () => {
-		assert.equal(knownNoTransactions('p:s:n'), false);
-		noteNoTransactions('p:s:n');
-		assert.equal(knownNoTransactions('p:s:n'), true);
-		assert.equal(knownNoTransactions('p:s:other'), false);
-		assert.deepEqual(rowApplyMode('postgres', { noTransactions: knownNoTransactions('p:s:n') }), { atomic: false, wording: 'each' });
+		assert.equal(knownNoTransactions('p:s:n', 100), false);
+		noteNoTransactions('p:s:n', 100);
+		assert.equal(knownNoTransactions('p:s:n', 100), true);
+		assert.equal(knownNoTransactions('p:s:other', 100), false);
+		assert.deepEqual(rowApplyMode('postgres', { noTransactions: knownNoTransactions('p:s:n', 100) }), { atomic: false, wording: 'each' });
 		forgetNoTransactions();
-		assert.equal(knownNoTransactions('p:s:n'), false);
+		assert.equal(knownNoTransactions('p:s:n', 100), false);
+	});
+
+	it('R2-M4: a schema refresh, or the reload after a reconnect, forgets it (the node may have been upgraded)', () => {
+		noteNoTransactions('p:s:n', 100);
+		assert.equal(knownNoTransactions('p:s:n', 200), false, 'a newer schema snapshot');
+		assert.equal(knownNoTransactions('p:s:n', 100), false, 'and it stays forgotten');
 	});
 });

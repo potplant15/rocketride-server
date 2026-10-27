@@ -38,8 +38,10 @@
 //                editing is refused there anyway).
 //
 // A node that answered "no transaction tools" (`transactions-unavailable`)
-// is remembered for this window, so its next confirmation already says each
-// change commits on its own (review P4 C-1). Nothing here talks to the
+// is remembered, so its next confirmation already says each change commits
+// on its own (review P4 C-1), but only for the schema snapshot it was learnt
+// under: a schema refresh, or the reload after a reconnect, forgets it, in
+// case the node was upgraded (R2-M4). Nothing here talks to the
 // engine except readTableEngine, through the caller's session.
 // =============================================================================
 
@@ -172,26 +174,36 @@ export async function readTableEngine(session: SqlSession, table: string): Promi
 // NODES WITHOUT TRANSACTION TOOLS (this window)
 // =============================================================================
 
-/** Endpoint keys whose node answered `transactions-unavailable`. */
-const noTransactionEndpoints = new Set<string>();
+/** Endpoint keys whose node answered `transactions-unavailable`, with the schema snapshot it was learnt under. */
+const noTransactionEndpoints = new Map<string, number>();
 
 /**
  * Remember that a node has no transaction tools.
  *
  * @param key - The endpoint key.
+ * @param schemaAt - The schema snapshot's `refreshedAt` when it answered.
  */
-export function noteNoTransactions(key: string): void {
-	noTransactionEndpoints.add(key);
+export function noteNoTransactions(key: string, schemaAt: number): void {
+	noTransactionEndpoints.set(key, schemaAt);
 }
 
 /**
- * Whether a node answered that it has no transaction tools.
+ * Whether a node answered that it has no transaction tools, under this
+ * schema snapshot. A newer snapshot (a refresh, or the reload after a
+ * reconnect) forgets it.
  *
  * @param key - The endpoint key.
- * @returns True once it did.
+ * @param schemaAt - The schema snapshot's `refreshedAt` now.
+ * @returns True only when it answered so under this snapshot.
  */
-export function knownNoTransactions(key: string): boolean {
-	return noTransactionEndpoints.has(key);
+export function knownNoTransactions(key: string, schemaAt: number): boolean {
+	const learnt = noTransactionEndpoints.get(key);
+	if (learnt === undefined) return false;
+	if (learnt !== schemaAt) {
+		noTransactionEndpoints.delete(key);
+		return false;
+	}
+	return true;
 }
 
 /** Forget every such node (tests). */

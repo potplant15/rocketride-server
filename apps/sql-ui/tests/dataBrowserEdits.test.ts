@@ -108,11 +108,11 @@ describe('the bar, Review SQL, the confirmation, then one applyBatch', () => {
 
 	it('the words come from the table: a MySQL table\'s engine is read before the confirmation', () => {
 		assert.match(VIEW, /engineRef\.current = await readTableEngine\(env\.getSession\(endpoint\), table\)/);
-		assert.match(VIEW, /rowApplyMode\(dialect, \{ engine: engineRef\.current \?\? null, noTransactions: knownNoTransactions\(endpoint\.key\) \}\)/);
+		assert.match(VIEW, /rowApplyMode\(dialect, \{ engine: engineRef\.current \?\? null, noTransactions: knownNoTransactions\(endpoint\.key, snapshot\.refreshedAt\) \}\)/);
 	});
 
 	it('no transactions after all: remembered, asked again in the per-statement words, resent without one only if agreed', () => {
-		assert.match(VIEW, /if \(isTransactionsUnavailable\(error\)\) \{\s*noteNoTransactions\(endpoint\.key\);/);
+		assert.match(VIEW, /if \(isTransactionsUnavailable\(error\)\) \{\s*noteNoTransactions\(endpoint\.key, snapshot\.refreshedAt\);/);
 		assert.match(VIEW, /perStatementConfirmText\(noTransactionAsk\.reason\)/);
 		assert.match(VIEW, /void runApply\(ask, false\);/);
 	});
