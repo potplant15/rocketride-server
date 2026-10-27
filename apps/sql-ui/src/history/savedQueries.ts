@@ -43,7 +43,9 @@
 // from a frame is checked here, so the controller never writes anything but
 // well-formed queries into the user's file. The preference key and the
 // fields of a persisted query must never change: renaming either silently
-// orphans every user's saved queries.
+// orphans every user's saved queries. A write keeps what this build cannot
+// read (an entry it cannot parse, a field it does not know) where it was, so
+// a newer build's queries survive an older build's edit.
 // =============================================================================
 
 import { ExplorerToolError } from 'shared/explorer/errors';
@@ -96,8 +98,11 @@ export interface SavedQuery {
 	at: number;
 }
 
-/** Every connection's saved queries, keyed by endpoint key (newest first). */
+/** Every connection's saved queries, keyed by endpoint key (newest first), as the reader shows them. */
 export type SavedQueriesBag = Record<string, SavedQuery[]>;
+
+/** The bag as stored: per connection a list that may also hold entries this build cannot read. */
+export type StoredQueriesBag = Record<string, unknown>;
 
 /** One change to a connection's saved queries. */
 export type SavedQueryEdit =
@@ -195,7 +200,24 @@ function cleanQuery(query: SavedQuery): SavedQuery {
 }
 
 /**
- * A name that fits, trimmed.
+ * Whether a character may not appear in a name: control characters, and the
+ * marks and overrides that change the direction text is shown in (a name is
+ * shown on one line, in a list and on a tab).
+ *
+ * @param code - The character's code point.
+ * @returns True when it is dropped.
+ */
+function unsafeInName(code: number): boolean {
+	return code < 0x20 || (code >= 0x7f && code <= 0x9f)
+		|| code === 0x200e || code === 0x200f
+		|| (code >= 0x202a && code <= 0x202e)
+		|| (code >= 0x2066 && code <= 0x2069);
+}
+
+/**
+ * A name that fits: one plain line (white space runs, line breaks included,
+ * become one space; control characters and direction overrides are dropped),
+ * trimmed.
  *
  * @param name - What the user typed.
  * @param verb - What was being done ('saved', 'renamed').
@@ -203,7 +225,8 @@ function cleanQuery(query: SavedQuery): SavedQuery {
  * @throws ExplorerToolError `invalid` when it is empty or too long.
  */
 function fittingName(name: string, verb: string): string {
-	const trimmed = name.trim();
+	const plain = Array.from(name.replace(/\s+/g, ' ')).filter((char) => !unsafeInName(char.codePointAt(0) ?? 0)).join('');
+	const trimmed = plain.replace(/ {2,}/g, ' ').trim();
 	if (trimmed === '') throw refuse(`The query was not ${verb}: give it a name.`);
 	if (trimmed.length > MAX_SAVED_NAME_CHARS) throw refuse(`The query was not ${verb}: a name holds at most ${MAX_SAVED_NAME_CHARS} characters.`);
 	return trimmed;
@@ -215,7 +238,8 @@ function fittingName(name: string, verb: string): string {
 
 /**
  * Read a stored bag, keeping the well-formed queries only. Never throws: a
- * damaged entry is dropped, not a reason to lose the rest.
+ * damaged entry is not shown, and not a reason to lose the rest (a write
+ * keeps it; applySavedQueryEdit).
  *
  * @param raw - What the preferences hold.
  * @returns The bag.
@@ -232,27 +256,30 @@ export function readSavedQueriesBag(raw: unknown): SavedQueriesBag {
 }
 
 /**
- * Apply one edit to a bag. The bag given is never changed.
+ * Apply one edit to a stored bag. The bag given is never changed, and what
+ * this build cannot read stays where it was: other connections' lists as
+ * stored, entries it cannot parse, and fields it does not know.
  *
- * @param bag - The current bag.
+ * @param bag - The current bag, as stored.
  * @param key - The connection's endpoint key.
  * @param edit - The (checked) edit.
  * @returns The new bag (the same one when nothing changed).
  * @throws ExplorerToolError `invalid` when a cap or a missing query refuses it; nothing is changed.
  */
-export function applySavedQueryEdit(bag: SavedQueriesBag, key: string, edit: SavedQueryEdit): SavedQueriesBag {
-	const list = bag[key] ?? [];
-	let next: SavedQuery[];
+export function applySavedQueryEdit(bag: StoredQueriesBag, key: string, edit: SavedQueryEdit): StoredQueriesBag {
+	const list: unknown[] = Array.isArray(bag[key]) ? (bag[key] as unknown[]) : [];
+	const hasId = (entry: unknown, id: string): boolean => isPlainObject(entry) && entry.id === id;
+	let next: unknown[];
 	switch (edit.action) {
 		case 'remove': {
-			if (!list.some((query) => query.id === edit.id)) return bag;
-			next = list.filter((query) => query.id !== edit.id);
+			if (!list.some((entry) => hasId(entry, edit.id))) return bag;
+			next = list.filter((entry) => !hasId(entry, edit.id));
 			break;
 		}
 		case 'rename': {
 			const name = fittingName(edit.name, 'renamed');
-			if (!list.some((query) => query.id === edit.id)) throw refuse('The query was not renamed: it no longer exists.');
-			next = list.map((query) => (query.id === edit.id ? { ...query, name } : query));
+			if (!list.some((entry) => isSavedQuery(entry) && entry.id === edit.id)) throw refuse('The query was not renamed: it no longer exists.');
+			next = list.map((entry) => (isSavedQuery(entry) && entry.id === edit.id ? { ...entry, name } : entry));
 			break;
 		}
 		default: {
@@ -263,18 +290,20 @@ export function applySavedQueryEdit(bag: SavedQueriesBag, key: string, edit: Sav
 				throw refuse(`The query was not saved: a saved query holds at most ${MAX_SAVED_SQL_CHARS.toLocaleString('en-US')} characters, and this one has ${sql.length.toLocaleString('en-US')}.`);
 			}
 			const query = { ...cleanQuery(edit.query), name };
-			// The same id again (a call sent twice) replaces it where it stands.
-			if (list.some((saved) => saved.id === query.id)) {
-				next = list.map((saved) => (saved.id === query.id ? query : saved));
+			// The same id again (a call sent twice) replaces it where it stands,
+			// keeping any field this build does not know.
+			if (list.some((entry) => hasId(entry, query.id))) {
+				next = list.map((entry) => (hasId(entry, query.id) ? { ...(entry as object), ...query } : entry));
 			} else {
-				if (list.length >= MAX_SAVED_QUERIES) {
+				// Counted as the user sees them: an entry nobody can see or delete never blocks a save.
+				if (list.filter(isSavedQuery).length >= MAX_SAVED_QUERIES) {
 					throw refuse(`The query was not saved: this connection already keeps ${MAX_SAVED_QUERIES} saved queries. Delete one to save another.`);
 				}
 				next = [query, ...list];
 			}
 		}
 	}
-	const result: SavedQueriesBag = { ...bag };
+	const result: StoredQueriesBag = { ...bag };
 	if (next.length > 0) result[key] = next;
 	else delete result[key];
 	// Measured as the file is written (two-space indented JSON).
@@ -304,7 +333,8 @@ export function savedQueriesIn(prefs: IPrefsAccessor, key: string): SavedQuery[]
  * @throws ExplorerToolError `invalid` when the edit is refused.
  */
 export function editSavedQueriesIn(prefs: IPrefsAccessor, key: string, edit: SavedQueryEdit): void {
-	const bag = readSavedQueriesBag(prefs.getPref(SAVED_QUERIES_PREF));
+	const stored = prefs.getPref(SAVED_QUERIES_PREF);
+	const bag: StoredQueriesBag = isPlainObject(stored) ? stored : {};
 	const next = applySavedQueryEdit(bag, key, edit);
 	if (next !== bag) prefs.setPref(SAVED_QUERIES_PREF, next);
 }

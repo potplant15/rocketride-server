@@ -47,6 +47,15 @@ import { memoryPrefs } from '../src/history/historyStore';
 const KEY = 'p1:s1:db_1';
 const OTHER = 'p2:s1:db_1';
 
+/**
+ * One connection's queries in a bag as the reader shows them.
+ *
+ * @param bag - A stored bag.
+ * @param key - The connection.
+ * @returns Its well-formed queries.
+ */
+const listOf = (bag: unknown, key: string): SavedQuery[] => readSavedQueriesBag(bag)[key] ?? [];
+
 /** A saved query with a fixed id and time. */
 const query = (id: string, name = `Query ${id}`, sql = `SELECT ${id}`): SavedQuery => ({ id, name, sql, at: 1_000 });
 
@@ -69,10 +78,10 @@ describe('saved queries: the persisted names never change', () => {
 
 describe('saved queries: add, rename, remove', () => {
 	it('adds newest first, per connection, and never touches another connection', () => {
-		let bag: SavedQueriesBag = { [OTHER]: [query('x')] };
+		let bag: Record<string, unknown> = { [OTHER]: [query('x')] };
 		bag = applySavedQueryEdit(bag, KEY, { action: 'add', query: query('a') });
 		bag = applySavedQueryEdit(bag, KEY, { action: 'add', query: query('b') });
-		assert.deepEqual(bag[KEY]!.map((q) => q.id), ['b', 'a']);
+		assert.deepEqual(listOf(bag, KEY).map((q) => q.id), ['b', 'a']);
 		assert.deepEqual(bag[OTHER], [query('x')]);
 	});
 
@@ -80,13 +89,13 @@ describe('saved queries: add, rename, remove', () => {
 		let bag = applySavedQueryEdit({}, KEY, { action: 'add', query: query('a') });
 		bag = applySavedQueryEdit(bag, KEY, { action: 'add', query: query('b') });
 		bag = applySavedQueryEdit(bag, KEY, { action: 'add', query: query('a', 'Renamed', 'SELECT 2') });
-		assert.deepEqual(bag[KEY], [query('b'), query('a', 'Renamed', 'SELECT 2')]);
+		assert.deepEqual(listOf(bag, KEY), [query('b'), query('a', 'Renamed', 'SELECT 2')]);
 	});
 
 	it('renames in place, trimmed; a query that is gone is refused, not created', () => {
 		let bag = applySavedQueryEdit({}, KEY, { action: 'add', query: query('a') });
 		bag = applySavedQueryEdit(bag, KEY, { action: 'rename', id: 'a', name: '  Revenue by customer  ' });
-		assert.equal(bag[KEY]![0]!.name, 'Revenue by customer');
+		assert.equal(listOf(bag, KEY)[0]!.name, 'Revenue by customer');
 		assert.throws(() => applySavedQueryEdit(bag, KEY, { action: 'rename', id: 'gone', name: 'x' }), refused(/no longer exists/));
 	});
 
@@ -109,10 +118,10 @@ describe('saved queries: add, rename, remove', () => {
 
 describe('saved queries: the caps refuse a save and keep everything already saved', () => {
 	it(`keeps at most ${MAX_SAVED_QUERIES} per connection`, () => {
-		let bag: SavedQueriesBag = {};
+		let bag: Record<string, unknown> = {};
 		for (let i = 0; i < MAX_SAVED_QUERIES; i += 1) bag = applySavedQueryEdit(bag, KEY, { action: 'add', query: query(`q${i}`) });
 		assert.throws(() => applySavedQueryEdit(bag, KEY, { action: 'add', query: query('one-more') }), refused(new RegExp(`already keeps ${MAX_SAVED_QUERIES} saved queries\\. Delete one to save another\\.`)));
-		assert.equal(bag[KEY]!.length, MAX_SAVED_QUERIES);
+		assert.equal(listOf(bag, KEY).length, MAX_SAVED_QUERIES);
 		// Another connection has its own count; replacing one by id is not a new one.
 		assert.doesNotThrow(() => applySavedQueryEdit(bag, OTHER, { action: 'add', query: query('one-more') }));
 		assert.doesNotThrow(() => applySavedQueryEdit(bag, KEY, { action: 'add', query: query('q3', 'Again') }));
@@ -139,7 +148,7 @@ describe('saved queries: the caps refuse a save and keep everything already save
 	it(`keeps the whole bag within ${MAX_SAVED_BAG_CHARS} characters as the file is written (indented)`, () => {
 		assert.equal(MAX_SAVED_BAG_CHARS, 256 * 1024);
 		const big = 'x'.repeat(15_000);
-		let bag: SavedQueriesBag = {};
+		let bag: Record<string, unknown> = {};
 		let refusedAt = -1;
 		for (let i = 0; i < 40; i += 1) {
 			try {
@@ -153,6 +162,45 @@ describe('saved queries: the caps refuse a save and keep everything already save
 		assert.ok(refusedAt > 0, 'the bag cap refused a save');
 		assert.ok(JSON.stringify(bag, null, 2).length <= MAX_SAVED_BAG_CHARS, 'what is kept stays within the cap');
 		assert.equal(Object.keys(bag).length, refusedAt, 'nothing already saved was dropped');
+	});
+});
+
+describe('saved queries: a name is one plain line (review M3)', () => {
+	it('collapses line breaks and runs of white space, and drops control characters and direction overrides (CE3)', () => {
+		const bag = applySavedQueryEdit({}, KEY, { action: 'add', query: query('a', 'ok\n\u202Eevil\u0000') });
+		assert.equal(listOf(bag, KEY)[0]!.name, 'ok evil');
+		const renamed = applySavedQueryEdit(bag, KEY, { action: 'rename', id: 'a', name: '\tRevenue\r\n by \u2066customer\u2069\u200f ' });
+		assert.equal(listOf(renamed, KEY)[0]!.name, 'Revenue by customer');
+	});
+
+	it('a name made only of such characters is no name', () => {
+		assert.throws(() => applySavedQueryEdit({}, KEY, { action: 'add', query: query('a', '\u202E\u0007\n') }), refused(/give it a name/));
+	});
+});
+
+describe('saved queries: a write keeps what this build cannot read (review M4)', () => {
+	it('entries it cannot parse, and fields it does not know, survive an add, a rename and a delete', () => {
+		const newer = { ...query('n'), tags: ['finance'] };
+		const damaged = { id: 'd', name: 'No time', sql: 'SELECT 9' };
+		const stored = { [KEY]: [newer, damaged, 'junk', query('a')], [OTHER]: [{ format: 2 }] };
+		let bag = applySavedQueryEdit(stored, KEY, { action: 'add', query: query('b') });
+		bag = applySavedQueryEdit(bag, KEY, { action: 'rename', id: 'n', name: 'Renamed' });
+		bag = applySavedQueryEdit(bag, KEY, { action: 'remove', id: 'a' });
+		assert.deepEqual(bag[KEY], [query('b'), { ...newer, name: 'Renamed' }, damaged, 'junk']);
+		assert.deepEqual(bag[OTHER], [{ format: 2 }], 'another connection\'s list is untouched');
+		assert.deepEqual(listOf(bag, KEY).map((q) => q.id), ['b', 'n'], 'the reader shows what it can');
+	});
+
+	it('the count cap counts the queries a user can see', () => {
+		const stored = { [KEY]: [...Array.from({ length: MAX_SAVED_QUERIES - 1 }, (_, i) => query(`q${i}`)), { id: 'hidden' }] };
+		assert.doesNotThrow(() => applySavedQueryEdit(stored, KEY, { action: 'add', query: query('last') }));
+	});
+
+	it('through an accessor too: the stored value keeps them', () => {
+		const prefs = memoryPrefs();
+		prefs.setPref(SAVED_QUERIES_PREF, { [KEY]: [{ id: 'x', future: true }] });
+		editSavedQueriesIn(prefs, KEY, { action: 'add', query: query('a') });
+		assert.deepEqual(prefs.getPref(SAVED_QUERIES_PREF), { [KEY]: [query('a'), { id: 'x', future: true }] });
 	});
 });
 
