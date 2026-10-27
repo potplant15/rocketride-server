@@ -65,7 +65,7 @@ function sources(dir: string): string[] {
 
 describe('QueryView asks by the connection\'s safety level', () => {
 	it('reads the level off the saved connection record', () => {
-		assert.match(view, /const \{ record: connectionRecord \} = useConnectionRecord\(endpoint\.connId \?\? null\);/);
+		assert.match(view, /const \{ record: connectionRecord, status: connectionStatus \} = useConnectionRecord\(endpoint\.connId \?\? null\);/);
 		assert.match(view, /const safety = safetyLevelOf\(connectionRecord\);/);
 	});
 
@@ -124,7 +124,7 @@ describe('QueryView asks by the connection\'s safety level', () => {
 
 	it('names the level on the line under the editor, so it is never invisible', () => {
 		assert.match(view, /aria-label="Safety level for this connection"/);
-		assert.match(view, /value=\{pendingSafety \?\? safety\}/);
+		assert.match(view, /\{`Safety: \$\{SAFETY_CHOICES\[shownSafety\]\}`\}/);
 	});
 });
 

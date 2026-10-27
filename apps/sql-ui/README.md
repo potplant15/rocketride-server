@@ -477,7 +477,8 @@ The level is stored on the saved connection, so it is the same in the app and
 as a dev tool. A connection saved before levels existed reads as **Ask before
 risky writes**. The line under the editor names the level and changes it in
 place: only the level is sent, so a direct connection's password is neither
-re-typed nor sent again. The dialog has no answer that turns asking off;
+re-typed nor sent again. Lowering the level asks first. The dialog has no
+answer that turns asking off;
 change the level there or in the connection editor instead.
 
 The dialog says what the statement does, quotes it, and says how it runs
