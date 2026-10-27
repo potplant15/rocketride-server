@@ -43,8 +43,7 @@ import { columnGridTypes, columnKeys, rawView, toGridRows } from '../graph/resul
 import type { ReadQueryResult } from '../graph/types';
 import { describeValue } from '../graph/values';
 import { COPY_BLOCKED_NOTE } from '../graph/wording';
-import { useGraphEnv } from '../env';
-import { guardLayouts, layoutRulesFor } from '../graph/gridLayout';
+import { RESULT_LAYOUTS, guardLayouts, layoutRulesFor } from '../graph/gridLayout';
 import { ExportMenu } from './ExportMenu';
 
 // =============================================================================
@@ -85,8 +84,6 @@ export interface IResultTableProps {
  * @returns The table inside a card.
  */
 export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onRowOpen, meta, announce }) => {
-	// Grid layouts: the env's (session-only copies in a dev-tool frame).
-	const env = useGraphEnv();
 	const rows = useMemo(() => toGridRows(result), [result]);
 	const columns = useMemo<GridColumnDefinition[]>(() => {
 		const keys = columnKeys(result.columns);
@@ -111,7 +108,8 @@ export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onR
 	}, [result]);
 
 	// A result grid built in a hidden tab crushes its flexible columns and would save that: the saved layout is guarded.
-	const persistence = useMemo(() => guardLayouts(env.gridPersistence, layoutRulesFor(columns)), [env.gridPersistence, columns]);
+	// Session-only, by design: the key restarts with the page, so a stored sort or hidden column would reappear on another result.
+	const persistence = useMemo(() => guardLayouts(RESULT_LAYOUTS, layoutRulesFor(columns)), [columns]);
 
 	return (
 		<Card noBodyPadding fill>

@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { IDataGridPersistence } from 'shell';
-import { MIN_SAVED_WIDTH, guardLayouts, layoutRulesFor, sanitizeColumnLayout } from '../src/graph/gridLayout';
+import { MIN_SAVED_WIDTH, RESULT_LAYOUTS, createSessionLayouts, guardLayouts, layoutRulesFor, sanitizeColumnLayout } from '../src/graph/gridLayout';
 
 /** The result grid's columns: generated keys, no width (all flexible). */
 const RESULT = [{ field: 'c0' }, { field: 'c1' }, { field: 'c2' }];
@@ -65,6 +65,31 @@ test('the guard heals a crushed layout as it is read, and never writes one back;
 
 test('the results grid goes through the guard', () => {
 	const views = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'components', 'ResultViews.tsx'), 'utf8');
-	assert.match(views, /guardLayouts\(env\.gridPersistence, layoutRulesFor\(columns\)\)/);
+	assert.match(views, /guardLayouts\(RESULT_LAYOUTS, layoutRulesFor\(columns\)\)/);
 	assert.match(views, /persistence=\{persistence\}/);
+});
+
+test('a sort or a hidden column on a result stays in the page session and never reaches the env\'s persistence', () => {
+	const env = memory();
+	const results = guardLayouts(RESULT_LAYOUTS, layoutRulesFor(RESULT));
+	results.write('graph-results-k-q1-1', 'sort', [{ column: 'c1', dir: 'desc' }]);
+	results.write('graph-results-k-q1-1', 'columns', [{ field: 'c0', visible: false }]);
+	assert.deepEqual(results.read('graph-results-k-q1-1', 'sort'), [{ column: 'c1', dir: 'desc' }], 'kept while the page is open');
+	assert.deepEqual(results.read('graph-results-k-q1-1', 'columns'), [{ field: 'c0', visible: false }]);
+	assert.equal(env.store.size, 0, 'nothing was written to the env');
+	assert.equal(env.grids.read('graph-results-k-q1-1', 'sort'), false);
+	results.clear('graph-results-k-q1-1');
+	assert.equal(results.read('graph-results-k-q1-1', 'sort'), false);
+});
+
+test('the session store hands out copies: what the grid writes into them never changes what is kept', () => {
+	const store = createSessionLayouts();
+	const blob = [{ column: 'a', dir: 'asc' }];
+	store.write('t', 'sort', blob);
+	(blob[0] as Record<string, unknown>).tabulator = 'x';
+	const read = store.read('t', 'sort') as Array<Record<string, unknown>>;
+	assert.equal(read[0].tabulator, undefined);
+	read[0].extra = 1;
+	assert.deepEqual(store.read('t', 'sort'), [{ column: 'a', dir: 'asc' }]);
+	store.clear('t');
 });

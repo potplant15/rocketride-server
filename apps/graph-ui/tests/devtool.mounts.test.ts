@@ -556,7 +556,10 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 				assert.ok(start !== -1, `${rel}: a tableId outside a grid`);
 				const direct = /persistence=\{env\.gridPersistence\}/.test(element);
 				const guarded = /persistence=\{persistence\}/.test(element) && /guardLayouts\(env\.gridPersistence,/.test(text);
-				assert.ok(direct || guarded, `${rel}: this grid does not take the env's persistence`);
+				// The one exception, by design: the results Table keeps its sort and shown columns for the page session only (its
+				// key restarts with the page, so a stored layout would come back on another result). It never reaches the env.
+				const sessionOnly = rel === path.join('components', 'ResultViews.tsx') && /persistence=\{persistence\}/.test(element) && /guardLayouts\(RESULT_LAYOUTS,/.test(text) && !/gridPersistence/.test(text);
+				assert.ok(direct || guarded || sessionOnly, `${rel}: this grid does not take the env's persistence`);
 				at = text.indexOf('tableId=', at + 1);
 			}
 		}
