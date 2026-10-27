@@ -26,30 +26,36 @@
 // controller owns label styles and saved queries (devtool/controller.ts,
 // graph/userDataFile.ts). A frame:
 //
-//   reads    a connection's styles and saved queries with `graph.userData`
-//            (an op result, which also says where they are kept), on first
-//            use and again whenever the retained `userData` topic's revision
-//            moves on (another document changed them, the file was read, the
-//            account changed);
-//   writes   through `graph.userDataEdit` only, carrying the account the frame
-//            belongs to; the controller refuses a change for anyone else, and
-//            a refusal (a cap, a query gone) reaches the caller.
+//   reads    a connection's styles with `graph.styles` and its saved queries
+//            with `graph.savedQueries` (op results, which also say where they
+//            are kept), each on first use and again whenever its own
+//            revision in the retained `userData` topic moves on (another
+//            document changed it, its file was read, the account changed, a
+//            colour slot was given): a colour slot never makes a frame read
+//            the saved queries again;
+//   writes   through `graph.styleEdit` and `graph.savedEdit` only, carrying
+//            the account the frame belongs to; the controller refuses a change
+//            for anyone else, and a refusal (a cap, a query gone) reaches the
+//            caller. A style edit is field by field, merged in the
+//            controller, so two quick edits never undo each other.
 //
 // THE LATEST READ WINS. Every read is sent (none waits for another in flight)
 // and only the answer to the newest one is used: a read that is never
 // answered (its controller went away) cannot hold back the next, and an older
 // answer that arrives late cannot replace a newer one. Until the first answer
-// the saved queries read as loading; a failed read says why, and the next
-// revision (or identity) reads again.
+// the saved queries read as loading and the style as not ready; a failed read
+// says why (the style then reads as ready and empty, rather than neutral for
+// ever), and the next revision (or identity) reads again. Nothing is read
+// before the frame knows its account.
 // =============================================================================
 
 import type { ToolChannel } from 'shell';
 import type { IFrameCaller } from 'shared/explorer/devtool/frame';
 import type { IReadable } from '../env';
 import { EMPTY_STYLE } from '../graph/userData';
-import type { IConnectionStyle, IGraphUserData, ISavedQueriesView, SavedEdit, StyleEdit } from '../graph/userData';
+import type { IConnectionStyle, IGraphUserData, ISavedQueriesView, IStyleView, SavedEdit, StyleEdit } from '../graph/userData';
 import { OP, STATE, field, frameTimeoutFor, toWire } from './protocol';
-import type { GraphOps, IUserDataAnswer, UserDataChange } from './protocol';
+import type { GraphOps } from './protocol';
 
 /** A frame's user data, with its lifetime. */
 export interface IRemoteUserData extends IGraphUserData {
@@ -69,49 +75,90 @@ export interface IRemoteUserDataOptions {
 	owner(): string | null;
 	/** Whether the host connection is up (nothing is read while it is not). */
 	connected(): boolean;
-	/** Told about a failed read nobody awaits. */
-	onError?: (error: unknown) => void;
 }
 
 /** Shared views, so snapshots stay stable. */
-const LOADING: ISavedQueriesView = Object.freeze({ status: 'loading', queries: Object.freeze([]), note: null }) as ISavedQueriesView;
+const SAVED_LOADING: ISavedQueriesView = Object.freeze({ status: 'loading', queries: Object.freeze([]), note: null }) as ISavedQueriesView;
+const STYLE_LOADING: IStyleView = Object.freeze({ ready: false, style: EMPTY_STYLE });
 
-/** What the view holds for one connection. */
-interface ISlot {
-	style: IConnectionStyle;
-	saved: ISavedQueriesView;
+/** One kind of thing a frame reads (styles, or saved queries): its op, its revision and how to read its answer. */
+interface IPart<T> {
+	op: typeof OP.styles | typeof OP.savedQueries;
+	rev: 'styleRev' | 'savedRev';
+	initial: T;
+	/** The value an answer carries, and where things are kept. */
+	read(value: unknown): { value: T; note: string };
+	/** What a failed read shows. */
+	failed(last: T, message: string): T;
+	/** Whether a value should be read again even though its revision did not move. */
+	retry(value: T): boolean;
+}
+
+/** What the view holds for one connection and one part. */
+interface ISlot<T> {
+	value: T;
 	/** The revision the last answer was for (null: not read yet). */
 	rev: number | null;
 	/** The newest read sent: only its answer is used. */
 	seq: number;
-	/** Subscribers of this connection's readables. */
 	watchers: number;
-	styleReadable: IReadable<IConnectionStyle>;
-	savedReadable: IReadable<ISavedQueriesView>;
+	readable: IReadable<T>;
 }
 
 /**
- * Read a connection's answer that crossed the channel.
+ * Read a style answer that crossed the channel.
  *
  * @param value - The op's value.
- * @returns The answer, with safe fallbacks.
+ * @returns The view and the note.
  */
-function asAnswer(value: unknown): IUserDataAnswer {
+function asStyle(value: unknown): { value: IStyleView; note: string } {
 	const style = field(value, 'style');
-	const saved = field(value, 'saved');
 	const note = field(value, 'privacyNote');
+	return {
+		value: { ready: field(value, 'ready') !== false, style: style !== null && typeof style === 'object' ? (style as IConnectionStyle) : EMPTY_STYLE },
+		note: typeof note === 'string' ? note : '',
+	};
+}
+
+/**
+ * Read a saved-queries answer that crossed the channel.
+ *
+ * @param value - The op's value.
+ * @returns The view and the note.
+ */
+function asSaved(value: unknown): { value: ISavedQueriesView; note: string } {
+	const saved = field(value, 'saved');
 	const queries = field(saved, 'queries');
 	const status = field(saved, 'status');
+	const note = field(value, 'privacyNote');
 	return {
-		style: style !== null && typeof style === 'object' ? (style as IConnectionStyle) : EMPTY_STYLE,
-		saved: {
+		value: {
 			status: status === 'ready' || status === 'session' || status === 'loading' || status === 'error' ? status : 'error',
 			queries: Array.isArray(queries) ? (queries as ISavedQueriesView['queries']) : [],
 			note: typeof field(saved, 'note') === 'string' ? (field(saved, 'note') as string) : null,
 		},
-		privacyNote: typeof note === 'string' ? note : '',
+		note: typeof note === 'string' ? note : '',
 	};
 }
+
+const STYLES: IPart<IStyleView> = {
+	op: OP.styles,
+	rev: 'styleRev',
+	initial: STYLE_LOADING,
+	read: asStyle,
+	// A style that cannot be read is drawn as nobody's, not neutral for ever.
+	failed: () => ({ ready: true, style: EMPTY_STYLE }),
+	retry: (value) => !value.ready,
+};
+
+const SAVED: IPart<ISavedQueriesView> = {
+	op: OP.savedQueries,
+	rev: 'savedRev',
+	initial: SAVED_LOADING,
+	read: asSaved,
+	failed: (last, message) => ({ status: 'error', queries: last.queries, note: message }),
+	retry: (value) => value.status === 'error' || value.status === 'loading',
+};
 
 /**
  * Build a frame's user data over its controller.
@@ -121,101 +168,112 @@ function asAnswer(value: unknown): IUserDataAnswer {
  */
 export function createRemoteUserData(opts: IRemoteUserDataOptions): IRemoteUserData {
 	const { caller, channel } = opts;
-	const slots = new Map<string, ISlot>();
 	// One entry per subscription, so the same function subscribed twice is told (and removed) per subscription.
 	const listeners = new Set<{ fn: () => void }>();
-	let rev: number | null = null;
+	const revs: Record<'styleRev' | 'savedRev', number | null> = { styleRev: null, savedRev: null };
 	let epoch = 0;
 	let note = '';
 	const notify = (): void => listeners.forEach((entry) => entry.fn());
 
-	/**
-	 * Read one connection from the controller.
-	 *
-	 * @param key - The endpoint key.
-	 */
-	const fetch = (key: string): void => {
-		const slot = slots.get(key);
-		// Not before the frame knows its account (the identity topic reads again then): the controller would refuse it.
-		if (!slot || !opts.connected() || opts.owner() === null) return;
-		slot.seq += 1;
-		const seq = slot.seq;
-		const asked = epoch;
-		const askedRev = rev;
-		// Only the newest read of a view that was not reset since counts.
-		const current = (): boolean => asked === epoch && slots.get(key) === slot && seq === slot.seq;
-		caller.callReply(OP.userData, { key, owner: opts.owner() }, { timeoutMs: frameTimeoutFor(OP.userData) }).then(
-			(value) => {
-				if (!current()) return;
-				const answer = asAnswer(value);
-				slot.style = answer.style;
-				slot.saved = answer.saved;
-				slot.rev = askedRev;
-				note = answer.privacyNote;
-				notify();
-			},
-			(error: unknown) => {
-				if (!current()) return;
-				slot.saved = { status: 'error', queries: slot.saved.queries, note: error instanceof Error ? error.message : String(error) };
-				notify();
-				opts.onError?.(error);
-			},
-		);
+	/** The slots of one part, and how to read one connection of it. */
+	const follow = <T>(part: IPart<T>) => {
+		const slots = new Map<string, ISlot<T>>();
+		const fetch = (key: string): void => {
+			const slot = slots.get(key);
+			// Not before the frame knows its account (the identity topic reads again then): the controller would refuse it.
+			if (!slot || !opts.connected() || opts.owner() === null) return;
+			slot.seq += 1;
+			const seq = slot.seq;
+			const asked = epoch;
+			const askedRev = revs[part.rev];
+			const current = (): boolean => asked === epoch && slots.get(key) === slot && seq === slot.seq;
+			caller.callReply(part.op, { key, owner: opts.owner() }, { timeoutMs: frameTimeoutFor(part.op) }).then(
+				(answer) => {
+					if (!current()) return;
+					const read = part.read(answer);
+					slot.value = read.value;
+					slot.rev = askedRev;
+					note = read.note;
+					notify();
+				},
+				(error: unknown) => {
+					if (!current()) return;
+					slot.value = part.failed(slot.value, error instanceof Error ? error.message : String(error));
+					notify();
+				},
+			);
+		};
+		const refetch = (all: boolean): void => {
+			for (const [key, slot] of slots) if (slot.watchers > 0 && (all || slot.rev !== revs[part.rev] || part.retry(slot.value))) fetch(key);
+		};
+		const slotOf = (key: string): ISlot<T> => {
+			let slot = slots.get(key);
+			if (!slot) {
+				const created: ISlot<T> = {
+					value: part.initial,
+					rev: null,
+					seq: 0,
+					watchers: 0,
+					readable: {
+						get: () => created.value,
+						subscribe: (listener) => {
+							const entry = { fn: listener };
+							listeners.add(entry);
+							created.watchers += 1;
+							if (created.watchers === 1 && created.rev === null) fetch(key);
+							return () => {
+								if (listeners.delete(entry)) created.watchers -= 1;
+							};
+						},
+					},
+				};
+				slot = created;
+				slots.set(key, slot);
+			}
+			return slot;
+		};
+		const reset = (): void => {
+			for (const slot of slots.values()) {
+				slot.value = part.initial;
+				slot.rev = null;
+			}
+		};
+		return { fetch, refetch, slotOf, reset };
 	};
-	const refetch = (all: boolean): void => {
-		for (const [key, slot] of slots) if (slot.watchers > 0 && (all || slot.rev !== rev || slot.saved.status === 'error' || slot.saved.status === 'loading')) fetch(key);
-	};
+	const styles = follow(STYLES);
+	const saved = follow(SAVED);
 
 	const offRev = channel.onState(STATE.userData, (snapshot) => {
-		const next = field(snapshot, 'rev');
-		if (typeof next !== 'number' || next === rev) return;
-		rev = next;
-		refetch(false);
+		const styleRev = field(snapshot, 'styleRev');
+		const savedRev = field(snapshot, 'savedRev');
+		if (typeof styleRev === 'number' && styleRev !== revs.styleRev) {
+			revs.styleRev = styleRev;
+			styles.refetch(false);
+		}
+		if (typeof savedRev === 'number' && savedRev !== revs.savedRev) {
+			revs.savedRev = savedRev;
+			saved.refetch(false);
+		}
 	});
-	// A read refused because the frame had not yet learnt its account is tried again once the controller vouches for
-	// one (after this tick, so the frame's identity guard has taken it first).
+	// A read held back because the frame had not yet learnt its account is sent once the controller vouches for one
+	// (after this tick, so the frame's identity guard has taken it first).
 	const offIdentity = channel.onState(STATE.identity, (snapshot) => {
 		const fingerprint = field(snapshot, 'fingerprint');
 		if (typeof fingerprint !== 'string' || fingerprint === '') return;
-		queueMicrotask(() => refetch(false));
+		queueMicrotask(() => {
+			styles.refetch(false);
+			saved.refetch(false);
+		});
 	});
 
-	const slotOf = (key: string): ISlot => {
-		let slot = slots.get(key);
-		if (!slot) {
-			const subscribe = (listener: () => void): (() => void) => {
-				const entry = { fn: listener };
-				listeners.add(entry);
-				created.watchers += 1;
-				if (created.watchers === 1 && created.rev === null) fetch(key);
-				return () => {
-					if (listeners.delete(entry)) created.watchers -= 1;
-				};
-			};
-			const created: ISlot = {
-				style: EMPTY_STYLE,
-				saved: LOADING,
-				rev: null,
-				seq: 0,
-				watchers: 0,
-				styleReadable: { get: () => created.style, subscribe },
-				savedReadable: { get: () => created.saved, subscribe },
-			};
-			slot = created;
-			slots.set(key, slot);
-		}
-		return slot;
+	// Each change is sent, then that part is read again; a refusal reaches the caller.
+	const editStyle = async (key: string, change: StyleEdit): Promise<void> => {
+		await caller.callReply(OP.styleEdit, toWire({ key, owner: opts.owner(), edit: change }), { timeoutMs: frameTimeoutFor(OP.styleEdit) });
+		styles.fetch(key);
 	};
-
-	/**
-	 * Send one change and read the connection again; a refusal reaches the caller.
-	 *
-	 * @param key - The connection.
-	 * @param change - The change.
-	 */
-	const edit = async (key: string, change: UserDataChange): Promise<void> => {
-		await caller.callReply(OP.userDataEdit, toWire({ key, owner: opts.owner(), change }), { timeoutMs: frameTimeoutFor(OP.userDataEdit) });
-		fetch(key);
+	const editSaved = async (key: string, change: SavedEdit): Promise<void> => {
+		await caller.callReply(OP.savedEdit, toWire({ key, owner: opts.owner(), edit: change }), { timeoutMs: frameTimeoutFor(OP.savedEdit) });
+		saved.fetch(key);
 	};
 
 	return {
@@ -223,21 +281,22 @@ export function createRemoteUserData(opts: IRemoteUserDataOptions): IRemoteUserD
 		get privacyNote() {
 			return note;
 		},
-		style: (key) => slotOf(key).styleReadable,
-		saved: (key) => slotOf(key).savedReadable,
-		editStyle: (key, change: StyleEdit) => edit(key, { target: 'style', edit: change }),
-		editSaved: (key, change: SavedEdit) => edit(key, { target: 'saved', edit: change }),
-		retry: () => refetch(false),
+		style: (key) => styles.slotOf(key).readable,
+		saved: (key) => saved.slotOf(key).readable,
+		editStyle,
+		editSaved,
+		retry() {
+			styles.refetch(false);
+			saved.refetch(false);
+		},
 		reset() {
 			epoch += 1;
 			note = '';
-			for (const slot of slots.values()) {
-				slot.style = EMPTY_STYLE;
-				slot.saved = LOADING;
-				slot.rev = null;
-			}
+			styles.reset();
+			saved.reset();
 			notify();
-			refetch(true);
+			styles.refetch(true);
+			saved.refetch(true);
 		},
 		dispose() {
 			offRev();

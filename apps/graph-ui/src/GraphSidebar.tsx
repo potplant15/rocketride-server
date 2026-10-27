@@ -238,8 +238,9 @@ const GraphSidebar: React.FC<IGraphSidebarProps> = ({ devtool = false }) => {
 	const endpoint = useMemo(() => endpoints.find((e) => e.key === activeKey) ?? null, [endpoints, activeKey]);
 	const probe = activeKey ? probes[activeKey] : undefined;
 	const list = useMemo(() => buildSchemaList(entry.view), [entry.view]);
-	const style = useConnectionStyle(activeKey ?? '');
-	const colors = useMemo(() => labelColors(style, entry.view.labels.map((label) => label.name)), [style, entry.view.labels]);
+	// Until the stored style is read, every dot is neutral: never a colour that would change a moment later.
+	const { ready: styleReady, style } = useConnectionStyle(activeKey ?? '');
+	const colors = useMemo(() => (styleReady ? labelColors(style, entry.view.labels.map((label) => label.name)) : new Map()), [styleReady, style, entry.view.labels]);
 	const typeColors = useMemo(() => {
 		const out = new Map<string, string>();
 		for (const [type, chosen] of Object.entries(style.types)) if (chosen.slot !== undefined) out.set(type, `var(${CHART_COLOR_VARS[chosen.slot]})`);

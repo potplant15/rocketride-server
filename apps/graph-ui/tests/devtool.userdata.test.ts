@@ -8,15 +8,17 @@
 // they are (ported from sql-ui's tests/devtool.savedQueries.test.ts)
 // =============================================================================
 //
-// The controller keeps label styles and saved queries in their own per-user
-// file, `@/User/.workspace/rocketride.graph.saved.json`, one bag per account
-// (the dev-tool library's createFsPrefs, a second accessor beside history's).
-// Frames read them with `graph.userData` and change them with
-// `graph.userDataEdit`, both owned calls, and follow the retained `userData`
-// topic's revision. The identity cases follow T7 for history: nothing is
-// served to, or written for, another account, in any order the account can
-// change. Frames also read the full schema view with `graph.schemaView`, on
-// first use and after every newer load.
+// The controller keeps saved queries and label styles in two per-user files of
+// their own, `rocketride.graph.saved.json` and `rocketride.graph.styles.json`,
+// one bag per account each (the dev-tool library's createFsPrefs, beside
+// history's). Frames read them with `graph.savedQueries` and `graph.styles`
+// and change them with `graph.savedEdit` and `graph.styleEdit`, all owned
+// calls, and follow the retained `userData` topic's two revisions. The
+// identity cases follow T7 for history: nothing is served to, or written for,
+// another account, in any order the account can change. The automatic colour
+// slots write only the styles file, only once it was read. Frames also read
+// the full schema view with `graph.schemaView`, on first use and after every
+// newer load.
 // =============================================================================
 
 import { describe, it } from 'node:test';
@@ -26,27 +28,27 @@ import { PREFS_FILE_VERSION, PREFS_FS_TIMEOUT_MS, PREFS_LOAD_ATTEMPTS } from 'sh
 import { jsonByteLength } from 'shared/explorer/devtool/state';
 import { assertJsonSafe } from 'shared/explorer/devtool/testing';
 import { OP, STATE, USER_DATA_LOAD_WAIT_MS, frameTimeoutFor } from '../src/devtool/protocol';
-import type { UserDataChange } from '../src/devtool/protocol';
 import { parseSchema } from '../src/graph/schema';
-import type { ISavedQuery } from '../src/graph/userData';
-import { MAX_SAVED_QUERIES, SAVED_QUERIES_PREF, STYLES_PREF, USER_DATA_PATH } from '../src/graph/userDataStore';
+import type { ISavedQuery, SavedEdit, StyleEdit } from '../src/graph/userData';
+import { MAX_SAVED_QUERIES, SAVED_QUERIES_PATH, SAVED_QUERIES_PREF, STYLES_PATH, STYLES_PREF } from '../src/graph/userDataStore';
 import { NEO4J_SCHEMA, account, mountController, mountFrame, readOnlyNode, settle, signInVsCode, until, vscodeRealm } from './support/devtool';
 import type { IToolCall } from 'shared/explorer/connect/testing';
 
 const FP_A = 'u1|org-1|team-1';
 
-/** Every request for the user-data file. */
-const fileRequests = (engine: { requests: Array<{ op: string; params: unknown }> }, op: string) => engine.requests.filter((r) => r.op === op && (r.params as { path?: string } | null)?.path === USER_DATA_PATH);
+/** Every request for one of the files. */
+const fileRequests = (engine: { requests: Array<{ op: string; params: unknown }> }, op: string, path: string = SAVED_QUERIES_PATH) => engine.requests.filter((r) => r.op === op && (r.params as { path?: string } | null)?.path === path);
 
 /**
- * What one account's bag holds in the file.
+ * What one account's bag holds in a file.
  *
  * @param files - The user store.
  * @param owner - The account.
+ * @param path - The file (default the saved-queries file).
  * @returns Its preferences, or undefined.
  */
-function bagOf(files: Map<string, unknown>, owner: string): Record<string, unknown> | undefined {
-	const file = files.get(USER_DATA_PATH) as { owners?: Record<string, { prefs?: Record<string, unknown> }> } | undefined;
+function bagOf(files: Map<string, unknown>, owner: string, path: string = SAVED_QUERIES_PATH): Record<string, unknown> | undefined {
+	const file = files.get(path) as { owners?: Record<string, { prefs?: Record<string, unknown> }> } | undefined;
 	return file?.owners?.[owner]?.prefs;
 }
 
@@ -66,10 +68,12 @@ async function rig(behave: (call: IToolCall) => unknown = readOnlyNode) {
 	const key = landing.frame.env(true).endpoints.get().endpoints[0].key;
 	const doc = mountFrame(mounted.h, `workbench:${key}`);
 	await until(() => doc.frame.guard.first() !== null, 'the frame learnt its account');
-	const read = (owner: string | null) => doc.frame.caller.callReply(OP.userData, { key, owner }, { timeoutMs: frameTimeoutFor(OP.userData) });
-	const change = (owner: string | null, edit: UserDataChange) => doc.frame.caller.callReply(OP.userDataEdit, { key, owner, change: edit }, { timeoutMs: frameTimeoutFor(OP.userDataEdit) });
+	const read = (owner: string | null) => doc.frame.caller.callReply(OP.savedQueries, { key, owner }, { timeoutMs: frameTimeoutFor(OP.savedQueries) });
+	const readStyle = (owner: string | null) => doc.frame.caller.callReply(OP.styles, { key, owner }, { timeoutMs: frameTimeoutFor(OP.styles) });
+	const save = (owner: string | null, edit: SavedEdit) => doc.frame.caller.callReply(OP.savedEdit, { key, owner, edit }, { timeoutMs: frameTimeoutFor(OP.savedEdit) });
+	const style = (owner: string | null, edit: StyleEdit) => doc.frame.caller.callReply(OP.styleEdit, { key, owner, edit }, { timeoutMs: frameTimeoutFor(OP.styleEdit) });
 	return {
-		engine, ...mounted, landing: landing.frame, frame: doc.frame, key, read, change,
+		engine, ...mounted, landing: landing.frame, frame: doc.frame, key, read, readStyle, save, style,
 		dispose() {
 			doc.frame.dispose();
 			landing.frame.dispose();
@@ -83,53 +87,58 @@ async function loaded(view: { get(): { status: string } }, what = 'the saved que
 	await until(() => view.get().status !== 'loading', what, 200);
 }
 
-/** A change saved through the op, as a frame sends it. */
-const saveOf = (name: string, cypher = 'MATCH (p:Person) RETURN p'): UserDataChange => ({ target: 'saved', edit: { action: 'save', name, cypher } });
+/** A save, as a frame sends it. */
+const saveOf = (name: string, cypher = 'MATCH (p:Person) RETURN p'): SavedEdit => ({ action: 'save', name, cypher });
 
-/** The file was written (after the library's debounce). */
-const written = (engine: { requests: Array<{ op: string; params: unknown }> }, count = 1) => until(() => fileRequests(engine, 'client.fsWriteJson').length >= count, 'the user-data file written', 200);
+/** A file was written (after the library's debounce). */
+const written = (engine: { requests: Array<{ op: string; params: unknown }> }, path: string = SAVED_QUERIES_PATH, count = 1) => until(() => fileRequests(engine, 'client.fsWriteJson', path).length >= count, `${path} written`, 200);
 
 describe('user data in a dev tool: the controller keeps it in its own file, per account', () => {
-	it('names the file beside the history file, and waits for it as long as the library may take to read it', () => {
-		assert.equal(USER_DATA_PATH, '@/User/.workspace/rocketride.graph.saved.json');
+	it('names the two files beside the history file, and waits for them as long as the library may take to read one', () => {
+		assert.equal(SAVED_QUERIES_PATH, '@/User/.workspace/rocketride.graph.saved.json');
+		assert.equal(STYLES_PATH, '@/User/.workspace/rocketride.graph.styles.json');
 		assert.equal(USER_DATA_LOAD_WAIT_MS, PREFS_LOAD_ATTEMPTS * 2 * PREFS_FS_TIMEOUT_MS + 1_000 + 3_000, 'the library\'s whole load');
-		assert.ok(frameTimeoutFor(OP.userData) > USER_DATA_LOAD_WAIT_MS && frameTimeoutFor(OP.userDataEdit) > USER_DATA_LOAD_WAIT_MS, 'the frame waits longer than the controller may');
+		for (const op of [OP.styles, OP.savedQueries, OP.styleEdit, OP.savedEdit]) assert.ok(frameTimeoutFor(op) > USER_DATA_LOAD_WAIT_MS, `${op}: the frame waits longer than the controller may`);
 	});
 
-	it('a frame\'s save and style land in the file under the signed-in account, beside the history file, not in it; the frame reads them back with where they are kept', async () => {
+	it('a frame\'s save and its style land in their own files under the signed-in account, beside the history file, not in it; the frame reads them back with where they are kept', async () => {
 		const r = await rig();
 		const view = r.frame.env(true).userData.saved(r.key);
 		const off = view.subscribe(() => undefined);
 		await loaded(view);
 		assert.equal(view.get().status, 'ready');
-		await r.change(FP_A, saveOf('Who works where'));
-		await r.change(FP_A, { target: 'style', edit: { kind: 'label', label: 'Person', style: { slot: 4, size: 'L' } } });
+		await r.save(FP_A, saveOf('Who works where'));
+		await r.style(FP_A, { kind: 'label', label: 'Person', patch: { slot: 4 } });
+		await r.style(FP_A, { kind: 'label', label: 'Person', patch: { size: 'L' } });
 		await until(() => view.get().queries.length === 1, 'the frame read its save back');
 		assert.equal(view.get().queries[0].name, 'Who works where');
-		assert.match(r.frame.env(true).userData.privacyNote, /rocketride\.graph\.saved\.json/);
+		assert.match(r.frame.env(true).userData.privacyNote, /rocketride\.graph\.saved\.json, rocketride\.graph\.styles\.json/);
 		await written(r.engine);
-		await until(() => (bagOf(r.engine.files, FP_A)?.[STYLES_PREF] as Record<string, unknown> | undefined)?.[r.key] !== undefined, 'the style in the file', 200);
-		const bag = bagOf(r.engine.files, FP_A) ?? {};
-		assert.deepEqual((bag[SAVED_QUERIES_PREF] as Record<string, ISavedQuery[]>)[r.key].map((q) => q.name), ['Who works where']);
-		assert.deepEqual(((bag[STYLES_PREF] as Record<string, { labels: unknown }>)[r.key]).labels, { Person: { slot: 4, size: 'L' } });
-		assert.equal((r.engine.files.get(USER_DATA_PATH) as { version: number }).version, PREFS_FILE_VERSION);
-		assert.doesNotMatch(JSON.stringify([...r.engine.files.entries()].filter(([path]) => path !== USER_DATA_PATH)), /Who works where/, 'the history file holds none of it');
+		await until(() => (bagOf(r.engine.files, FP_A, STYLES_PATH)?.[STYLES_PREF] as Record<string, { labels?: Record<string, unknown> }> | undefined)?.[r.key]?.labels?.Person !== undefined, 'the style in its file', 200);
+		const saved = bagOf(r.engine.files, FP_A) ?? {};
+		const styles = bagOf(r.engine.files, FP_A, STYLES_PATH) ?? {};
+		assert.deepEqual((saved[SAVED_QUERIES_PREF] as Record<string, ISavedQuery[]>)[r.key].map((q) => q.name), ['Who works where']);
+		assert.equal(saved[STYLES_PREF], undefined, 'no style in the saved-queries file');
+		assert.deepEqual(((styles[STYLES_PREF] as Record<string, { labels: unknown }>)[r.key]).labels, { Person: { slot: 4, size: 'L' } }, 'two quick edits, both kept');
+		assert.equal(styles[SAVED_QUERIES_PREF], undefined, 'no saved query in the styles file');
+		assert.equal((r.engine.files.get(SAVED_QUERIES_PATH) as { version: number }).version, PREFS_FILE_VERSION);
+		assert.doesNotMatch(JSON.stringify([...r.engine.files.entries()].filter(([path]) => path !== SAVED_QUERIES_PATH)), /Who works where/, 'no other file holds it');
 		off();
 		r.dispose();
 	});
 
 	it('the caps refuse a save through the op with the sentence, and an edit this app does not make is refused', async () => {
 		const r = await rig();
-		for (let i = 0; i < MAX_SAVED_QUERIES; i += 1) await r.change(FP_A, saveOf(`q${i}`));
-		await assert.rejects(r.change(FP_A, saveOf('one more')), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid' && /already keeps 50 saved queries/.test(error.message));
-		await assert.rejects(r.change(FP_A, { target: 'style', edit: { kind: 'assign', assigned: { X: 0 } } } as never), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid', 'an assignment never comes from a frame');
-		await assert.rejects(r.change(FP_A, { target: 'history' } as never), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid');
+		for (let i = 0; i < MAX_SAVED_QUERIES; i += 1) await r.save(FP_A, saveOf(`q${i}`));
+		await assert.rejects(r.save(FP_A, saveOf('one more')), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid' && /already keeps 50 saved queries/.test(error.message));
+		await assert.rejects(r.style(FP_A, { kind: 'assign', add: { X: 0 }, release: [] } as never), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid', 'an assignment never comes from a frame');
+		await assert.rejects(r.save(FP_A, { action: 'clear' } as never), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid');
 		r.dispose();
 	});
 
 	it('never writes a file it could not read: they are kept for the session, and the answer says so', async () => {
 		const engine = vscodeRealm();
-		engine.files.set(USER_DATA_PATH, { format: 'from the future' });
+		engine.files.set(SAVED_QUERIES_PATH, { format: 'from the future' });
 		signInVsCode(engine.realm);
 		const mounted = mountController(engine.cm);
 		mounted.h.setHostConnection(true);
@@ -137,35 +146,43 @@ describe('user data in a dev tool: the controller keeps it in its own file, per 
 		await until(() => frame.env(true).endpoints.get().endpoints.length === 1, 'discovery');
 		const key = frame.env(true).endpoints.get().endpoints[0].key;
 		await until(() => frame.guard.first() !== null, 'the frame learnt its account');
-		await frame.caller.callReply(OP.userDataEdit, { key, owner: FP_A, change: saveOf('Kept') }, { timeoutMs: frameTimeoutFor(OP.userDataEdit) });
-		const answer = await frame.caller.callReply(OP.userData, { key, owner: FP_A }, { timeoutMs: frameTimeoutFor(OP.userData) });
+		await frame.caller.callReply(OP.savedEdit, { key, owner: FP_A, edit: saveOf('Kept') }, { timeoutMs: frameTimeoutFor(OP.savedEdit) });
+		const answer = await frame.caller.callReply(OP.savedQueries, { key, owner: FP_A }, { timeoutMs: frameTimeoutFor(OP.savedQueries) });
 		assert.equal(answer.saved.status, 'session');
 		assert.deepEqual(answer.saved.queries.map((q) => q.name), ['Kept']);
-		assert.match(answer.privacyNote, /^Kept for this session only/);
+		assert.match(answer.privacyNote, /^Saved queries are kept for this session only/);
 		await new Promise((resolve) => setTimeout(resolve, 1_300));
 		assert.deepEqual(fileRequests(engine, 'client.fsWriteJson'), [], 'the file was never written');
-		assert.deepEqual(engine.files.get(USER_DATA_PATH), { format: 'from the future' });
+		assert.deepEqual(engine.files.get(SAVED_QUERIES_PATH), { format: 'from the future' });
 		frame.dispose();
 		mounted.controller.dispose();
 	});
 });
 
 describe('user data: frames follow a small revision topic, and read the data as an op result', () => {
-	it('the revision moves on every change; the topic carries no data and stays under 64 bytes; the ops round-trip JSON-safe', async () => {
+	it('each revision moves on its own changes; the topic carries no data and stays under 64 bytes; the ops round-trip JSON-safe', async () => {
 		const r = await rig();
-		const revs = (): number[] => r.h.wire.flatMap((entry) => Object.values((entry.value ?? {}) as Record<string, { __rrtool?: string; topic?: string; snapshot?: { rev: number } }>).filter((m) => m?.__rrtool === 'state' && m.topic === STATE.userData).map((m) => m.snapshot!.rev));
-		const before = Math.max(...revs());
-		await r.change(FP_A, saveOf('Who works where'));
-		await until(() => Math.max(...revs()) > before, 'the revision moved');
+		const snapshots = (): Array<{ styleRev: number; savedRev: number }> => r.h.wire.flatMap((entry) => Object.values((entry.value ?? {}) as Record<string, { __rrtool?: string; topic?: string; snapshot?: { styleRev: number; savedRev: number } }>).filter((m) => m?.__rrtool === 'state' && m.topic === STATE.userData).map((m) => m.snapshot!));
+		const last = () => snapshots()[snapshots().length - 1];
+		await until(() => snapshots().length > 0, 'the topic published');
+		await r.read(FP_A);
+		await r.readStyle(FP_A);
+		const before = last();
+		await r.save(FP_A, saveOf('Who works where'));
+		await until(() => last().savedRev > before.savedRev, 'the saved revision moved');
+		const afterSave = last();
+		assert.equal(afterSave.styleRev, before.styleRev, 'a save leaves the style revision alone');
+		await r.style(FP_A, { kind: 'label', label: 'Person', patch: { badge: 'dot' } });
+		await until(() => last().styleRev > afterSave.styleRev, 'the style revision moved');
+		assert.equal(last().savedRev, afterSave.savedRev, 'a style edit leaves the saved revision alone: frames do not read their saved queries again');
 		for (const entry of r.h.wire) {
 			for (const m of Object.values((entry.value ?? {}) as Record<string, { __rrtool?: string; topic?: string; snapshot?: unknown }>)) {
 				if (m?.__rrtool !== 'state' || m.topic !== STATE.userData) continue;
-				assert.deepEqual(Object.keys(m.snapshot as object), ['rev']);
+				assert.deepEqual(Object.keys(m.snapshot as object).sort(), ['savedRev', 'styleRev']);
 				assert.ok(jsonByteLength(m.snapshot) < 64, 'a tiny topic');
 				assert.doesNotMatch(JSON.stringify(m.snapshot), /Who works where/);
 			}
 		}
-		await r.read(FP_A);
 		for (const [i, entry] of r.h.wire.entries()) assertJsonSafe(entry.value, `wire #${i} ${entry.topic}`);
 		assert.deepEqual(r.h.violations, [], 'nothing JSON would change crossed the wire');
 		r.dispose();
@@ -177,34 +194,113 @@ describe('user data: frames follow a small revision topic, and read the data as 
 		await until(() => other.frame.guard.first() !== null, 'the second frame learnt its account');
 		const style = other.frame.env(true).userData.style(r.key);
 		const off = style.subscribe(() => undefined);
-		await r.frame.env(true).userData.editStyle(r.key, { kind: 'label', label: 'Person', style: { slot: 2 } });
-		await until(() => style.get().labels.Person?.slot === 2, 'the second document saw the style');
+		await r.frame.env(true).userData.editStyle(r.key, { kind: 'label', label: 'Person', patch: { slot: 2 } });
+		await until(() => style.get().style.labels.Person?.slot === 2, 'the second document saw the style');
+		assert.equal(style.get().ready, true);
 		off();
 		other.frame.dispose();
 		r.dispose();
 	});
 });
 
-describe('user data: colour slots are given once per new label, by the controller', () => {
-	it('a loaded schema\'s labels get the lowest free slots in sorted order, written to the file; a later new label takes the next free one and moves nobody', async () => {
+describe('user data: colour slots are given by the controller, written only to the styles file once it was read', () => {
+	it('a loaded schema\'s labels get the lowest free slots in sorted order, shown to frames at once and written to the styles file; a later new label moves nobody', async () => {
 		let schema: Record<string, unknown> = NEO4J_SCHEMA;
 		const r = await rig((call) => (call.tool === 'get_schema' || call.tool === 'refresh_schema' ? schema : readOnlyNode(call)));
 		const style = r.frame.env(true).userData.style(r.key);
 		const off = style.subscribe(() => undefined);
 		await r.frame.env(true).loadSchema(r.key);
 		const names = parseSchema(NEO4J_SCHEMA).labels.map((label) => label.name).sort();
-		await until(() => Object.keys(style.get().assigned).length === 6, 'six labels given slots', 200);
-		assert.deepEqual(style.get().assigned, Object.fromEntries(names.slice(0, 6).map((name, i) => [name, i])));
-		await written(r.engine);
-		// A new label that sorts first appears; nobody already given a slot moves, and every slot is held, so it hashes.
+		await until(() => Object.keys(style.get().style.assigned).length === 6, 'six labels given slots', 200);
+		assert.equal(style.get().ready, true);
+		assert.deepEqual(style.get().style.assigned, Object.fromEntries(names.slice(0, 6).map((name, i) => [name, i])));
+		await written(r.engine, STYLES_PATH);
+		assert.equal(fileRequests(r.engine, 'client.fsWriteJson', SAVED_QUERIES_PATH).length, 0, 'the saved-queries file is never written by a slot');
+		// A new label that sorts first appears; nobody already given a slot moves, and every slot is held by a label the
+		// schema still lists, so it hashes.
 		const inner = schema.schema as Record<string, unknown>;
 		schema = { ...schema, schema: { ...inner, labels: [{ name: 'Aardvark', properties: [], count: 1, count_estimated: false }, ...(inner.labels as unknown[])] } };
 		await r.frame.env(true).loadSchema(r.key, { fresh: true });
 		await until(() => r.controller.stores.schemas.get(r.key).view.labels.some((label) => label.name === 'Aardvark'), 'the new label loaded', 200);
 		await settle();
-		assert.deepEqual(style.get().assigned, Object.fromEntries(names.slice(0, 6).map((name, i) => [name, i])), 'no slot moved');
+		assert.deepEqual(style.get().style.assigned, Object.fromEntries(names.slice(0, 6).map((name, i) => [name, i])), 'no slot moved');
 		off();
 		r.dispose();
+	});
+
+	it('no slot is written before the styles file was read: a schema loaded first writes nothing, and the stored slots win', async () => {
+		const engine = vscodeRealm();
+		let hold = true;
+		const releases: Array<() => void> = [];
+		const inner = engine.cm.request.bind(engine.cm);
+		const cm = Object.assign(Object.create(null), engine.cm, {
+			request: async (op: string, params: unknown, opts?: { timeoutMs?: number }) => {
+				if (hold && (params as { path?: string } | null)?.path === STYLES_PATH && (op === 'client.fsStat' || op === 'client.fsReadJson')) await new Promise<void>((resolve) => releases.push(resolve));
+				return inner(op, params, opts);
+			},
+		});
+		signInVsCode(engine.realm);
+		const mounted = mountController(cm as never);
+		mounted.h.setHostConnection(true);
+		const { frame } = mountFrame(mounted.h, undefined);
+		await until(() => frame.env(true).endpoints.get().endpoints.length === 1, 'discovery');
+		const endpointKey = frame.env(true).endpoints.get().endpoints[0].key;
+		// What another window stored for this connection: a person's colour, and slots in an order the schema would not give.
+		engine.files.set(STYLES_PATH, { version: PREFS_FILE_VERSION, owners: { [FP_A]: { at: 1, prefs: { [STYLES_PREF]: { [endpointKey]: { assigned: { Person: 5, GxPerson: 0 }, labels: { Person: { slot: 3 } } } } } } } });
+		await until(() => releases.length > 0, 'the styles file read held');
+		await frame.env(true).loadSchema(endpointKey);
+		await until(() => mounted.controller.stores.schemas.get(endpointKey).loadedAt > 0, 'the schema loaded before the file');
+		await new Promise((resolve) => setTimeout(resolve, 1_300));
+		assert.deepEqual(fileRequests(engine, 'client.fsWriteJson', STYLES_PATH), [], 'nothing written while the file was not read');
+		assert.equal(mounted.controller.env(true).userData.style(endpointKey).get().ready, false, 'and the style is not ready');
+		hold = false;
+		for (const release of releases.splice(0)) release();
+		await until(() => mounted.controller.env(true).userData.style(endpointKey).get().ready, 'the file read');
+		const { style } = mounted.controller.env(true).userData.style(endpointKey).get();
+		assert.equal(style.assigned.Person, 5, 'the stored slot is kept');
+		assert.equal(style.assigned.GxPerson, 0);
+		assert.deepEqual(style.labels.Person, { slot: 3 }, 'and the person\'s colour');
+		await written(engine, STYLES_PATH);
+		const stored = (bagOf(engine.files, FP_A, STYLES_PATH)?.[STYLES_PREF] as Record<string, { assigned: Record<string, number>; labels: unknown }>)[endpointKey];
+		assert.equal(stored.assigned.Person, 5, 'the write added slots around what was stored');
+		assert.deepEqual(stored.labels, { Person: { slot: 3 } });
+		frame.dispose();
+		mounted.controller.dispose();
+	});
+
+	it('two windows: window 2 saves a query while window 1 gives colour slots from its own copy; the saved query survives', async () => {
+		const one = vscodeRealm();
+		const two = vscodeRealm();
+		// Both windows reach the same user store (the engine's), each through its own realm.
+		const shared = (engine: typeof one) => Object.assign(Object.create(null), engine.cm, {
+			request: (op: string, params: unknown, opts?: { timeoutMs?: number }) => (op.startsWith('client.fs') ? one.cm.request(op, params, opts) : engine.cm.request(op, params, opts)),
+		});
+		signInVsCode(one.realm);
+		signInVsCode(two.realm);
+		const w1 = mountController(shared(one) as never);
+		const w2 = mountController(shared(two) as never);
+		for (const w of [w1, w2]) w.h.setHostConnection(true);
+		const f1 = mountFrame(w1.h, undefined).frame;
+		const f2 = mountFrame(w2.h, undefined).frame;
+		await until(() => f1.env(true).endpoints.get().endpoints.length === 1 && f2.env(true).endpoints.get().endpoints.length === 1, 'both windows discovered');
+		const key = f2.env(true).endpoints.get().endpoints[0].key;
+		await until(() => f1.guard.first() !== null && f2.guard.first() !== null, 'both frames know their account');
+		// Both windows have read both files (empty) before either writes.
+		await f1.caller.callReply(OP.styles, { key, owner: FP_A }, { timeoutMs: frameTimeoutFor(OP.styles) });
+		await f1.caller.callReply(OP.savedQueries, { key, owner: FP_A }, { timeoutMs: frameTimeoutFor(OP.savedQueries) });
+		await f2.caller.callReply(OP.savedQueries, { key, owner: FP_A }, { timeoutMs: frameTimeoutFor(OP.savedQueries) });
+		// Window 2 saves a query; it reaches the file.
+		await f2.caller.callReply(OP.savedEdit, { key, owner: FP_A, edit: saveOf('Who works where') }, { timeoutMs: frameTimeoutFor(OP.savedEdit) });
+		await until(() => JSON.stringify(bagOf(one.files, FP_A) ?? {}).includes('Who works where'), 'window 2\'s save in the file', 200);
+		// Window 1, whose copy predates that save, loads the schema and writes its colour slots.
+		await f1.env(true).loadSchema(key);
+		await until(() => JSON.stringify(bagOf(one.files, FP_A, STYLES_PATH) ?? {}).includes('"assigned"'), 'window 1\'s slots in the styles file', 200);
+		await new Promise((resolve) => setTimeout(resolve, 1_300));
+		assert.ok(JSON.stringify(bagOf(one.files, FP_A) ?? {}).includes('Who works where'), 'the saved query survives');
+		f1.dispose();
+		f2.dispose();
+		w1.controller.dispose();
+		w2.controller.dispose();
 	});
 });
 
@@ -214,14 +310,16 @@ describe('T7 - user data: nothing of one account is served to, kept for, or writ
 		r.engine.realm.root.accountChanged(account('u2'));
 		await until(() => r.controller.identity.get().fingerprint === 'u2|org-1|team-1', 'account B');
 		await assert.rejects(r.read(FP_A), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
-		await assert.rejects(r.change(FP_A, saveOf('A after B')), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
+		await assert.rejects(r.save(FP_A, saveOf('A after B')), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
+		await assert.rejects(r.readStyle(FP_A), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
+		await assert.rejects(r.style(FP_A, { kind: 'reset' }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
 		await assert.rejects(r.read(null), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
 		r.dispose();
 	});
 
 	it('A saves, then B signs in directly: A\'s save is never written into B\'s bag, and B is never served it', async () => {
 		const r = await rig();
-		await r.change(FP_A, saveOf('A only'));
+		await r.save(FP_A, saveOf('A only'));
 		r.engine.realm.root.accountChanged(account('u2'));
 		await until(() => r.controller.identity.get().fingerprint === 'u2|org-1|team-1', 'account B');
 		const answer = await r.read('u2|org-1|team-1');
@@ -234,7 +332,7 @@ describe('T7 - user data: nothing of one account is served to, kept for, or writ
 
 	it('A saves, signs out, and signs in again with the sidebar open: written for A, and only for A', async () => {
 		const r = await rig();
-		await r.change(FP_A, saveOf('A again'));
+		await r.save(FP_A, saveOf('A again'));
 		r.engine.realm.root.disconnect();
 		await until(() => !r.controller.identity.get().known, 'nobody signed in');
 		await assert.rejects(r.read(FP_A), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'unavailable', 'nothing is served while nobody is signed in');
@@ -252,7 +350,7 @@ describe('T7 - user data: nothing of one account is served to, kept for, or writ
 		const inner = engine.cm.request.bind(engine.cm);
 		const cm = Object.assign(Object.create(null), engine.cm, {
 			request: async (op: string, params: unknown, opts?: { timeoutMs?: number }) => {
-				if (hold && (params as { path?: string } | null)?.path === USER_DATA_PATH && (op === 'client.fsStat' || op === 'client.fsReadJson')) await new Promise<void>((resolve) => releases.push(resolve));
+				if (hold && (params as { path?: string } | null)?.path === SAVED_QUERIES_PATH && (op === 'client.fsStat' || op === 'client.fsReadJson')) await new Promise<void>((resolve) => releases.push(resolve));
 				return inner(op, params, opts);
 			},
 		});
@@ -263,7 +361,7 @@ describe('T7 - user data: nothing of one account is served to, kept for, or writ
 		await until(() => frame.env(true).endpoints.get().endpoints.length === 1, 'discovery');
 		const key = frame.env(true).endpoints.get().endpoints[0].key;
 		await until(() => releases.length > 0, 'A\'s file read held');
-		const pending = frame.caller.callReply(OP.userDataEdit, { key, owner: FP_A, change: saveOf('Mid-switch') }, { timeoutMs: frameTimeoutFor(OP.userDataEdit) });
+		const pending = frame.caller.callReply(OP.savedEdit, { key, owner: FP_A, edit: saveOf('Mid-switch') }, { timeoutMs: frameTimeoutFor(OP.savedEdit) });
 		await settle();
 		engine.realm.root.accountChanged(account('u2'));
 		await until(() => mounted.controller.identity.get().fingerprint === 'u2|org-1|team-1', 'account B');
@@ -280,7 +378,7 @@ describe('T7 - user data: nothing of one account is served to, kept for, or writ
 		const r = await rig();
 		const view = r.landing.env(true).userData.saved(r.key);
 		const off = view.subscribe(() => undefined);
-		await r.change(FP_A, saveOf('A only'));
+		await r.save(FP_A, saveOf('A only'));
 		await until(() => view.get().queries.length === 1, 'the landing read A\'s');
 		await r.landing.env(true).loadSchema(r.key);
 		const offView = r.landing.schemaView.subscribe(() => undefined);
@@ -320,6 +418,26 @@ describe('the schema view in a frame: read on first use, and again when a newer 
 		await until(() => r.frame.env(true).schemaView.get(r.key) !== first, 'the view read again');
 		assert.ok(reads >= 2, 'the premise: two loads');
 		assert.ok(r.engine.requests.length >= views, 'the reads are op results, not engine calls');
+		off();
+		r.dispose();
+	});
+});
+
+describe('the schema view of a connection whose label names do not fit the summaries', () => {
+	it('still crosses with its load time, so the frame reads the view after the load and again after a refresh', async () => {
+		const names = Array.from({ length: 2_000 }, (_, i) => `ALabelWithAVeryLongNameNumber${i}`);
+		const big = { database: 'neo4j', labels: names, nodes: Object.fromEntries(names.map((n) => [n, [{ property: 'p', type: 'string' }]])), relationships: {} };
+		const r = await rig((call) => (call.tool === 'get_schema' || call.tool === 'refresh_schema' ? big : readOnlyNode(call)));
+		const off = r.frame.env(true).schemaView.subscribe(() => undefined);
+		r.frame.env(true).schemaView.get(r.key);
+		await r.frame.env(true).loadSchema(r.key);
+		await until(() => r.frame.schemas.get()[r.key]?.loadedAt > 0, 'the summary', 200);
+		assert.equal(r.frame.schemas.get()[r.key].labelsCut, true, 'the premise: the names did not fit');
+		await until(() => (r.frame.env(true).schemaView.get(r.key)?.labels.length ?? 0) === names.length, 'the view read', 200);
+		const first = r.frame.env(true).schemaView.get(r.key);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		await r.frame.env(true).loadSchema(r.key, { fresh: true });
+		await until(() => r.frame.env(true).schemaView.get(r.key) !== first, 'the view read again after the refresh', 200);
 		off();
 		r.dispose();
 	});

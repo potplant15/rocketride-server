@@ -11,18 +11,24 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { IDataGridPersistence } from 'shell';
 import { ExplorerToolError } from 'shared/explorer';
 import type { IPrefsAccessor } from 'shared/explorer';
+import { makeGraphHistory } from '../src/adapters/explorer';
 import { createSchemaStore } from '../src/graph/schemaStore';
 import { APP_USER_DATA_NOTE, EMPTY_STYLE, SESSION_USER_DATA_NOTE, createMemoryUserData, devToolUserDataNote, followAssignments } from '../src/graph/userData';
 import { SAVED_QUERIES_PREF, STYLES_PREF } from '../src/graph/userDataStore';
-import { ANOTHER_ACCOUNT_USER_DATA, createAppUserData, createWorkspacePin, pinnedGrids, pinnedPrefs } from '../src/graph/workspacePin';
+import { ANOTHER_ACCOUNT_USER_DATA, createAppUserData, createWorkspacePin, pinHistory, pinnedGrids, pinnedPrefs } from '../src/graph/workspacePin';
 import { fixture } from './support/builders';
+import { manualTimers } from './support/devtool';
 
 const KEY = 'k1|neo';
 const FP_A = 'uA|org-1|team-1';
 const FP_B = 'uB|org-1|team-1';
+const LOADED = () => true;
+const failure = () => ({ variant: 'error' as const, headline: '', detail: '', verbatim: '', generic: false, hint: null, ignore: false });
 
 /**
  * The shell's workspace preferences as the full app sees them: read once per page from the first account's file, and
@@ -48,9 +54,9 @@ function shellModel(first: string | null) {
 describe('full app: A, then B without a reload', () => {
 	it('B is served none of A\'s styles or saved queries, nothing is written while B is signed in, and B\'s file never holds A\'s', async () => {
 		const shell = shellModel(FP_A);
-		const data = createAppUserData(shell.prefs, shell.owner, createWorkspacePin());
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin());
 		await data.editSaved(KEY, { action: 'save', name: 'A payroll', cypher: "MATCH (p:Person {name: 'Alice'}) RETURN p.salary" });
-		await data.editStyle(KEY, { kind: 'label', label: 'Person', style: { slot: 4 } });
+		await data.editStyle(KEY, { kind: 'label', label: 'Person', patch: { slot: 4 } });
 		assert.match(shell.files.get(FP_A) ?? '', /A payroll/);
 		assert.equal(data.saved(KEY).get().status, 'ready');
 		assert.equal(data.privacyNote, APP_USER_DATA_NOTE);
@@ -59,17 +65,17 @@ describe('full app: A, then B without a reload', () => {
 		data.notify();
 		const filesBefore = new Map(shell.files);
 		assert.deepEqual(data.saved(KEY).get(), { status: 'error', queries: [], note: ANOTHER_ACCOUNT_USER_DATA }, 'B is never shown A\'s saved queries');
-		assert.equal(data.style(KEY).get(), EMPTY_STYLE, 'or A\'s styles');
+		assert.deepEqual(data.style(KEY).get(), { ready: true, style: EMPTY_STYLE }, 'or A\'s styles');
 		await assert.rejects(data.editSaved(KEY, { action: 'save', name: 'B query', cypher: 'RETURN 2' }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale' && /different account/.test(error.message));
 		await assert.rejects(data.editStyle(KEY, { kind: 'reset' }), (error: unknown) => error instanceof ExplorerToolError && /different account/.test(error.message));
-		data.assign(KEY, ['Company']);
+		data.assign(KEY, ['Company'], true);
 		assert.equal(shell.files.has(FP_B), false, 'nothing was written while B is signed in');
 		assert.deepEqual(shell.files, filesBefore);
 	});
 
 	it('A, back again before a reload, is served A\'s own and can save again', async () => {
 		const shell = shellModel(FP_A);
-		const data = createAppUserData(shell.prefs, shell.owner, createWorkspacePin());
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin());
 		await data.editSaved(KEY, { action: 'save', name: 'Mine', cypher: 'RETURN 1' });
 		shell.signIn(FP_B);
 		data.notify();
@@ -83,7 +89,7 @@ describe('full app: A, then B without a reload', () => {
 	it('signed out, nothing is read or written either', async () => {
 		const shell = shellModel(null);
 		shell.bag.set(SAVED_QUERIES_PREF, { [KEY]: [{ id: 'x', name: 'X', cypher: 'RETURN 1', savedAt: 1 }] });
-		const data = createAppUserData(shell.prefs, shell.owner, createWorkspacePin());
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin());
 		assert.deepEqual(data.saved(KEY).get(), { status: 'error', queries: [], note: 'Not signed in to a RocketRide server.' });
 		await assert.rejects(data.editSaved(KEY, { action: 'delete', id: 'x' }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'unavailable');
 	});
@@ -135,8 +141,8 @@ describe('stored user data: reads are stable, and say where they are', () => {
 		let bag: Record<string, unknown> = {};
 		// A host that copies the value on every read (as JSON would).
 		const prefs: IPrefsAccessor = { getPref: (key) => (bag[key] === undefined ? undefined : JSON.parse(JSON.stringify(bag[key]))), setPref: (key, value) => { bag = { ...bag, [key]: value }; } };
-		const data = createAppUserData(prefs, () => FP_A, createWorkspacePin());
-		await data.editStyle(KEY, { kind: 'label', label: 'Person', style: { slot: 1 } });
+		const data = createAppUserData(prefs, () => FP_A, LOADED, createWorkspacePin());
+		await data.editStyle(KEY, { kind: 'label', label: 'Person', patch: { slot: 1 } });
 		await data.editSaved(KEY, { action: 'save', name: 'One', cypher: 'RETURN 1' });
 		assert.equal(data.style(KEY), data.style(KEY));
 		assert.equal(data.style(KEY).get(), data.style(KEY).get(), 'a stable style snapshot');
@@ -158,16 +164,74 @@ describe('stored user data: reads are stable, and say where they are', () => {
 	});
 });
 
-describe('first-seen colour slots: given once, in the realm that owns the schema', () => {
-	it('followAssignments stores the slots of a loaded schema\'s labels, and a later new label takes a free slot without moving any', async () => {
+describe('the full app\'s history goes through the same pin', () => {
+	it('another account gets a throwaway accessor: it is shown none of A\'s history and its runs write nothing into the shell\'s prefs', async () => {
+		const shell = shellModel(FP_A);
+		const pin = createWorkspacePin();
+		const store = makeGraphHistory(0);
+		const pinned = pinHistory(store, pin);
+		let detach = pinned.attachPrefs(shell.prefs, FP_A);
+		store.runs.emitRun(KEY, { id: 'a1', at: 1, kind: 'read', cypher: "MATCH (p {name: 'Alice'}) RETURN p", ms: 1, outcome: 'rows', rows: 1 } as never);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.match(shell.files.get(FP_A) ?? '', /Alice/, 'A\'s run lands in A\'s file');
+		shell.signIn(FP_B);
+		detach();
+		detach = pinned.attachPrefs(shell.prefs, FP_B);
+		assert.equal(pinned.access(), 'another');
+		assert.deepEqual(store.getHistory(KEY), [], 'B is never shown A\'s history');
+		store.runs.emitRun(KEY, { id: 'b1', at: 2, kind: 'read', cypher: 'RETURN 2', ms: 1, outcome: 'rows', rows: 1 } as never);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(shell.files.has(FP_B), false, 'nothing was written into B\'s file');
+		detach();
+	});
+});
+
+describe('colour slots: given once, in the realm that owns the schema, written only to a store that was read', () => {
+	const two = { version: 2, labels: [{ name: 'Person', properties: [] }, { name: 'Company', properties: [] }], relationship_types: [], sampled: true, truncated: false, refreshed_at: null, source: 'startup', stale: false, error: null, capable: true };
+
+	it('the slots of a loaded schema\'s labels are shown at once and written once, debounced; a later new label takes a free slot without moving any', async () => {
+		const shell = shellModel(FP_A);
+		const timers = manualTimers();
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin(), { schedule: timers.schedule });
 		const schemas = createSchemaStore(() => 1);
-		const data = createMemoryUserData('session');
 		const off = followAssignments(schemas, data);
-		const two = { version: 2, labels: [{ name: 'Person', properties: [] }, { name: 'Company', properties: [] }], relationship_types: [], sampled: true, truncated: false, refreshed_at: null, source: 'startup', stale: false, error: null, capable: true };
-		await schemas.load(KEY, async () => ({ schema: two }), () => ({ variant: 'error', headline: '', detail: '', verbatim: '', generic: false, hint: null, ignore: false }));
-		assert.deepEqual(data.style(KEY).get().assigned, { Company: 0, Person: 1 });
-		await schemas.load(KEY, async () => ({ schema: { ...two, labels: [{ name: 'Aardvark', properties: [] }, ...two.labels] } }), () => ({ variant: 'error', headline: '', detail: '', verbatim: '', generic: false, hint: null, ignore: false }), { refresh: true });
-		assert.deepEqual(data.style(KEY).get().assigned, { Company: 0, Person: 1, Aardvark: 2 });
+		await schemas.load(KEY, async () => ({ schema: two }), failure);
+		assert.deepEqual(data.style(KEY).get().style.assigned, { Company: 0, Person: 1 }, 'shown at once');
+		assert.equal(shell.bag.get(STYLES_PREF), undefined, 'not written yet');
+		timers.advance(1_000);
+		assert.deepEqual((shell.bag.get(STYLES_PREF) as Record<string, { assigned: unknown }>)[KEY].assigned, { Company: 0, Person: 1 }, 'written after the pause');
+		await schemas.load(KEY, async () => ({ schema: { ...two, labels: [{ name: 'Aardvark', properties: [] }, ...two.labels] } }), failure, { refresh: true });
+		timers.advance(1_000);
+		assert.deepEqual(data.style(KEY).get().style.assigned, { Company: 0, Person: 1, Aardvark: 2 });
+		off();
+	});
+
+	it('no slot is written before the shell has loaded the prefs; the style is not ready until then', async () => {
+		const shell = shellModel(FP_A);
+		let loaded = false;
+		const timers = manualTimers();
+		const data = createAppUserData(shell.prefs, shell.owner, () => loaded, createWorkspacePin(), { schedule: timers.schedule });
+		const schemas = createSchemaStore(() => 1);
+		const off = followAssignments(schemas, data);
+		await schemas.load(KEY, async () => ({ schema: two }), failure);
+		timers.advance(5_000);
+		assert.equal(data.style(KEY).get().ready, false, 'not ready: screens draw neutral');
+		assert.equal(shell.bag.get(STYLES_PREF), undefined, 'nothing written before the load');
+		await assert.rejects(data.editSaved(KEY, { action: 'save', name: 'Early', cypher: 'RETURN 1' }), (error: unknown) => error instanceof ExplorerToolError && /still loading/.test(error.message));
+		loaded = true;
+		data.notify();
+		assert.equal(data.style(KEY).get().ready, true);
+		timers.advance(1_000);
+		assert.ok((shell.bag.get(STYLES_PREF) as Record<string, unknown>)[KEY], 'written once loaded');
+		off();
+	});
+
+	it('a session-only store shows the slots and writes them nowhere', async () => {
+		const data = createMemoryUserData('session');
+		const schemas = createSchemaStore(() => 1);
+		const off = followAssignments(schemas, data);
+		await schemas.load(KEY, async () => fixture('schema_v2'), failure);
+		assert.ok(Object.keys(data.style(KEY).get().style.assigned).length > 0);
 		off();
 	});
 
@@ -176,26 +240,59 @@ describe('first-seen colour slots: given once, in the realm that owns the schema
 		const pin = createWorkspacePin();
 		pin.access(FP_A);
 		shell.signIn(FP_B);
-		const data = createAppUserData(shell.prefs, shell.owner, pin);
+		const timers = manualTimers();
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, pin, { schedule: timers.schedule });
 		const schemas = createSchemaStore(() => 1);
 		const off = followAssignments(schemas, data);
-		await schemas.load(KEY, async () => fixture('schema_v2'), () => ({ variant: 'error', headline: '', detail: '', verbatim: '', generic: false, hint: null, ignore: false }));
+		await schemas.load(KEY, async () => fixture('schema_v2'), failure);
+		timers.advance(5_000);
 		assert.equal(shell.bag.get(STYLES_PREF), undefined, 'nothing written for B');
 		shell.signIn(FP_A);
 		data.notify();
-		assert.ok(Object.keys(data.style(KEY).get().assigned).length > 0, 'assigned for A');
+		assert.ok(Object.keys(data.style(KEY).get().style.assigned).length > 0, 'assigned for A');
+		timers.advance(1_000);
+		assert.ok((shell.bag.get(STYLES_PREF) as Record<string, unknown>)[KEY], 'and written for A');
+		off();
+	});
+
+	it('the slots come from the whole schema: a screen that passes fewer labels sees the same colours', async () => {
+		const data = createMemoryUserData('session');
+		const schemas = createSchemaStore(() => 1);
+		const off = followAssignments(schemas, data);
+		await schemas.load(KEY, async () => ({ schema: two }), failure);
+		const { style } = data.style(KEY).get();
+		assert.equal(style.assigned.Person, 1, 'Person is second in sorted order of the whole schema, whatever a screen draws');
 		off();
 	});
 });
 
 describe('where each mount says it keeps them', () => {
-	it('one true sentence or two per mount, each under 160 characters', () => {
-		const notes = [APP_USER_DATA_NOTE, SESSION_USER_DATA_NOTE, devToolUserDataNote('file'), devToolUserDataNote('session'), devToolUserDataNote('none')];
+	it('one true sentence per mount and per state, each under 160 characters', () => {
+		const states = ['file', 'session', 'none'] as const;
+		const notes = [APP_USER_DATA_NOTE, SESSION_USER_DATA_NOTE, ...states.flatMap((saved) => states.map((styles) => devToolUserDataNote(saved, styles)))];
 		for (const note of notes) assert.ok(note.length <= 160, `${note.length}: ${note}`);
 		assert.match(APP_USER_DATA_NOTE, /workspace file on the server, for your account/);
-		assert.match(devToolUserDataNote('file'), /rocketride\.graph\.saved\.json/);
-		assert.match(devToolUserDataNote('file'), /the last one wins/);
-		assert.match(devToolUserDataNote('session'), /^Kept for this session only/);
-		assert.match(devToolUserDataNote('none'), /nobody is signed in/);
+		assert.match(devToolUserDataNote('file', 'file'), /rocketride\.graph\.saved\.json, rocketride\.graph\.styles\.json/);
+		assert.match(devToolUserDataNote('file', 'file'), /the last window to save wins/);
+		assert.match(devToolUserDataNote('session', 'file'), /^Saved queries are kept for this session only: rocketride\.graph\.saved\.json/);
+		assert.match(devToolUserDataNote('file', 'session'), /^Styles are kept for this session only: rocketride\.graph\.styles\.json/);
+		assert.match(devToolUserDataNote('session', 'session'), /^Kept for this session only/);
+		assert.match(devToolUserDataNote('none', 'file'), /nobody is signed in/);
+	});
+});
+
+describe('the full app routes every preference it keeps through the one page pin', () => {
+	const read = (...parts: string[]): string => fs.readFileSync(path.resolve(__dirname, '..', 'src', ...parts), 'utf8');
+
+	it('the env\'s prefs (drafts, captions, the editor height), the grid layouts, the styles, the saved queries and history', () => {
+		const app = read('GraphApp.tsx');
+		assert.match(app, /prefs: pinnedPrefs\(APP_WORKSPACE_PIN, prefs, ownerNow\), grids: pinnedGrids\(APP_WORKSPACE_PIN, APP_GRIDS, ownerNow\), userData: createAppUserData\(prefs, ownerNow, \(\) => prefsLoaded\.current\)/);
+		assert.match(app, /createLocalGraphEnv\(\{ mount: 'app', ready: isConnected, client, stores: APP_STORES, activeConnection, openDocument: openAppDocument, prefs: pinned\.prefs, historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE, userData: pinned\.userData, gridPersistence: pinned\.grids \}\)/);
+		assert.match(app, /const \{ loaded \} = useWorkspace\(\);/, 'styles and saved queries wait for the shell to load the prefs');
+		assert.doesNotMatch(app, /prefs: prefs[,\s}]/, 'the bare accessor never reaches the env');
+		const bridge = read('adapters', 'react.ts');
+		assert.match(bridge, /export const pinnedGraphHistory = pinHistory\(graphHistory\);/);
+		assert.match(bridge, /createHistoryPrefsBridge\(pinnedGraphHistory\)/);
+		assert.doesNotMatch(bridge, /createHistoryPrefsBridge\(graphHistory\)/);
 	});
 });

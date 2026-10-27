@@ -23,13 +23,14 @@
 // =============================================================================
 //
 // Ported from sql-ui (history/savedQueriesFile.ts). A dev tool's controller
-// keeps label styles and saved queries in their own file in the user's store,
-// USER_DATA_PATH, through a SECOND accessor of the dev-tool library's
-// createFsPrefs (history has the first, in its own file, so neither fills the
-// other's cap). The library gives one bag per account, owner checks before and
-// after every file request, debounced writes, and never writes a file it could
-// not read. This module follows the signed-in account the way the
-// controller's history does:
+// keeps saved queries and label styles in two files of their own in the
+// user's store (SAVED_QUERIES_PATH, STYLES_PATH), one follower each, through
+// further accessors of the dev-tool library's createFsPrefs (history has the
+// first, in its own file, so none fills another's cap, and the automatic
+// colour slots never write the saved-queries file). The library gives one bag
+// per account, owner checks before and after every file request, debounced
+// writes, and never writes a file it could not read. Each follower tracks the
+// signed-in account the way the controller's history does:
 //
 //   - the file is read once the tool is activated (R7), for the account
 //     signed in then;
@@ -53,9 +54,7 @@ import type { IExplorerBus } from 'shared/explorer/devtool/busClient';
 import type { IIdentitySnapshot, IIdentityTracker } from 'shared/explorer/devtool/identity';
 import { createFsPrefs } from 'shared/explorer/devtool/prefs';
 import type { IFsPrefs } from 'shared/explorer/devtool/prefs';
-import { devToolUserDataNote } from './userData';
 import type { IUserDataSource, UserDataRead, UserDataStorage } from './userData';
-import { USER_DATA_PATH } from './userDataStore';
 
 /** What {@link createUserDataFile} needs. */
 export interface IUserDataFileOptions {
@@ -71,8 +70,10 @@ export interface IUserDataFileOptions {
 	onChange: () => void;
 	/** Told about a failed read or write of the file (it was left alone). */
 	onError?: (error: unknown, phase: 'load' | 'write') => void;
-	/** The file (default USER_DATA_PATH; tests). */
-	path?: string;
+	/** The file (SAVED_QUERIES_PATH or STYLES_PATH). */
+	path: string;
+	/** What it holds, for the errors a frame reads ('saved queries', 'styles'). */
+	what: string;
 }
 
 /** The controller's user-data file, following the signed-in account; it is the controller's user-data source. */
@@ -98,7 +99,7 @@ const LOADING: UserDataRead = { status: 'loading', note: null };
  * @returns The file follower; close it with the controller.
  */
 export function createUserDataFile(opts: IUserDataFileOptions): IUserDataFile {
-	const path = opts.path ?? USER_DATA_PATH;
+	const { path, what } = opts;
 	let owner: string | null = null;
 	let current: IFsPrefs | null = null;
 	/** The previous account's accessor, kept while nobody is signed in (see the header). */
@@ -202,7 +203,7 @@ export function createUserDataFile(opts: IUserDataFileOptions): IUserDataFile {
 				throw new ExplorerToolError({
 					kind: 'unavailable',
 					tool,
-					message: owner === null ? 'Not signed in to a RocketRide server, so no style or saved query was read or changed.' : 'Your styles and saved queries are not read yet. Try again.',
+					message: owner === null ? `Not signed in to a RocketRide server, so no ${what} were read or changed.` : `Your ${what} are not read yet. Try again.`,
 				});
 			}
 			let timer: ReturnType<typeof setTimeout> | undefined;
@@ -213,12 +214,11 @@ export function createUserDataFile(opts: IUserDataFileOptions): IUserDataFile {
 				}),
 			]);
 			clearTimeout(timer);
-			if (current !== accessor) throw new ExplorerToolError({ kind: 'stale', tool, message: 'The signed-in account changed, so no style or saved query was read or changed.' });
-			if (!read) throw new ExplorerToolError({ kind: 'unavailable', tool, message: 'Your styles and saved queries could not be read from the server yet. Try again.' });
+			if (current !== accessor) throw new ExplorerToolError({ kind: 'stale', tool, message: `The signed-in account changed, so no ${what} were read or changed.` });
+			if (!read) throw new ExplorerToolError({ kind: 'unavailable', tool, message: `Your ${what} could not be read from the server yet. Try again.` });
 			return accessor;
 		},
 		changed,
-		privacyNote: () => devToolUserDataNote(storage()),
 		close() {
 			if (closed) return;
 			closed = true;

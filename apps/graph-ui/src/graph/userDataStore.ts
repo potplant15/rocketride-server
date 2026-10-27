@@ -24,21 +24,25 @@
 //
 // What a person keeps per connection, as stored: saved queries under
 // `graph.savedQueries` and label styles under `graph.styles`, each a bag keyed
-// by the connection's endpoint key. Where the bags live follows the mount
-// (graph/userData.ts):
+// by the connection's endpoint key, and never in the same place. Where the
+// bags live follows the mount (graph/userData.ts):
 //
-//   full app   the shell's workspace preferences, behind the page's pin
-//              (graph/workspacePin.ts);
-//   dev tool   the CONTROLLER's own file in the user's store, USER_DATA_PATH,
-//              one bag per account (graph/userDataFile.ts); frames read and
-//              change it through ops.
+//   full app   two keys of the shell's workspace preferences, behind the
+//              page's pin (graph/workspacePin.ts);
+//   dev tool   two files of the CONTROLLER in the user's store,
+//              SAVED_QUERIES_PATH and STYLES_PATH, one bag per account each
+//              (graph/userDataFile.ts); frames read and change them through
+//              ops.
 //
 // Saved queries follow sql-ui's (history/savedQueries.ts): nothing is
 // recorded on its own and nothing is trimmed. A save past a bound is REFUSED
 // with a sentence, never made room for by dropping an older one. Styles are
-// bounded the same way; the one automatic write, a label's first-seen colour
-// slot, is skipped (never an error) when it does not fit, and the label is
-// still drawn in the colour it would have been given.
+// bounded the same way, and a person's style edit is FIELD BY FIELD (merged
+// into what is stored, so two quick edits never undo each other). The one
+// automatic write, the labels' colour slots (`assignmentFor`), only adds the
+// slots of new labels, releases a slot only when a new label needs one and a
+// complete schema no longer lists its label, and is skipped (never an error)
+// when it does not fit: the label is still drawn in its colour.
 //
 // Everything here is pure. What may cross from a frame is checked here, so the
 // controller never writes anything but well-formed entries into the user's
@@ -51,7 +55,7 @@
 import { ExplorerToolError } from 'shared/explorer';
 import type { IPrefsAccessor } from 'shared/explorer';
 import { isPlainObject } from 'shared/explorer/checks';
-import { CHART_COLOR_VARS } from './colors';
+import { CHART_COLOR_VARS, nextAssignments } from './colors';
 import type { BadgeMode, IConnectionStyle, ILabelStyle, ISavedQuery, ITypeStyle, LabelSize, SavedEdit, StyleEdit } from './userData';
 
 // =============================================================================
@@ -64,8 +68,11 @@ export const SAVED_QUERIES_PREF = 'graph.savedQueries';
 /** Preference key holding every connection's label and relationship-type styles. */
 export const STYLES_PREF = 'graph.styles';
 
-/** The dev tool's file (beside the history file, in the user's store). */
-export const USER_DATA_PATH = '@/User/.workspace/rocketride.graph.saved.json';
+/** The dev tool's saved-queries file (beside the history file, in the user's store): written only on a person's change. */
+export const SAVED_QUERIES_PATH = '@/User/.workspace/rocketride.graph.saved.json';
+
+/** The dev tool's styles file: a person's style edits, and the labels' colour slots. */
+export const STYLES_PATH = '@/User/.workspace/rocketride.graph.styles.json';
 
 /** Saved queries one connection keeps. */
 export const MAX_SAVED_QUERIES = 50;
@@ -85,6 +92,9 @@ export const MAX_SAVED_BAG_CHARS = 256 * 1024;
 
 /** Characters every connection's styles may take as the file is written. */
 export const MAX_STYLES_BAG_CHARS = 64 * 1024;
+
+/** Characters of one caption choice (a property name, or a special). */
+export const MAX_CAPTION_CHARS = 256;
 
 /** The style of a connection nobody has styled (graph/userData.ts re-exports it). */
 export const EMPTY_STYLE: IConnectionStyle = Object.freeze({ assigned: Object.freeze({}), labels: Object.freeze({}), types: Object.freeze({}) });
@@ -106,8 +116,14 @@ export interface ISavedMade {
 	at: number;
 }
 
-/** A style change: a person's edit, or the owning realm's first-seen slots (never from a frame). */
-export type StyleChange = StyleEdit | { kind: 'assign'; assigned: Readonly<Record<string, number>> };
+/** The colour slots to add (new labels) and release (labels a complete schema no longer lists). */
+export interface IAssignment {
+	add: Readonly<Record<string, number>>;
+	release: readonly string[];
+}
+
+/** A style change: a person's edit, or the owning realm's colour slots (never from a frame). */
+export type StyleChange = StyleEdit | ({ kind: 'assign' } & IAssignment);
 
 // =============================================================================
 // HELPERS
@@ -297,6 +313,16 @@ export function editSavedIn(prefs: IPrefsAccessor, key: string, edit: SavedEdit,
 // =============================================================================
 
 /**
+ * Whether a value is a caption choice.
+ *
+ * @param value - Anything.
+ * @returns True for a non-empty string within MAX_CAPTION_CHARS.
+ */
+function isCaption(value: unknown): value is string {
+	return typeof value === 'string' && value !== '' && value.length <= MAX_CAPTION_CHARS;
+}
+
+/**
  * One label's style with its known, valid fields only.
  *
  * @param value - Anything.
@@ -308,6 +334,7 @@ function readLabelStyle(value: unknown): ILabelStyle | null {
 	if (isSlot(value.slot)) style.slot = value.slot;
 	if (SIZES.includes(value.size as LabelSize)) style.size = value.size as LabelSize;
 	if (BADGES.includes(value.badge as BadgeMode)) style.badge = value.badge as BadgeMode;
+	if (isCaption(value.caption)) style.caption = value.caption;
 	return Object.keys(style).length > 0 ? style : null;
 }
 
@@ -349,12 +376,27 @@ export function readConnectionStyle(raw: unknown): IConnectionStyle {
 }
 
 /**
+ * Merge a field-level patch into a stored entry (a label's or a type's), keeping fields this build does not know.
+ *
+ * @param stored - What is stored now (anything).
+ * @param patch - The fields to set.
+ * @param clear - The fields to remove.
+ * @returns The new entry, or null when it holds nothing any more.
+ */
+function patched(stored: unknown, patch: object | undefined, clear: readonly string[] | undefined): Record<string, unknown> | null {
+	const next: Record<string, unknown> = { ...(isPlainObject(stored) ? stored : {}), ...(patch ?? {}) };
+	for (const field of clear ?? []) delete next[field];
+	return Object.keys(next).length > 0 ? next : null;
+}
+
+/**
  * Apply one style change to a stored bag. The bag given is never changed; other connections, and fields this build
- * does not know, stay as stored. An assignment only ADDS slots (a label already given one keeps it).
+ * does not know, stay as stored. A person's edit merges field by field. An assignment adds the slots of new labels
+ * and releases the ones it names, and never moves a label that keeps its slot.
  *
  * @param bag - The current bag, as stored.
  * @param key - The connection's endpoint key.
- * @param change - A person's (checked) edit, or the first-seen slots.
+ * @param change - A person's (checked) edit, or the colour slots.
  * @returns The new bag (the same one when nothing changed, or when an assignment does not fit).
  * @throws ExplorerToolError `invalid` when a person's edit does not fit; nothing is changed.
  */
@@ -365,25 +407,31 @@ export function applyStyleChange(bag: StoredBag, key: string, change: StyleChang
 	switch (change.kind) {
 		case 'assign': {
 			const assigned = entry.assigned as Record<string, unknown>;
-			const fresh = Object.entries(change.assigned).filter(([label, slot]) => isSlot(slot) && !isSlot(assigned[label]));
-			if (fresh.length === 0) return bag;
+			const released = change.release.filter((label) => label in assigned);
+			const fresh = Object.entries(change.add).filter(([label, slot]) => isSlot(slot) && (!isSlot(assigned[label]) || released.includes(label)));
+			if (fresh.length === 0 && released.length === 0) return bag;
+			for (const label of released) delete assigned[label];
 			for (const [label, slot] of fresh) assigned[label] = slot;
 			break;
 		}
 		case 'reset':
+			// A person's choices go; the slots stay, so no label changes colour by itself.
+			if (Object.keys(entry.labels as object).length === 0 && Object.keys(entry.types as object).length === 0) return bag;
 			entry.labels = {};
 			entry.types = {};
 			break;
 		case 'label': {
 			const labels = entry.labels as Record<string, unknown>;
-			if (change.style === null) delete labels[change.label];
-			else labels[change.label] = { ...(isPlainObject(labels[change.label]) ? (labels[change.label] as object) : {}), ...change.style };
+			const next = patched(labels[change.label], change.patch, change.clear);
+			if (next === null) delete labels[change.label];
+			else labels[change.label] = next;
 			break;
 		}
 		case 'type': {
 			const types = entry.types as Record<string, unknown>;
-			if (change.style === null) delete types[change.type];
-			else types[change.type] = { ...(isPlainObject(types[change.type]) ? (types[change.type] as object) : {}), ...change.style };
+			const next = patched(types[change.type], change.patch, change.clear);
+			if (next === null) delete types[change.type];
+			else types[change.type] = next;
 			break;
 		}
 	}
@@ -393,6 +441,41 @@ export function applyStyleChange(bag: StoredBag, key: string, change: StyleChang
 		throw refuse(`The style was not changed: styles are full (${MAX_STYLES_BAG_CHARS / 1024} KB across all connections). Reset the styles of a connection to make room.`);
 	}
 	return result;
+}
+
+/**
+ * The colour slots a connection's schema calls for: new labels take the lowest free slots in sorted order
+ * (`nextAssignments`). When a new label finds no free slot and the schema read is complete, the slots of labels it no
+ * longer lists are released first. Labels that keep their slot never move.
+ *
+ * @param assigned - The slots given so far.
+ * @param labels - Every label of the connection's schema (any order, duplicates allowed).
+ * @param complete - True when the read lists every label (fresh, not truncated).
+ * @returns What to add and release (both empty when nothing changes).
+ */
+export function assignmentFor(assigned: Readonly<Record<string, number>>, labels: Iterable<string>, complete: boolean): IAssignment {
+	const listed = Array.from(new Set(labels)).filter((label) => label !== '');
+	const add = nextAssignments(assigned, listed);
+	const waiting = listed.filter((label) => !(label in assigned) && !(label in add));
+	if (!complete || waiting.length === 0) return { add, release: [] };
+	const gone = Object.keys(assigned).filter((label) => !listed.includes(label));
+	if (gone.length === 0) return { add, release: [] };
+	const kept: Record<string, number> = {};
+	for (const [label, slot] of Object.entries(assigned)) if (!gone.includes(label)) kept[label] = slot;
+	return { add: nextAssignments(kept, listed), release: gone };
+}
+
+/**
+ * A style with an assignment applied (what the owning realm shows before it is written).
+ *
+ * @param style - The stored style.
+ * @param delta - What to add and release.
+ * @returns The style as it will be.
+ */
+export function withAssignment(style: IConnectionStyle, delta: IAssignment): IConnectionStyle {
+	const assigned: Record<string, number> = {};
+	for (const [label, slot] of Object.entries(style.assigned)) if (!delta.release.includes(label)) assigned[label] = slot;
+	return { ...style, assigned: { ...assigned, ...delta.add } };
 }
 
 /** Styles read per stored entry object, so a style read twice is the same object. */
@@ -468,8 +551,46 @@ export function checkSavedEdit(value: unknown): SavedEdit {
 }
 
 /**
- * Check a style edit that arrived from a frame: every field it names must be a valid one (an assignment never comes
- * from a frame; only the realm that owns the schema assigns).
+ * Check a field-level patch that arrived from a frame.
+ *
+ * @param value - The patch (or undefined).
+ * @param fields - Each field it may name, with its check.
+ * @returns The patch with those fields only, or null when it names anything else or a value that is not valid.
+ */
+function checkedPatch(value: unknown, fields: Record<string, (v: unknown) => boolean>): Record<string, unknown> | null {
+	if (value === undefined) return {};
+	if (!isPlainObject(value)) return null;
+	const out: Record<string, unknown> = {};
+	for (const [field, v] of Object.entries(value)) {
+		if (!(field in fields) || !fields[field](v)) return null;
+		out[field] = v;
+	}
+	return out;
+}
+
+/**
+ * Check a field list that arrived from a frame.
+ *
+ * @param value - The list (or undefined).
+ * @param fields - The fields it may name.
+ * @returns The list, or null when it is not a list of those names.
+ */
+function checkedClear(value: unknown, fields: readonly string[]): string[] | null {
+	if (value === undefined) return [];
+	return Array.isArray(value) && value.every((field) => typeof field === 'string' && fields.includes(field)) ? [...(value as string[])] : null;
+}
+
+/** The label fields a frame may set, each with its check. */
+const LABEL_PATCH: Record<string, (v: unknown) => boolean> = {
+	slot: isSlot,
+	size: (v) => SIZES.includes(v as LabelSize),
+	badge: (v) => BADGES.includes(v as BadgeMode),
+	caption: isCaption,
+};
+
+/**
+ * Check a style edit that arrived from a frame: every field it sets must be a valid one, and every field it clears a
+ * known one (an assignment never comes from a frame; only the realm that owns the schema assigns).
  *
  * @param value - The edit.
  * @returns The edit, with its own fields only.
@@ -477,21 +598,20 @@ export function checkSavedEdit(value: unknown): SavedEdit {
  */
 export function checkStyleEdit(value: unknown): StyleEdit {
 	if (!isPlainObject(value)) return notOurs();
-	const style = value.style;
 	switch (value.kind) {
 		case 'reset':
 			return { kind: 'reset' };
 		case 'label': {
-			if (typeof value.label !== 'string' || (style !== null && !isPlainObject(style))) return notOurs();
-			if (style === null) return { kind: 'label', label: value.label, style: null };
-			if (('slot' in style && !isSlot(style.slot)) || ('size' in style && !SIZES.includes(style.size as LabelSize)) || ('badge' in style && !BADGES.includes(style.badge as BadgeMode))) return notOurs();
-			return { kind: 'label', label: value.label, style: readLabelStyle(style) ?? {} };
+			const patch = checkedPatch(value.patch, LABEL_PATCH);
+			const clear = checkedClear(value.clear, Object.keys(LABEL_PATCH));
+			if (typeof value.label !== 'string' || patch === null || clear === null) return notOurs();
+			return { kind: 'label', label: value.label, patch: patch as Partial<ILabelStyle>, clear: clear as Array<keyof ILabelStyle> };
 		}
 		case 'type': {
-			if (typeof value.type !== 'string' || (style !== null && !isPlainObject(style))) return notOurs();
-			if (style === null) return { kind: 'type', type: value.type, style: null };
-			if (!isSlot(style.slot)) return notOurs();
-			return { kind: 'type', type: value.type, style: { slot: style.slot } };
+			const patch = checkedPatch(value.patch, { slot: isSlot });
+			const clear = checkedClear(value.clear, ['slot']);
+			if (typeof value.type !== 'string' || patch === null || clear === null) return notOurs();
+			return { kind: 'type', type: value.type, patch: patch as Partial<ITypeStyle>, clear: clear as Array<keyof ITypeStyle> };
 		}
 		default:
 			return notOurs();

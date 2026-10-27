@@ -45,7 +45,7 @@ import type { IGraphEndpointsState, IGraphHistoryView } from './devtool/protocol
 import type { IGraphPreview, PreviewAction } from './graph/previews';
 import type { ISchemaView } from './graph/schema';
 import type { ISchemaStore } from './graph/schemaStore';
-import type { IConnectionStyle, IGraphUserData, ISavedQueriesView } from './graph/userData';
+import type { IGraphUserData, ISavedQueriesView, IStyleView } from './graph/userData';
 
 /** A value that changes, readable outside React (useSyncExternalStore-friendly: `get` is stable between changes). */
 export interface IReadable<T> {
@@ -209,9 +209,10 @@ export function useSchemaView(key: string): ISchemaView | null {
 
 /**
  * @param key - The connection.
- * @returns How its labels and relationship types are drawn.
+ * @returns How its labels and relationship types are drawn, and whether that was read yet (`ready`: until then, draw
+ * labels in a neutral colour rather than in colours that would change a moment later).
  */
-export function useConnectionStyle(key: string): IConnectionStyle {
+export function useConnectionStyle(key: string): IStyleView {
 	return useReadable(useGraphEnv().userData.style(key));
 }
 

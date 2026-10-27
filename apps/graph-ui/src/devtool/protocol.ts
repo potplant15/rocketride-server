@@ -43,18 +43,21 @@
 //     graph.schemaView        one connection's full schema view (bulk: an op
 //                             result; a frame re-reads it when the `schemas`
 //                             summary says a load completed)
-//     graph.userData          one connection's label styles and saved queries
-//                             (an op result), for the frame's own account
-//     graph.userDataEdit      a style or saved-query change, for the frame's
-//                             own account
+//     graph.styles            one connection's label styles (an op result), for
+//                             the frame's own account
+//     graph.savedQueries      one connection's saved queries (an op result),
+//                             for the frame's own account
+//     graph.styleEdit         a field-level style change, same rule
+//     graph.savedEdit         a saved-query change, same rule
 //
 //   STATE (controller -> frames; retained, each snapshot under 64 KiB)
 //     endpoints     the endpoint store's snapshot (capped; see below)
 //     schemas       per connection: status and label names only (capped)
 //     dataVersions  per connection: has a write run there?
 //     history       { rev }: a frame re-reads its list when it changes
-//     userData      { rev }: a frame re-reads styles and saved queries when it
-//                   changes (the file read, an account change, an edit)
+//     userData      { styleRev, savedRev }: a frame re-reads the styles, or the
+//                   saved queries, when its revision changes (its file read,
+//                   an account change, an edit, a colour slot given)
 //     identity      { fingerprint } (frameIdentity.ts)
 //     previews      the pending sidebar preview request (graph/previews.ts)
 //
@@ -84,7 +87,7 @@ import type { IGraphPreview } from '../graph/previews';
 import type { ISchemaView } from '../graph/schema';
 import type { ISchemaEntry } from '../graph/schemaStore';
 import type { ReadQueryResult } from '../graph/types';
-import type { IConnectionStyle, ISavedQueriesView, SavedEdit, StyleEdit } from '../graph/userData';
+import type { ISavedQueriesView, IStyleView, SavedEdit, StyleEdit } from '../graph/userData';
 
 /** The tool's app id (also the manifest id). */
 export const GRAPH_APP_ID = 'rocketride.graph';
@@ -105,8 +108,10 @@ export const OP = {
 	historyEdit: 'graph.historyEdit',
 	writeAbandoned: 'graph.writeAbandoned',
 	schemaView: 'graph.schemaView',
-	userData: 'graph.userData',
-	userDataEdit: 'graph.userDataEdit',
+	styles: 'graph.styles',
+	savedQueries: 'graph.savedQueries',
+	styleEdit: 'graph.styleEdit',
+	savedEdit: 'graph.savedEdit',
 } as const;
 
 /** One connection's history as a frame shows it. */
@@ -126,15 +131,16 @@ export type HistoryEdit =
 	| { action: 'clear' }
 	| { action: 'recording'; on: boolean };
 
-/** One connection's styles and saved queries as a frame reads them, with where they are kept (one sentence). */
-export interface IUserDataAnswer {
-	style: IConnectionStyle;
-	saved: ISavedQueriesView;
+/** One connection's styles as a frame reads them (`ready`: the controller has read its styles file), with where they are kept. */
+export interface IStylesAnswer extends IStyleView {
 	privacyNote: string;
 }
 
-/** A user-data change a frame asks for. */
-export type UserDataChange = { target: 'style'; edit: StyleEdit } | { target: 'saved'; edit: SavedEdit };
+/** One connection's saved queries as a frame reads them, with where they are kept (one sentence). */
+export interface ISavedQueriesAnswer {
+	saved: ISavedQueriesView;
+	privacyNote: string;
+}
 
 /** The ops a frame calls. */
 export interface GraphOps extends ToolOpMap {
@@ -148,8 +154,10 @@ export interface GraphOps extends ToolOpMap {
 	'graph.historyEdit': ToolOpSpec<IDeadline & { key: string; edit: HistoryEdit }, Reply<null>>;
 	'graph.writeAbandoned': ToolOpSpec<IDeadline & { key: string }, Reply<null>>;
 	'graph.schemaView': ToolOpSpec<IDeadline & { key: string }, Reply<ISchemaView | null>>;
-	'graph.userData': ToolOpSpec<IDeadline & { key: string; owner: string | null }, Reply<IUserDataAnswer>>;
-	'graph.userDataEdit': ToolOpSpec<IDeadline & { key: string; owner: string | null; change: UserDataChange }, Reply<null>>;
+	'graph.styles': ToolOpSpec<IDeadline & { key: string; owner: string | null }, Reply<IStylesAnswer>>;
+	'graph.savedQueries': ToolOpSpec<IDeadline & { key: string; owner: string | null }, Reply<ISavedQueriesAnswer>>;
+	'graph.styleEdit': ToolOpSpec<IDeadline & { key: string; owner: string | null; edit: StyleEdit }, Reply<null>>;
+	'graph.savedEdit': ToolOpSpec<IDeadline & { key: string; owner: string | null; edit: SavedEdit }, Reply<null>>;
 }
 
 // =============================================================================
@@ -183,6 +191,8 @@ export interface IFrameSchema {
 	loadedAt: number;
 	/** Why the latest load failed (its headline), or null. */
 	failure: string | null;
+	/** True when the label names did not fit the snapshot (`labels` is then empty; graph.schemaView has them). */
+	labelsCut?: boolean;
 }
 
 /** The retained state, by topic. */
@@ -193,7 +203,7 @@ export interface GraphStateMap {
 	history: { rev: number };
 	identity: IIdentityState;
 	previews: { pending: IGraphPreview | null };
-	userData: { rev: number };
+	userData: { styleRev: number; savedRev: number };
 }
 
 /** Event names (disjoint from every op name: the op server would run an event named like an op). */
@@ -258,8 +268,10 @@ export function frameTimeoutFor(op: keyof GraphOps & string, info: Record<string
 			return frameOpTimeoutMs(toolCallBudgetMs(statementWaitMs(info)));
 		case OP.ask:
 			return frameOpTimeoutMs(toolCallBudgetMs(DEFAULT_TOOL_TIMEOUTS.get_query));
-		case OP.userData:
-		case OP.userDataEdit:
+		case OP.styles:
+		case OP.savedQueries:
+		case OP.styleEdit:
+		case OP.savedEdit:
 			// The account's file is read first (a change is written later, debounced).
 			return frameOpTimeoutMs(USER_DATA_LOAD_WAIT_MS + CONTROLLER_LOCAL_OP_MS);
 		default:
@@ -396,8 +408,9 @@ export function endpointsSnapshot(state: IEndpointState, maxBytes: number = ENDP
 }
 
 /**
- * The schemas snapshot: per connection, its status and label names, newest load first, cut to the budget (a
- * connection left out simply has no labels in its frames until it is loaded again).
+ * The schemas snapshot: per connection, its status and label names, newest load first, cut to the budget. A
+ * connection whose names do not fit still crosses without them (`labelsCut`), so its frames still see each completed
+ * load and read the full view again (graph.schemaView); one that does not fit even so is left out.
  *
  * @param entries - Every connection's schema entry.
  * @param maxBytes - The budget.
@@ -406,13 +419,25 @@ export function endpointsSnapshot(state: IEndpointState, maxBytes: number = ENDP
 export function schemasSnapshot(entries: ReadonlyArray<readonly [string, ISchemaEntry]>, maxBytes: number = SCHEMAS_STATE_BYTES): Record<string, IFrameSchema> {
 	const ordered = [...entries].sort((a, b) => b[1].loadedAt - a[1].loadedAt);
 	const out: Record<string, IFrameSchema> = {};
+	const full = new Map<string, IFrameSchema>();
 	let bytes = 2;
+	// Every connection first, without its names (newest first, while they fit)...
 	for (const [key, entry] of ordered) {
 		const item: IFrameSchema = { status: entry.status, labels: entry.view.labels.map((label) => label.name), loadedAt: entry.loadedAt, failure: entry.failure ? entry.failure.headline : null };
-		const size = jsonByteLength({ [key]: item });
+		const slim: IFrameSchema = item.labels.length > 0 ? { ...item, labels: [], labelsCut: true } : item;
+		const size = jsonByteLength({ [key]: slim });
 		if (bytes + size > maxBytes) continue;
-		out[key] = item;
+		out[key] = slim;
+		full.set(key, item);
 		bytes += size;
+	}
+	// ...then their names, newest first, while they fit.
+	for (const [key, item] of full) {
+		if (out[key] === item) continue;
+		const grow = jsonByteLength({ [key]: item }) - jsonByteLength({ [key]: out[key] });
+		if (bytes + grow > maxBytes) continue;
+		out[key] = item;
+		bytes += grow;
 	}
 	return out;
 }

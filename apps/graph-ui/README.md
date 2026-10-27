@@ -108,11 +108,18 @@ switch to another organization or development team, forgets every connection
 and closes every workbench and write console, so nothing from before stays on
 screen.
 
-The full app reads your workspace file once per page. If another account signs
-in without a reload, the app shows none of the first account's drafts, caption
-choices, grid layouts, label styles or saved queries, and saves none of them
-until the page reloads (or the first account signs in again). The saved queries
-say to reload, and a change to them is refused with the same reason.
+**Accounts in the full app.** The shell reads your workspace file once per page
+and keeps it until the page reloads. So after another account signs in without
+a reload, the app shows none of the first account's history, drafts, caption
+choices, editor height, grid layouts, label styles or saved queries, records
+none of its statements, and saves none of them until the page is reloaded (or
+the first account signs in again). The saved queries say `Signed in as a
+different account: reload the page to see your saved queries and styles.`, and
+a change to them or to a style is refused with the same advice. A write the
+shell itself makes in that time, such as switching to another app or changing
+the theme, still writes the preferences it holds, the first account's history,
+styles and saved queries among them, into the signed-in account's file, so
+reload the page before working as another account.
 
 ## The workbench
 
@@ -249,11 +256,24 @@ For the active connection the sidebar lists its **node labels** and
 **relationship types**, with how many there are of each, and a count per label
 or type where the node has one. A count marked *about* is the database's
 estimate. Each label has a colour dot: the colour the label is drawn in on
-every screen. A label's colour is given the first time the label is seen and
-kept, per connection and per account, so a label added to the graph later
-never changes the colour of another. The first six labels get the six chart
-colours; any further label gets a colour of its own from its name. A
-relationship type shows a line in the colour chosen for it, or in the
+every screen. Colours are kept per connection and per account:
+
+- A label gets one of the six chart colours the first time a schema read lists
+  it, and keeps it, so a label added to the graph later never changes the
+  colour of another. New labels take the free colours in name order, so six
+  labels or fewer never share one. The colours come from the connection's
+  whole schema, not from what one screen happens to draw.
+- When all six are taken, a further label gets a colour of its own from its
+  name. A chart colour is given back only when a new label needs one and a
+  complete schema read (fresh, not cut short) no longer lists the label that
+  had it.
+- The colour you choose for a label comes first. Resetting the styles clears
+  your choices and keeps the given colours, so nothing else moves.
+- Until the stored colours are read (the workspace file in the app, the styles
+  file as a dev tool), the dots are grey rather than a colour that would change
+  a moment later.
+
+A relationship type shows a line in the colour chosen for it, or in the
 relationship colour when none was chosen.
 
 - Select a label or type, or press Enter on it, to show and run a preview of
@@ -358,18 +378,26 @@ What is different there:
     history is still loading (usually under a second), is lost if the account
     changes again before the load finishes. It is never added to another
     account's history.
-- Label styles (the colours, sizes and badges given to labels and
-  relationship types) and saved queries are kept in a second file in your user
-  folder on the server (`rocketride.graph.saved.json`), not in the history
-  file, with one section per account. The sidebar reads and writes it, about a
-  second after a change; documents read and change them through the sidebar,
-  for the account they were opened under only. Two windows saving at the same
-  time keep the later one's copy. If that file cannot be read, they are kept
-  for the session only, the file is left alone, and the Saved queries panel
-  says so. After a disconnect or a sign-out, the last changes are written once
-  the same account is back while the sidebar is open; if the sidebar closes
-  first (VS Code closes it on every disconnect), they are lost. After a switch
-  to another account they are dropped, and that account never sees them.
+- Saved queries and label styles (the colours, sizes and badges given to
+  labels and relationship types) are kept in two more files in your user
+  folder on the server, `rocketride.graph.saved.json` and
+  `rocketride.graph.styles.json`, not in the history file, each with one
+  section per account. The sidebar reads and writes them, about a second after
+  a change; documents read and change them through the sidebar, for the
+  account they were opened under only.
+  - The saved-queries file is written only when you save, rename or delete a
+    query. The styles file is also written when the sidebar gives new labels
+    their colours, and only once it has read that file.
+  - Two windows writing the same file at the same time keep the later one's
+    copy, so a style changed in one window can be lost to another's colours;
+    a saved query never is.
+  - If a file cannot be read, what it holds is kept for the session only, the
+    file is left alone, and the Saved queries panel says so.
+  - After a disconnect or a sign-out, the last changes are written once the
+    same account is back while the sidebar is open; if the sidebar closes
+    first (VS Code closes it on every disconnect), they are lost. After a
+    switch to another account they are dropped, and that account never sees
+    them.
 - Editor drafts and caption choices last for the session only.
 - Results grid layouts (sort, column widths) are kept in memory: in
   rocket-ui until the page reloads, in VS Code until the document's panel

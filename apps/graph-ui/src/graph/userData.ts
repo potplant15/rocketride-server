@@ -25,35 +25,45 @@
 // What a person keeps for a connection besides history: how each label and
 // relationship type is drawn, and the queries they saved. Every mount reaches
 // it through `env.userData` (IGraphUserData); where it is kept differs per
-// mount, and `privacyNote` says so in one true sentence.
+// mount, and `privacyNote` says so in one true sentence, derived from where it
+// is kept right now.
 //
-// Colour slots index the shell's six chart colours (graph/colors.ts
-// CHART_COLOR_VARS). `assigned` is written by the realm that owns the schema
-// when it first sees a label, and never rewritten, so adding labels to a graph
-// never moves the colour of a label already drawn.
+// WHERE THEY ARE KEPT (the bags themselves: graph/userDataStore.ts). Styles and
+// saved queries are always kept apart, so the one automatic writer (colour
+// slots) can never touch a saved query:
 //
-// WHERE THEY ARE KEPT (the bags themselves: graph/userDataStore.ts)
-//
-//   full app      the workspace preferences, behind the page's pin
-//                 (graph/workspacePin.ts): GraphApp builds a stored user data
-//                 over them;
-//   dev tool      the CONTROLLER's file, one section per account
-//                 (graph/userDataFile.ts): the controller builds a stored
-//                 user data over it, and frames reach it through ops
+//   full app      two keys of the workspace preferences, behind the page's pin
+//                 (graph/workspacePin.ts), read only once the shell has loaded
+//                 them;
+//   dev tool      two files of the CONTROLLER, one section per account each
+//                 (graph/userDataFile.ts): frames reach them through ops
 //                 (devtool/remoteUserData.ts);
 //   anything else memory, for the session (`createMemoryUserData`).
 //
-// A stored user data reads synchronously through whatever accessor its source
-// holds now, and waits (bounded) for one before a change. The realm that owns
-// the schema also gives labels their first-seen colour slots
-// (`followAssignments`). Nothing here holds a client, so a frame can import it.
+// COLOUR SLOTS. Slots index the shell's six chart colours (graph/colors.ts
+// CHART_COLOR_VARS). The realm that owns the schema (the full app, the
+// controller) gives every label of a loaded schema its slot once
+// (`followAssignments`): labels already given one keep it, new ones take the
+// lowest free slot in sorted order, and a slot is released only when a new
+// label needs one and a complete schema read no longer lists its label. The
+// slots come from the connection's whole schema, never from the labels one
+// screen happens to draw, so every screen agrees. The owning realm shows them
+// at once and writes them (debounced) only to a store it has READ: never while
+// it loads, never to a session-only fallback, never before the full app's
+// preferences are loaded. A reset clears a person's choices and keeps the
+// slots, so colours stay where they are.
+//
+// READY. A style read says whether its store has been read (`ready`): until
+// then a screen draws labels in a neutral colour rather than in colours that
+// would change a moment later. Nothing here holds a client, so a frame can
+// import it.
 // =============================================================================
 
 import type { IPrefsAccessor } from 'shared/explorer';
 import type { IReadable } from '../env';
-import { nextAssignments } from './colors';
 import type { ISchemaStore } from './schemaStore';
-import { EMPTY_STYLE, SAVED_QUERIES_PREF, editSavedIn, editStyleIn, savedQueriesIn, styleIn } from './userDataStore';
+import { EMPTY_STYLE, SAVED_QUERIES_PREF, assignmentFor, editSavedIn, editStyleIn, savedQueriesIn, styleIn, withAssignment } from './userDataStore';
+import type { IAssignment } from './userDataStore';
 
 // =============================================================================
 // TYPES
@@ -71,6 +81,8 @@ export interface ILabelStyle {
 	slot?: number;
 	size?: LabelSize;
 	badge?: BadgeMode;
+	/** The caption: a property name, or one of graph/captions.ts' specials (`<id>`, `<label>`). */
+	caption?: string;
 }
 
 /** A person's choices for one relationship type. */
@@ -87,11 +99,25 @@ export interface IConnectionStyle {
 	types: Readonly<Record<string, ITypeStyle>>;
 }
 
+/** A connection's style as a screen reads it: `ready` once its store has been read (until then draw neutral). */
+export interface IStyleView {
+	ready: boolean;
+	style: IConnectionStyle;
+}
+
 /** The style of a connection nobody has styled (defined with the bags, which read it). */
 export { EMPTY_STYLE };
 
-/** A change to a connection's style (null resets that label or type; `reset` resets them all, keeping `assigned`). */
-export type StyleEdit = { kind: 'label'; label: string; style: ILabelStyle | null } | { kind: 'type'; type: string; style: ITypeStyle | null } | { kind: 'reset' };
+/**
+ * A change to a connection's style, field by field, merged into what is stored where it is stored (so two quick
+ * edits never undo each other): `patch` sets the fields it names, `clear` removes the fields it names (all four
+ * clear a label back to its defaults). `reset` clears every person's choice of the connection and keeps the colour
+ * slots its labels were given.
+ */
+export type StyleEdit =
+	| { kind: 'label'; label: string; patch?: Partial<ILabelStyle>; clear?: ReadonlyArray<keyof ILabelStyle> }
+	| { kind: 'type'; type: string; patch?: Partial<ITypeStyle>; clear?: ReadonlyArray<keyof ITypeStyle> }
+	| { kind: 'reset' };
 
 /** One saved query. */
 export interface ISavedQuery {
@@ -117,24 +143,28 @@ export type SavedEdit = { action: 'save'; name: string; cypher: string } | { act
 
 /** Styles and saved queries, as every mount offers them. */
 export interface IGraphUserData {
-	/** One connection's style (one stable readable per key). */
-	style(key: string): IReadable<IConnectionStyle>;
-	/** Resolves once applied, rejects with the reason. */
+	/** One connection's style and whether its store was read (one stable readable per key). */
+	style(key: string): IReadable<IStyleView>;
+	/** Resolves once applied, rejects with the reason (an ExplorerToolError whose message is the sentence to show). */
 	editStyle(key: string, edit: StyleEdit): Promise<void>;
 	/** One connection's saved queries (one stable readable per key). */
 	saved(key: string): IReadable<ISavedQueriesView>;
-	/** Resolves once applied, rejects with the reason. */
+	/** Resolves once applied, rejects with the reason (an ExplorerToolError whose message is the sentence to show). */
 	editSaved(key: string, edit: SavedEdit): Promise<void>;
-	/** One true sentence: where styles and saved queries are kept on this mount. */
-	privacyNote: string;
+	/** One true sentence: where styles and saved queries are kept on this mount, now ('' until a frame has been told). */
+	readonly privacyNote: string;
 }
 
 // =============================================================================
 // PURE EDITS
 // =============================================================================
 
+/** The fields a label style has. */
+const LABEL_FIELDS: ReadonlyArray<keyof ILabelStyle> = ['slot', 'size', 'badge', 'caption'];
+
 /**
- * Apply a style edit.
+ * Apply a style edit to a style (what the owning store does to what it holds; graph/userDataStore.ts applies the
+ * same rule to the stored bag).
  *
  * @param style - The current style.
  * @param edit - The change.
@@ -145,22 +175,26 @@ export function applyStyleEdit(style: IConnectionStyle, edit: StyleEdit): IConne
 		case 'reset':
 			return Object.keys(style.labels).length === 0 && Object.keys(style.types).length === 0 ? style : { assigned: style.assigned, labels: {}, types: {} };
 		case 'label': {
+			const next: Record<string, unknown> = { ...(style.labels[edit.label] ?? {}), ...(edit.patch ?? {}) };
+			for (const field of edit.clear ?? []) delete next[field];
 			const labels: Record<string, ILabelStyle> = { ...style.labels };
-			if (edit.style === null) delete labels[edit.label];
-			else labels[edit.label] = { ...edit.style };
+			if (LABEL_FIELDS.some((field) => next[field] !== undefined)) labels[edit.label] = next as ILabelStyle;
+			else delete labels[edit.label];
 			return { ...style, labels };
 		}
 		case 'type': {
+			const next: ITypeStyle = { ...(style.types[edit.type] ?? {}), ...(edit.patch ?? {}) };
+			if (edit.clear?.includes('slot')) delete next.slot;
 			const types: Record<string, ITypeStyle> = { ...style.types };
-			if (edit.style === null) delete types[edit.type];
-			else types[edit.type] = { ...edit.style };
+			if (next.slot !== undefined) types[edit.type] = next;
+			else delete types[edit.type];
 			return { ...style, types };
 		}
 	}
 }
 
 // =============================================================================
-// PRIVACY NOTES (one true sentence per mount)
+// PRIVACY NOTES (one true sentence per mount, from where things are kept now)
 // =============================================================================
 
 /** The note of a session-only store. */
@@ -169,36 +203,34 @@ export const SESSION_USER_DATA_NOTE = 'Kept for this session only: styles and sa
 /** The full app's note: they ride the shell's workspace preferences. */
 export const APP_USER_DATA_NOTE = 'Saved in your RocketRide workspace file on the server, for your account, not in this browser.';
 
-/** Where the dev tool's controller keeps them: its file, this session only (the file could not be read), or nowhere (nobody signed in). */
+/** Where one of the dev tool's files is: read and written, this session only (it could not be read), or nowhere (nobody signed in). */
 export type UserDataStorage = 'file' | 'session' | 'none';
 
 /**
- * The dev tool's note for where its controller keeps them.
+ * The dev tool's note for where its controller keeps saved queries and styles (each in its own file).
  *
- * @param storage - Where they are kept.
+ * @param saved - Where the saved queries are kept.
+ * @param styles - Where the styles are kept.
  * @returns The sentence.
  */
-export function devToolUserDataNote(storage: UserDataStorage): string {
-	switch (storage) {
-		case 'file':
-			return 'Saved on the server in your user folder (rocketride.graph.saved.json), for your account. If two windows save at once, the last one wins.';
-		case 'session':
-			return 'Kept for this session only: rocketride.graph.saved.json in your user folder could not be read, so nothing is written to it.';
-		default:
-			return 'Not saved: nobody is signed in to a RocketRide server.';
-	}
+export function devToolUserDataNote(saved: UserDataStorage, styles: UserDataStorage = saved): string {
+	if (saved === 'none' || styles === 'none') return 'Not saved: nobody is signed in to a RocketRide server.';
+	if (saved === 'session' && styles === 'session') return 'Kept for this session only: your files in the user folder could not be read, so they are left alone.';
+	if (saved === 'session') return 'Saved queries are kept for this session only: rocketride.graph.saved.json could not be read, so it is left alone.';
+	if (styles === 'session') return 'Styles are kept for this session only: rocketride.graph.styles.json could not be read, so it is left alone.';
+	return 'Saved on the server in your user folder (rocketride.graph.saved.json, rocketride.graph.styles.json), for your account; the last window to save wins.';
 }
 
 // =============================================================================
-// THE STORED IMPLEMENTATION (over an accessor its source holds)
+// THE STORED IMPLEMENTATION (over the accessors its sources hold)
 // =============================================================================
 
 /** Where reading stands on a mount, right now: an accessor to read through, or why there is none. */
 export type UserDataRead = { status: 'ready' | 'session'; prefs: IPrefsAccessor } | { status: 'loading' | 'error'; note: string | null };
 
-/** Where a stored user data keeps its bags. Its owner calls `notify()` on the user data whenever `read()` may answer differently. */
+/** Where one of the two bags is kept. Its owner calls `notify()` on the user data whenever `read()` may answer differently. */
 export interface IUserDataSource {
-	/** Where reading stands now (synchronous). */
+	/** Where reading stands now (synchronous). `session`: readable and changeable, but never written anywhere. */
 	read(): UserDataRead;
 	/**
 	 * The accessor to read or change, once it can be (may wait, bounded).
@@ -210,30 +242,58 @@ export interface IUserDataSource {
 	accessor(tool: string): Promise<IPrefsAccessor>;
 	/** A change was made through the accessor. */
 	changed?(): void;
-	/** Where they are kept, in one sentence. */
+}
+
+/** Where a stored user data keeps its two bags, and how it says so. */
+export interface IUserDataSources {
+	styles: IUserDataSource;
+	saved: IUserDataSource;
+	/** Where they are kept, in one sentence, now. */
 	privacyNote(): string;
+}
+
+/** What {@link createStoredUserData} may be given besides its sources. */
+export interface IStoredUserDataOptions {
+	/** The clock (saved queries' ids and times). */
+	now?: () => number;
+	/** How long colour slots wait before they are written (a burst of schema loads is one write). */
+	assignDelayMs?: number;
+	/** Timers (tests run their own); returns a cancel. */
+	schedule?: (fn: () => void, ms: number) => () => void;
 }
 
 /** A user data owned by a realm that holds its bags: the full app, the controller, or memory. */
 export interface IOwnedUserData extends IGraphUserData {
 	/**
-	 * Change a style. `check` runs right before the write, after any wait (the controller re-checks the caller's account there).
-	 *
-	 * @returns Once written.
+	 * Change a style. `check` runs right before the write, after any wait (the controller re-checks the caller's
+	 * account there).
 	 */
 	editStyle(key: string, edit: StyleEdit, check?: () => void): Promise<void>;
 	/** Change the saved queries; `check` as for {@link editStyle}. */
 	editSaved(key: string, edit: SavedEdit, check?: () => void): Promise<void>;
-	/** Give labels seen for the first time their colour slots, when the bags can be written now (else nothing). */
-	assign(key: string, labels: Iterable<string>): void;
-	/** Read again: the source's state, or the account, may have changed. */
+	/**
+	 * The labels of a connection's loaded schema: their colour slots are shown at once and written (debounced) once the
+	 * styles store has been read. `complete`: the read lists every label (fresh, not truncated), so a slot of a label
+	 * it no longer lists may be released for a new one.
+	 */
+	assign(key: string, labels: Iterable<string>, complete: boolean): void;
+	/** Read again: a source's state, or the account, may have changed. */
 	notify(): void;
 	/** Be told about every change, of any connection. */
 	subscribe(listener: () => void): () => void;
+	/** Stop the pending slot write (the realm unmounts). */
+	dispose(): void;
 }
+
+/** How long colour slots wait before they are written. */
+export const ASSIGN_DELAY_MS = 1_000;
 
 /** No saved queries (shared, so snapshots stay stable). */
 const NO_QUERIES: readonly ISavedQuery[] = Object.freeze([]) as readonly ISavedQuery[];
+
+/** The style views with nothing to say (shared, so snapshots stay stable). */
+const STYLE_LOADING: IStyleView = Object.freeze({ ready: false, style: EMPTY_STYLE });
+const STYLE_NONE: IStyleView = Object.freeze({ ready: true, style: EMPTY_STYLE });
 
 /**
  * A view of one connection's saved queries, the same object while nothing in it changed.
@@ -246,6 +306,9 @@ function sameView(last: ISavedQueriesView | null, next: ISavedQueriesView): ISav
 	if (last && last.status === next.status && last.note === next.note && last.queries.length === next.queries.length && JSON.stringify(last.queries) === JSON.stringify(next.queries)) return last;
 	return next;
 }
+
+/** Whether an assignment changes anything. */
+const changes = (delta: IAssignment): boolean => Object.keys(delta.add).length > 0 || delta.release.length > 0;
 
 let idCounter = 0;
 
@@ -260,45 +323,60 @@ export function newSavedId(now: () => number = Date.now): string {
 	return `q-${now().toString(36)}-${idCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** The default timers. */
+const realTimers = (fn: () => void, ms: number): (() => void) => {
+	const handle = setTimeout(fn, ms);
+	return () => clearTimeout(handle);
+};
+
 /**
- * Styles and saved queries over a source's accessor. Reads are synchronous and stable (one object per connection
- * until it changes); a change waits for the source, refuses past a bound with a sentence, and is told to every
- * subscriber once written.
+ * Styles and saved queries over two sources. Reads are synchronous and stable (one object per connection until it
+ * changes); a change waits for its source, refuses past a bound with a sentence, and is told to every subscriber once
+ * written.
  *
- * @param source - Where the bags are.
- * @param now - The clock (saved queries' ids and times).
+ * @param sources - Where the bags are.
+ * @param opts - Clock and timers.
  * @returns The user data.
  */
-export function createStoredUserData(source: IUserDataSource, now: () => number = Date.now): IOwnedUserData {
-	const listeners = new Set<() => void>();
+export function createStoredUserData(sources: IUserDataSources, opts: IStoredUserDataOptions = {}): IOwnedUserData {
+	const now = opts.now ?? Date.now;
+	const schedule = opts.schedule ?? realTimers;
+	const delay = opts.assignDelayMs ?? ASSIGN_DELAY_MS;
+	const listeners = new Set<{ fn: () => void }>();
 	const subscribe = (listener: () => void): (() => void) => {
-		listeners.add(listener);
+		const entry = { fn: listener };
+		listeners.add(entry);
 		return () => {
-			listeners.delete(listener);
+			listeners.delete(entry);
 		};
 	};
-	const notify = (): void => listeners.forEach((listener) => listener());
-	const styleReadables = new Map<string, IReadable<IConnectionStyle>>();
+	const notify = (): void => listeners.forEach((entry) => entry.fn());
+	const styleReadables = new Map<string, IReadable<IStyleView>>();
 	const savedReadables = new Map<string, IReadable<ISavedQueriesView>>();
-	// One cached style per key, by its JSON text, so a host that hands out a new object for the same value (the shell's
-	// preferences) still gives a stable snapshot.
-	const styles = new Map<string, { text: string; style: IConnectionStyle }>();
-	// One view per key, with the stored bag it was read from: the same bag object (most hosts) is not read again.
+	// What the owning realm's schema lists per connection (the slots come from these, never from a screen's labels).
+	const wanted = new Map<string, { labels: readonly string[]; complete: boolean }>();
+	// One view per key, with what it was made from: the same inputs (most hosts hand out the same objects) are not read
+	// again, and equal text gives the same view, so a host that copies values still gives a stable snapshot.
+	const styles = new Map<string, { stored: IConnectionStyle; want: unknown; text: string; view: IStyleView }>();
 	const views = new Map<string, { raw: unknown; view: ISavedQueriesView }>();
+	let cancelWrite: (() => void) | null = null;
 
-	const styleOf = (key: string): IConnectionStyle => {
-		const read = source.read();
-		if (!('prefs' in read)) return EMPTY_STYLE;
-		const style = styleIn(read.prefs, key);
-		const cached = styles.get(key);
-		if (cached && cached.style === style) return style;
+	const styleOf = (key: string): IStyleView => {
+		const read = sources.styles.read();
+		if (!('prefs' in read)) return read.status === 'loading' ? STYLE_LOADING : STYLE_NONE;
+		const stored = styleIn(read.prefs, key);
+		const want = wanted.get(key);
+		const last = styles.get(key);
+		if (last && last.stored === stored && last.want === want) return last.view;
+		const delta = want ? assignmentFor(stored.assigned, want.labels, want.complete) : null;
+		const style = delta && changes(delta) ? withAssignment(stored, delta) : stored;
 		const text = JSON.stringify(style);
-		if (cached && cached.text === text) return cached.style;
-		styles.set(key, { text, style });
-		return style;
+		const view = last && last.text === text ? last.view : { ready: true, style };
+		styles.set(key, { stored, want, text, view });
+		return view;
 	};
 	const savedOf = (key: string): ISavedQueriesView => {
-		const read = source.read();
+		const read = sources.saved.read();
 		const last = views.get(key) ?? null;
 		const raw = 'prefs' in read ? read.prefs.getPref(SAVED_QUERIES_PREF) : null;
 		if (last && last.raw === raw && last.view.status === read.status && raw !== null && raw !== undefined) return last.view;
@@ -307,14 +385,30 @@ export function createStoredUserData(source: IUserDataSource, now: () => number 
 		views.set(key, { raw, view });
 		return view;
 	};
-	const wrote = (): void => {
+
+	// The slots are written only to a styles store that was READ (never while it loads, never to a session-only
+	// fallback: an automatic write must never replace what it has not seen), and only when they change something.
+	const writeSlots = (): void => {
+		cancelWrite = null;
+		const read = sources.styles.read();
+		if (read.status !== 'ready') return;
+		let wrote = false;
+		for (const [key, want] of wanted) {
+			const delta = assignmentFor(styleIn(read.prefs, key).assigned, want.labels, want.complete);
+			if (changes(delta) && editStyleIn(read.prefs, key, { kind: 'assign', ...delta })) wrote = true;
+		}
+		if (!wrote) return;
 		notify();
-		source.changed?.();
+		sources.styles.changed?.();
+	};
+	const scheduleSlots = (): void => {
+		cancelWrite?.();
+		cancelWrite = schedule(writeSlots, delay);
 	};
 
 	return {
 		get privacyNote() {
-			return source.privacyNote();
+			return sources.privacyNote();
 		},
 		style(key) {
 			let readable = styleReadables.get(key);
@@ -333,29 +427,39 @@ export function createStoredUserData(source: IUserDataSource, now: () => number 
 			return readable;
 		},
 		async editStyle(key, edit, check) {
-			const prefs = await source.accessor('userDataEdit');
+			const prefs = await sources.styles.accessor('styleEdit');
 			check?.();
-			if (editStyleIn(prefs, key, edit)) wrote();
+			if (!editStyleIn(prefs, key, edit)) return;
+			notify();
+			sources.styles.changed?.();
 		},
 		async editSaved(key, edit, check) {
-			const prefs = await source.accessor('userDataEdit');
+			const prefs = await sources.saved.accessor('savedEdit');
 			check?.();
 			editSavedIn(prefs, key, edit, { id: newSavedId(now), at: now() });
-			wrote();
+			notify();
+			sources.saved.changed?.();
 		},
-		assign(key, labels) {
-			const read = source.read();
-			if (!('prefs' in read)) return;
-			const fresh = nextAssignments(styleIn(read.prefs, key).assigned, labels);
-			if (Object.keys(fresh).length > 0 && editStyleIn(read.prefs, key, { kind: 'assign', assigned: fresh })) wrote();
+		assign(key, labels, complete) {
+			const distinct = Array.from(new Set(labels)).filter((label) => label !== '');
+			const last = wanted.get(key);
+			if (!last || last.complete !== complete || last.labels.length !== distinct.length || last.labels.some((label, i) => label !== distinct[i])) {
+				wanted.set(key, { labels: distinct, complete });
+				notify();
+			}
+			if (sources.styles.read().status === 'ready') scheduleSlots();
 		},
 		notify,
 		subscribe,
+		dispose() {
+			cancelWrite?.();
+			cancelWrite = null;
+		},
 	};
 }
 
 /**
- * Styles and saved queries kept in memory for this session.
+ * Styles and saved queries kept in memory for this session. Colour slots are shown, never written anywhere.
  *
  * @param privacyNote - Where this mount keeps them (true for the mount).
  * @param now - The clock.
@@ -364,12 +468,13 @@ export function createStoredUserData(source: IUserDataSource, now: () => number 
 export function createMemoryUserData(privacyNote: string, now: () => number = Date.now): IOwnedUserData {
 	const values = new Map<string, unknown>();
 	const prefs: IPrefsAccessor = { getPref: (key) => values.get(key), setPref: (key, value) => void values.set(key, value) };
-	return createStoredUserData({ read: () => ({ status: 'session', prefs }), accessor: async () => prefs, privacyNote: () => privacyNote }, now);
+	const source: IUserDataSource = { read: () => ({ status: 'session', prefs }), accessor: async () => prefs };
+	return createStoredUserData({ styles: source, saved: source, privacyNote: () => privacyNote }, { now });
 }
 
 /**
- * Give every loaded schema's labels their first-seen colour slots, in the realm that owns the schema: now, on every
- * schema change, and whenever the user data can be written again (a file read, an account back).
+ * Give every loaded schema's labels their colour slots, in the realm that owns the schema: now, on every schema
+ * change, and whenever the user data can be written again (a file read, an account back).
  *
  * @param schemas - The realm's schema store.
  * @param userData - The realm's user data.
@@ -384,7 +489,8 @@ export function followAssignments(schemas: ISchemaStore, userData: IOwnedUserDat
 		try {
 			for (const key of schemas.keys()) {
 				const entry = schemas.get(key);
-				if (entry.loadedAt > 0 && entry.view.labels.length > 0) userData.assign(key, entry.view.labels.map((label) => label.name));
+				if (entry.loadedAt === 0 || entry.view.labels.length === 0) continue;
+				userData.assign(key, entry.view.labels.map((label) => label.name), entry.view.evidence === 'fresh' && !entry.view.truncated);
 			}
 		} finally {
 			running = false;

@@ -388,9 +388,13 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 	const viewSlots = new Map<string, IViewSlot>();
 	const viewListeners = new Set<() => void>();
 	const notifyViews = (): void => viewListeners.forEach((listener) => listener());
+	// A connection whose label names did not fit the summaries still crosses with its loadedAt (protocol.ts
+	// schemasSnapshot); one missing altogether makes every new summary a reason to read it again.
+	let summaries = 0;
+	offs.push(schemas.subscribe(() => (summaries += 1)));
 	const loadedAtOf = (key: string): number => {
 		const loadedAt = schemas.get()[key]?.loadedAt;
-		return typeof loadedAt === 'number' ? loadedAt : 0;
+		return typeof loadedAt === 'number' ? loadedAt : -summaries;
 	};
 	const readView = (key: string, slot: IViewSlot): void => {
 		const want = loadedAtOf(key);

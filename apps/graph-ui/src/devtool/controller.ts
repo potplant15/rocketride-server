@@ -50,13 +50,15 @@
 //               cut by the protocol (protocol.ts) and kept by the base guard
 //               under 64 KiB each and 128 KiB together, degraded through the
 //               same cuts; a result over maxResultBytes is refused, not sent.
-//   USER DATA   Label styles and saved queries live in their own file, one
-//               section per account (graph/userDataFile.ts), read like
-//               history once the tool is activated and an identity is known.
-//               Frames read and change them with owned ops (the caller's
-//               account is checked before and after every wait) and follow a
-//               `{rev}` topic. A loaded schema's new labels get their colour
-//               slots here (followAssignments).
+//   USER DATA   Saved queries and label styles live in two files of their
+//               own, one section per account each (graph/userDataFile.ts),
+//               read like history once the tool is activated and an identity
+//               is known. Frames read and change them with owned ops (the
+//               caller's account is checked before and after every wait) and
+//               follow a `{styleRev, savedRev}` topic. A loaded schema's
+//               labels get their colour slots here (followAssignments),
+//               written only to a styles file that was read, never to the
+//               saved-queries file.
 // =============================================================================
 
 import type { DevToolProps, IToolOpServer, ToolChannel } from 'shell';
@@ -87,16 +89,16 @@ import { countWrite, createDataVersions } from '../graph/dataVersion';
 import { canWrite, parseDialect } from '../graph/dialect';
 import { createPreviewStore } from '../graph/previews';
 import { createSchemaStore } from '../graph/schemaStore';
-import { createStoredUserData, followAssignments } from '../graph/userData';
+import { createStoredUserData, devToolUserDataNote, followAssignments } from '../graph/userData';
 import { createUserDataFile } from '../graph/userDataFile';
-import { checkSavedEdit, checkStyleEdit } from '../graph/userDataStore';
+import { SAVED_QUERIES_PATH, STYLES_PATH, checkSavedEdit, checkStyleEdit } from '../graph/userDataStore';
 import type { ReadQueryResult } from '../graph/types';
 import { createLocalGraphEnv, schemaViewOf } from '../localEnv';
 import type { IGraphStores } from '../localEnv';
 import { adoptParkedHistory, ownerNowOf, parkHistory, settleOwed } from './owedHistory';
 import type { IOwedHistory, IVouch } from './owedHistory';
 import { EVENT, GRAPH_APP_ID, OP, STATE, USER_DATA_LOAD_WAIT_MS, docKeyFor, endpointsSnapshot, field, schemasSnapshot, toWire, versionsSnapshot } from './protocol';
-import type { GraphOps, HistoryEdit, IGraphHistoryView, IUserDataAnswer } from './protocol';
+import type { GraphOps, HistoryEdit, IGraphHistoryView, ISavedQueriesAnswer, IStylesAnswer } from './protocol';
 
 /** What the controller needs from its realm's ConnectionManager (structural; tests pass the base's fake realms). */
 export type IGraphRealm = IIdentityBus & IActivationBus & IDiscoveryBus & IExplorerBus;
@@ -256,24 +258,30 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 		return edit as HistoryEdit;
 	};
 
-	// ── User data: styles and saved queries in their own file, per account ─────────────────────
-	let userDataRev = 0;
-	// The file tells its first change while it is made: publishing waits until the channel below is up.
+	// ── User data: saved queries and styles, each in its own file, per account ────────────────
+	// The files tell their first change while they are made: publishing waits until the channel below is up.
 	let userDataLive = false;
-	const userDataFile = createUserDataFile({
-		cm,
-		identity,
-		activation,
-		loadWaitMs: USER_DATA_LOAD_WAIT_MS,
-		onChange: () => {
-			userDataRev += 1;
-			if (!userDataLive) return;
-			publishUserData();
-			userData.notify();
-		},
-		onError: (error, phase) => report(error, `user data ${phase}`),
-	});
-	const userData = createStoredUserData(userDataFile, now);
+	const followFile = (path: string, what: string, bump: () => void) =>
+		createUserDataFile({
+			cm,
+			identity,
+			activation,
+			path,
+			what,
+			loadWaitMs: USER_DATA_LOAD_WAIT_MS,
+			onChange: () => {
+				bump();
+				if (!userDataLive) return;
+				publishUserData();
+				userData.notify();
+			},
+			onError: (error, phase) => report(error, `${what} ${phase}`),
+		});
+	let styleRev = 0;
+	let savedRev = 0;
+	const savedFile = followFile(SAVED_QUERIES_PATH, 'saved queries', () => (savedRev += 1));
+	const stylesFile = followFile(STYLES_PATH, 'styles', () => (styleRev += 1));
+	const userData = createStoredUserData({ styles: stylesFile, saved: savedFile, privacyNote: () => devToolUserDataNote(savedFile.storage(), stylesFile.storage()) }, { now });
 	/**
 	 * Refuse a user-data call from a frame that does not belong to who is signed in now.
 	 *
@@ -282,7 +290,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 	 */
 	const requireOwner = (owner: unknown, tool: string): void => {
 		const snapshot = identity.get();
-		const outcome = tool === OP.userData ? 'no style or saved query was read' : 'nothing was changed';
+		const outcome = tool === OP.styles ? 'no style was read' : tool === OP.savedQueries ? 'no saved query was read' : 'nothing was changed';
 		if (!snapshot.known) throw new ExplorerToolError({ kind: 'unavailable', tool, message: `Not signed in to a RocketRide server, so ${outcome}.` });
 		if (owner !== snapshot.fingerprint) throw new ExplorerToolError({ kind: 'stale', tool, message: `The signed-in account changed since this document opened, so ${outcome}.` });
 	};
@@ -342,27 +350,38 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			return replyOk(null);
 		},
 		[OP.schemaView]: (params) => replyOk(sized(toWire(schemaViewOf(stores.schemas.get(keyOf(params, OP.schemaView)))), OP.schemaView)),
-		[OP.userData]: async (params) => {
+		[OP.styles]: async (params) => {
 			// Only the frame's own account's, checked again after the wait: a frame bound to A is never served B's.
-			const key = keyOf(params, OP.userData);
+			const key = keyOf(params, OP.styles);
 			const owner = field(params, 'owner');
-			requireOwner(owner, OP.userData);
-			await userDataFile.accessor(OP.userData);
-			requireOwner(owner, OP.userData);
-			const answer: IUserDataAnswer = { style: userData.style(key).get(), saved: userData.saved(key).get(), privacyNote: userData.privacyNote };
-			return replyOk(sized(toWire(answer), OP.userData));
+			requireOwner(owner, OP.styles);
+			await stylesFile.accessor(OP.styles);
+			requireOwner(owner, OP.styles);
+			const answer: IStylesAnswer = { ...userData.style(key).get(), privacyNote: userData.privacyNote };
+			return replyOk(sized(toWire(answer), OP.styles));
 		},
-		[OP.userDataEdit]: async (params) => {
-			const key = keyOf(params, OP.userDataEdit);
+		[OP.savedQueries]: async (params) => {
+			const key = keyOf(params, OP.savedQueries);
 			const owner = field(params, 'owner');
-			requireOwner(owner, OP.userDataEdit);
-			const change = field(params, 'change');
-			const target = field(change, 'target');
+			requireOwner(owner, OP.savedQueries);
+			await savedFile.accessor(OP.savedQueries);
+			requireOwner(owner, OP.savedQueries);
+			const answer: ISavedQueriesAnswer = { saved: userData.saved(key).get(), privacyNote: userData.privacyNote };
+			return replyOk(sized(toWire(answer), OP.savedQueries));
+		},
+		[OP.styleEdit]: async (params) => {
+			const key = keyOf(params, OP.styleEdit);
+			const owner = field(params, 'owner');
+			requireOwner(owner, OP.styleEdit);
 			// Again after the file's read, right before the write: a change lands in its own account's file only.
-			const check = (): void => requireOwner(owner, OP.userDataEdit);
-			if (target === 'style') await userData.editStyle(key, checkStyleEdit(field(change, 'edit')), check);
-			else if (target === 'saved') await userData.editSaved(key, checkSavedEdit(field(change, 'edit')), check);
-			else throw new ExplorerToolError({ kind: 'invalid', tool: OP.userDataEdit, message: 'Nothing was changed: the edit is not one this app makes.' });
+			await userData.editStyle(key, checkStyleEdit(field(params, 'edit')), () => requireOwner(owner, OP.styleEdit));
+			return replyOk(null);
+		},
+		[OP.savedEdit]: async (params) => {
+			const key = keyOf(params, OP.savedEdit);
+			const owner = field(params, 'owner');
+			requireOwner(owner, OP.savedEdit);
+			await userData.editSaved(key, checkSavedEdit(field(params, 'edit')), () => requireOwner(owner, OP.savedEdit));
 			return replyOk(null);
 		},
 	};
@@ -423,7 +442,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 	const publishHistory = (): void => publish(STATE.history, { rev: historyRev });
 	const publishPreviews = (): void => publish(STATE.previews, { pending: stores.previews.get() });
 	function publishUserData(): void {
-		publish(STATE.userData, { rev: userDataRev });
+		publish(STATE.userData, { styleRev, savedRev });
 	}
 	offs.push(stores.endpoints.subscribe(publishEndpoints));
 	offs.push(stores.schemas.subscribe(publishSchemas));
@@ -589,8 +608,10 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			if (disposed) return;
 			disposed = true;
 			for (const off of offs.splice(0)) off();
-			// Styles and saved queries still pending are written (for the account signed in now only), then the file stops.
-			userDataFile.close();
+			// Saved queries and styles still pending are written (for the account signed in now only), then the files stop.
+			userData.dispose();
+			savedFile.close();
+			stylesFile.close();
 			// The last batch still in the history store's debounce goes to the current accessor before the detach drops
 			// it. (A disconnect or a sign-out reached the identity first: syncHistory already handed it to the HELD one.)
 			stores.history.flush();

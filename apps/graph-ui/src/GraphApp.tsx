@@ -39,16 +39,18 @@
 // realm's bus-backed client and the workspace prefs; the sidebar is rendered by the
 // shell's chrome, outside this tree, so it gets its own provider.
 //
-// What the app keeps in the workspace prefs itself (drafts, captions, grid layouts,
-// label styles and saved queries) goes through the page's pin (graph/workspacePin.ts):
-// the shell reads the prefs once per page, so after another account signs in without a
-// reload they are still the first account's, and nothing is read or written for anyone
-// else. New labels in a loaded schema get their colour slots here (followAssignments).
+// Everything the app keeps in the workspace prefs (drafts, captions, the editor height,
+// grid layouts, history, label styles and saved queries) goes through the page's pin
+// (graph/workspacePin.ts): the shell reads the prefs once per page, so after another
+// account signs in without a reload they are still the first account's, and nothing is
+// read or written for anyone else. Styles and saved queries are read only once the shell
+// has loaded the prefs. A loaded schema's labels get their colour slots here
+// (followAssignments), written only then.
 // =============================================================================
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { AppLayout, Button, ConnectionManager, DocSplitLayout, DocTabs, EmptyState, commonStyles, usePrefs, useShellConnection } from 'shell';
+import { AppLayout, Button, ConnectionManager, DocSplitLayout, DocTabs, EmptyState, commonStyles, usePrefs, useShellConnection, useWorkspace } from 'shell';
 import type { Documents, ShellAppProps } from 'shell';
 import { identityFingerprint, identityFromConnectResult } from 'shared/explorer';
 import type { IExplorerEndpoint, IPrefsAccessor } from 'shared/explorer';
@@ -132,14 +134,18 @@ const GraphApp: React.FC<ShellAppProps> = ({ identity }) => {
 	const client = useMemo(() => (isConnected ? getBusExplorerClient(ConnectionManager.getInstance()) : null), [isConnected]);
 	useEndpointStoreLifecycle(graphEndpoints, client, identity);
 	const fingerprint = identityFingerprint(identityFromConnectResult(identity));
-	// Who is signed in now, for the pin (read at each call, never captured).
+	// Whether the shell has read the prefs from the account's file (before that, nothing automatic may write them).
+	const { loaded } = useWorkspace();
+	// Who is signed in now and whether the prefs are loaded, for the pin (read at each call, never captured).
 	const owner = useRef(fingerprint);
 	owner.current = fingerprint;
+	const prefsLoaded = useRef(loaded);
+	prefsLoaded.current = loaded;
 	const [prefs] = useState(forwardingPrefs);
 	// Everything the app keeps in the workspace prefs itself, behind the page's pin.
 	const [pinned] = useState(() => {
 		const ownerNow = (): string | null => owner.current;
-		return { prefs: pinnedPrefs(APP_WORKSPACE_PIN, prefs, ownerNow), grids: pinnedGrids(APP_WORKSPACE_PIN, APP_GRIDS, ownerNow), userData: createAppUserData(prefs, ownerNow) };
+		return { prefs: pinnedPrefs(APP_WORKSPACE_PIN, prefs, ownerNow), grids: pinnedGrids(APP_WORKSPACE_PIN, APP_GRIDS, ownerNow), userData: createAppUserData(prefs, ownerNow, () => prefsLoaded.current) };
 	});
 	const env = useMemo(
 		() => createLocalGraphEnv({ mount: 'app', ready: isConnected, client, stores: APP_STORES, activeConnection, openDocument: openAppDocument, prefs: pinned.prefs, historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE, userData: pinned.userData, gridPersistence: pinned.grids }),
@@ -153,13 +159,21 @@ const GraphApp: React.FC<ShellAppProps> = ({ identity }) => {
 		forgetConnections(getDocs(), { schemas });
 	}, [fingerprint]);
 
-	// Styles and saved queries answer to the account signed in now: read them again when it changes.
+	// Styles and saved queries answer to the account signed in now, once the prefs are loaded: read them again when
+	// either changes.
 	useEffect(() => {
 		pinned.userData.notify();
-	}, [pinned, fingerprint]);
+	}, [pinned, fingerprint, loaded]);
 
-	// New labels in a loaded schema get their colour slots once, here (the realm that owns the schema).
-	useEffect(() => followAssignments(schemas, pinned.userData), [pinned]);
+	// A loaded schema's labels get their colour slots here (the realm that owns the schema); a slot write still pending
+	// when the app unmounts is dropped (it is made again from the schema next time).
+	useEffect(() => {
+		const stop = followAssignments(schemas, pinned.userData);
+		return () => {
+			stop();
+			pinned.userData.dispose();
+		};
+	}, [pinned]);
 
 	useEffect(() => {
 		const docs = createDocs();

@@ -29,12 +29,14 @@
 // reload, the bag in memory is still the first account's, and any write, of
 // any key, copies all of it into the next account's file.
 //
-// So the full app pins the first account it sees. What Graph Explorer keeps in
-// those preferences itself (drafts, captions, grid layouts, label styles and
-// saved queries) asks this pin first, and for any other account reads nothing
-// and writes nothing until the page reloads, or until the first account is
-// back, whose bag it still is. While nobody is signed in nothing is read or
-// written either. (History goes through the shared library's own bridge.)
+// So the full app pins the first account it sees. Everything Graph Explorer
+// keeps in those preferences (drafts, captions, the editor height, grid
+// layouts, label styles, saved queries, and history through `pinHistory`)
+// asks this pin first, and for any other account reads nothing and writes
+// nothing until the page reloads, or until the first account is back, whose
+// bag it still is. While nobody is signed in nothing is read or written
+// either. A write the shell makes on its own in that time (an app switch, a
+// theme change) still writes the bag it holds: only a reload ends that.
 //
 // ONE PIN PER PAGE (APP_WORKSPACE_PIN), like the shell's own read: it must
 // outlive an env rebuild and the app being switched away and back.
@@ -46,8 +48,10 @@
 import type { IDataGridPersistence } from 'shell';
 import { ExplorerToolError } from 'shared/explorer';
 import type { IPrefsAccessor } from 'shared/explorer';
+import type { IPrefsAttachable } from 'shared/explorer/react';
+import { memoryPrefs } from '../env';
 import { APP_USER_DATA_NOTE, createStoredUserData } from './userData';
-import type { IOwnedUserData } from './userData';
+import type { IOwnedUserData, IStoredUserDataOptions, IUserDataSource } from './userData';
 
 /** Where the account signed in now stands against the preferences in memory. */
 export type WorkspaceAccess = 'nobody' | 'owner' | 'another';
@@ -125,33 +129,63 @@ export function pinnedGrids(pin: IWorkspacePin, grids: IDataGridPersistence, own
 }
 
 /**
- * The full app's styles and saved queries: the workspace preferences, for the pinned account only. Nobody signed in,
- * or another account, reads nothing (the saved queries say why) and changes nothing (refused with the reason).
- * GraphApp calls `notify()` when the account changes.
+ * The full app's styles and saved queries: two keys of the workspace preferences, for the pinned account only, and
+ * only once the shell has loaded them (until then they read as loading, and no colour slot is written: a write before
+ * the load would replace what the account's file holds). Nobody signed in, or another account, reads nothing (the
+ * saved queries say why) and changes nothing (refused with the reason). GraphApp calls `notify()` when the account
+ * or the load changes.
  *
  * @param prefs - The shell's workspace preferences (a stable accessor over `usePrefs`).
  * @param ownerNow - Who is signed in now (the identity fingerprint), or null.
+ * @param loaded - Whether the shell has loaded the preferences from the account's file.
  * @param pin - Whose preferences these are (default: the page's).
- * @param now - The clock.
+ * @param opts - Clock and timers (tests).
  * @returns The user data.
  */
-export function createAppUserData(prefs: IPrefsAccessor, ownerNow: () => string | null, pin: IWorkspacePin = APP_WORKSPACE_PIN, now: () => number = Date.now): IOwnedUserData {
+export function createAppUserData(prefs: IPrefsAccessor, ownerNow: () => string | null, loaded: () => boolean, pin: IWorkspacePin = APP_WORKSPACE_PIN, opts: IStoredUserDataOptions = {}): IOwnedUserData {
 	const pinned = pinnedPrefs(pin, prefs, ownerNow);
-	return createStoredUserData(
-		{
-			read() {
-				const access = pin.access(ownerNow());
-				if (access === 'owner') return { status: 'ready', prefs: pinned };
-				return { status: 'error', note: access === 'nobody' ? 'Not signed in to a RocketRide server.' : ANOTHER_ACCOUNT_USER_DATA };
-			},
-			async accessor(tool) {
-				const access = pin.access(ownerNow());
-				if (access === 'nobody') throw new ExplorerToolError({ kind: 'unavailable', tool, message: 'Not signed in to a RocketRide server, so nothing was changed.' });
-				if (access === 'another') throw new ExplorerToolError({ kind: 'stale', tool, message: 'Signed in as a different account, so nothing was changed. Reload the page to see and change your saved queries and styles.' });
-				return pinned;
-			},
-			privacyNote: () => APP_USER_DATA_NOTE,
+	const source: IUserDataSource = {
+		read() {
+			const access = pin.access(ownerNow());
+			if (access === 'nobody') return { status: 'error', note: 'Not signed in to a RocketRide server.' };
+			if (access === 'another') return { status: 'error', note: ANOTHER_ACCOUNT_USER_DATA };
+			return loaded() ? { status: 'ready', prefs: pinned } : { status: 'loading', note: null };
 		},
-		now,
-	);
+		async accessor(tool) {
+			const access = pin.access(ownerNow());
+			if (access === 'nobody') throw new ExplorerToolError({ kind: 'unavailable', tool, message: 'Not signed in to a RocketRide server, so nothing was changed.' });
+			if (access === 'another') throw new ExplorerToolError({ kind: 'stale', tool, message: 'Signed in as a different account, so nothing was changed. Reload the page to see and change your saved queries and styles.' });
+			if (!loaded()) throw new ExplorerToolError({ kind: 'unavailable', tool, message: 'Your workspace is still loading, so nothing was changed. Try again in a moment.' });
+			return pinned;
+		},
+	};
+	return createStoredUserData({ styles: source, saved: source, privacyNote: () => APP_USER_DATA_NOTE }, opts);
+}
+
+/** A history store's attach, through the page's pin. */
+export interface IPinnedHistory extends IPrefsAttachable {
+	/** Where the account the store was last attached for stands. */
+	access(): WorkspaceAccess;
+}
+
+/**
+ * Attach a history store to the shell's preferences only for the pinned account (ported from sql-ui's pinHistory):
+ * any other account, or nobody, gets a throwaway accessor under its own owner, so the store forgets what it held and
+ * reads and writes nothing of the shell's. Without it the shared bridge re-attaches under the new owner over the same
+ * in-memory bag, shows the first account's history, and the next run writes it into the new account's file.
+ *
+ * @param store - The history store.
+ * @param pin - Whose preferences these are (default: the page's).
+ * @returns The attach, and where the last attached account stands.
+ */
+export function pinHistory(store: IPrefsAttachable, pin: IWorkspacePin = APP_WORKSPACE_PIN): IPinnedHistory {
+	let access: WorkspaceAccess = 'nobody';
+	return {
+		attachPrefs(api, owner) {
+			if (owner === undefined) return store.attachPrefs(api);
+			access = pin.access(owner);
+			return store.attachPrefs(access === 'owner' ? api : memoryPrefs(), owner);
+		},
+		access: () => access,
+	};
 }

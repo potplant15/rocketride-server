@@ -20,9 +20,11 @@ import {
 	MAX_STYLES_BAG_CHARS,
 	SAVED_QUERIES_PREF,
 	STYLES_PREF,
-	USER_DATA_PATH,
+	SAVED_QUERIES_PATH,
+	STYLES_PATH,
 	applySavedEdit,
 	applyStyleChange,
+	assignmentFor,
 	checkSavedEdit,
 	checkStyleEdit,
 	editSavedIn,
@@ -59,14 +61,15 @@ const listOf = (bag: unknown, key: string): ISavedQuery[] => readSavedQueriesBag
 const refused = (pattern: RegExp) => (error: unknown): boolean => error instanceof ExplorerToolError && error.kind === 'invalid' && pattern.test(error.message);
 
 describe('user data: the persisted names never change', () => {
-	it('keeps saved queries under graph.savedQueries and styles under graph.styles, keyed by connection; the dev tool\'s file sits beside the history file', () => {
+	it('keeps saved queries under graph.savedQueries and styles under graph.styles, keyed by connection; the dev tool\'s two files sit beside the history file', () => {
 		assert.equal(SAVED_QUERIES_PREF, 'graph.savedQueries');
 		assert.equal(STYLES_PREF, 'graph.styles');
-		assert.equal(USER_DATA_PATH, '@/User/.workspace/rocketride.graph.saved.json');
+		assert.equal(SAVED_QUERIES_PATH, '@/User/.workspace/rocketride.graph.saved.json');
+		assert.equal(STYLES_PATH, '@/User/.workspace/rocketride.graph.styles.json');
 		const prefs = memoryPrefs();
 		editSavedIn(prefs, KEY, { action: 'save', name: 'Who works where', cypher: 'MATCH (p)-[:WORKS_AT]->(c) RETURN p, c' }, made('a'));
 		assert.deepEqual(prefs.getPref(SAVED_QUERIES_PREF), { [KEY]: [{ id: 'a', name: 'Who works where', cypher: 'MATCH (p)-[:WORKS_AT]->(c) RETURN p, c', savedAt: 1_000 }] });
-		editStyleIn(prefs, KEY, { kind: 'label', label: 'Person', style: { slot: 4 } });
+		editStyleIn(prefs, KEY, { kind: 'label', label: 'Person', patch: { slot: 4 } });
 		assert.deepEqual(prefs.getPref(STYLES_PREF), { [KEY]: { assigned: {}, labels: { Person: { slot: 4 } }, types: {} } });
 	});
 });
@@ -219,8 +222,8 @@ describe('saved queries: reading what is stored', () => {
 
 describe('styles: what is stored, read back clean', () => {
 	it('keeps valid slots, sizes and badges, and drops anything else without throwing', () => {
-		const raw = { assigned: { Person: 0, Company: 7, Odd: 1.5, Bad: '2', Topic: 5 }, labels: { Person: { slot: 3, size: 'L', badge: 'dot', glow: true }, Junk: 'x', Empty: { slot: 9 } }, types: { KNOWS: { slot: 2 }, BAD: { slot: -1 } }, future: 1 };
-		assert.deepEqual(readConnectionStyle(raw), { assigned: { Person: 0, Topic: 5 }, labels: { Person: { slot: 3, size: 'L', badge: 'dot' } }, types: { KNOWS: { slot: 2 } } });
+		const raw = { assigned: { Person: 0, Company: 7, Odd: 1.5, Bad: '2', Topic: 5 }, labels: { Person: { slot: 3, size: 'L', badge: 'dot', caption: 'name', glow: true }, Junk: 'x', Empty: { slot: 9, caption: '' } }, types: { KNOWS: { slot: 2 }, BAD: { slot: -1 } }, future: 1 };
+		assert.deepEqual(readConnectionStyle(raw), { assigned: { Person: 0, Topic: 5 }, labels: { Person: { slot: 3, size: 'L', badge: 'dot', caption: 'name' } }, types: { KNOWS: { slot: 2 } } });
 		for (const junk of [undefined, null, 'x', [], 3]) assert.deepEqual(readConnectionStyle(junk), EMPTY_STYLE);
 	});
 
@@ -230,31 +233,37 @@ describe('styles: what is stored, read back clean', () => {
 	});
 });
 
-describe('styles: edits and first-seen slots', () => {
-	it('a label or type edit sets or clears that one; reset clears the choices and keeps the first-seen slots', () => {
+describe('styles: field-level edits, and the colour slots', () => {
+	it('a label or type edit merges field by field, a clear removes fields; reset clears the choices and keeps the slots', () => {
 		let bag: Record<string, unknown> = { [OTHER]: { labels: { X: { slot: 1 } } } };
-		bag = applyStyleChange(bag, KEY, { kind: 'assign', assigned: { Person: 0, Company: 1 } });
-		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'Person', style: { slot: 4, size: 'S' } });
-		bag = applyStyleChange(bag, KEY, { kind: 'type', type: 'KNOWS', style: { slot: 2 } });
-		assert.deepEqual(readConnectionStyle(bag[KEY]), { assigned: { Person: 0, Company: 1 }, labels: { Person: { slot: 4, size: 'S' } }, types: { KNOWS: { slot: 2 } } });
-		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'Person', style: null });
-		assert.deepEqual(readConnectionStyle(bag[KEY]).labels, {});
+		bag = applyStyleChange(bag, KEY, { kind: 'assign', add: { Person: 0, Company: 1 }, release: [] });
+		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'Person', patch: { slot: 4 } });
+		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'Person', patch: { size: 'S' } });
+		bag = applyStyleChange(bag, KEY, { kind: 'type', type: 'KNOWS', patch: { slot: 2 } });
+		assert.deepEqual(readConnectionStyle(bag[KEY]), { assigned: { Person: 0, Company: 1 }, labels: { Person: { slot: 4, size: 'S' } }, types: { KNOWS: { slot: 2 } } }, 'two quick edits: both kept');
+		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'Person', clear: ['slot'] });
+		assert.deepEqual(readConnectionStyle(bag[KEY]).labels, { Person: { size: 'S' } });
+		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'Person', clear: ['size'] });
+		assert.deepEqual(readConnectionStyle(bag[KEY]).labels, {}, 'nothing left: the label is back to its defaults');
 		bag = applyStyleChange(bag, KEY, { kind: 'reset' });
 		assert.deepEqual(readConnectionStyle(bag[KEY]), { assigned: { Person: 0, Company: 1 }, labels: {}, types: {} });
 		assert.deepEqual(bag[OTHER], { labels: { X: { slot: 1 } } }, 'another connection is untouched');
 	});
 
-	it('an assignment only adds: a slot already given is never moved', () => {
-		let bag = applyStyleChange({}, KEY, { kind: 'assign', assigned: { Person: 0 } });
-		bag = applyStyleChange(bag, KEY, { kind: 'assign', assigned: { Person: 3, Aardvark: 1 } });
+	it('an assignment only adds, and releases only what it names: a slot already given is never moved', () => {
+		let bag = applyStyleChange({}, KEY, { kind: 'assign', add: { Person: 0 }, release: [] });
+		bag = applyStyleChange(bag, KEY, { kind: 'assign', add: { Person: 3, Aardvark: 1 }, release: [] });
 		assert.deepEqual(readConnectionStyle(bag[KEY]).assigned, { Person: 0, Aardvark: 1 });
-		assert.equal(applyStyleChange(bag, KEY, { kind: 'assign', assigned: {} }), bag, 'nothing new: the same bag');
+		assert.equal(applyStyleChange(bag, KEY, { kind: 'assign', add: {}, release: [] }), bag, 'nothing new: the same bag');
+		bag = applyStyleChange(bag, KEY, { kind: 'assign', add: { Zebra: 1 }, release: ['Aardvark'] });
+		assert.deepEqual(readConnectionStyle(bag[KEY]).assigned, { Person: 0, Zebra: 1 });
 	});
 
 	it('a write keeps what this build cannot read: fields it does not know, here and in another connection', () => {
 		const stored = { [KEY]: { assigned: { Person: 0 }, labels: { Person: { slot: 2, ring: 'gold' } }, future: { a: 1 } }, [OTHER]: 'v2-format' };
-		const bag = applyStyleChange(stored, KEY, { kind: 'label', label: 'Company', style: { badge: 'none' } });
-		assert.deepEqual(bag[KEY], { assigned: { Person: 0 }, labels: { Person: { slot: 2, ring: 'gold' }, Company: { badge: 'none' } }, types: {}, future: { a: 1 } });
+		let bag = applyStyleChange(stored, KEY, { kind: 'label', label: 'Company', patch: { badge: 'none' } });
+		bag = applyStyleChange(bag, KEY, { kind: 'label', label: 'Person', patch: { size: 'M' } });
+		assert.deepEqual(bag[KEY], { assigned: { Person: 0 }, labels: { Person: { slot: 2, ring: 'gold', size: 'M' }, Company: { badge: 'none' } }, types: {}, future: { a: 1 } });
 		assert.equal(bag[OTHER], 'v2-format');
 	});
 
@@ -265,7 +274,7 @@ describe('styles: edits and first-seen slots', () => {
 		let refusedAt = -1;
 		for (let i = 0; i < 200; i += 1) {
 			try {
-				bag = applyStyleChange(bag, KEY, { kind: 'label', label: `${long}${i}`, style: { slot: 1 } });
+				bag = applyStyleChange(bag, KEY, { kind: 'label', label: `${long}${i}`, patch: { slot: 1 } });
 			} catch (error) {
 				assert.ok(refused(/styles are full \(64 KB across all connections\)\. Reset the styles of a connection to make room\./)(error));
 				refusedAt = i;
@@ -273,8 +282,30 @@ describe('styles: edits and first-seen slots', () => {
 			}
 		}
 		assert.ok(refusedAt > 0, 'the cap refused an edit');
-		assert.equal(applyStyleChange(bag, OTHER, { kind: 'assign', assigned: { [`${long}x`]: 0 } }), bag, 'an assignment that does not fit is skipped');
+		assert.equal(applyStyleChange(bag, OTHER, { kind: 'assign', add: { [`${long}x`]: 0 }, release: [] }), bag, 'an assignment that does not fit is skipped');
 		assert.doesNotThrow(() => applyStyleChange(bag, KEY, { kind: 'reset' }), 'a reset always fits');
+	});
+});
+
+describe('colour slots for a connection\'s schema (assignmentFor)', () => {
+	const six = { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5 };
+
+	it('new labels take the lowest free slots; nothing changes when every label has one', () => {
+		assert.deepEqual(assignmentFor({}, ['Person', 'Company'], true), { add: { Company: 0, Person: 1 }, release: [] });
+		assert.deepEqual(assignmentFor({ Company: 0, Person: 1 }, ['Person', 'Company'], true), { add: {}, release: [] });
+	});
+
+	it('a slot is released only when a new label needs one and a complete read no longer lists its label', () => {
+		assert.deepEqual(assignmentFor(six, ['A', 'B', 'C', 'D', 'E', 'G'], true), { add: { G: 5 }, release: ['F'] }, 'F is gone and G needs a slot');
+		assert.deepEqual(assignmentFor(six, ['A', 'B', 'C', 'D', 'E', 'G'], false), { add: {}, release: [] }, 'a read that may be partial releases nothing (G is hashed)');
+		assert.deepEqual(assignmentFor(six, ['A', 'B', 'C'], true), { add: {}, release: [] }, 'nobody needs a slot: none is released');
+		assert.deepEqual(assignmentFor({ ...six, X: 6 }, ['A'], true), { add: {}, release: [] });
+	});
+
+	it('the labels that keep their slot never move when others are released', () => {
+		const { add, release } = assignmentFor(six, ['A', 'C', 'E', 'G', 'H'], true);
+		assert.deepEqual([...release].sort(), ['B', 'D', 'F']);
+		assert.deepEqual(add, { G: 1, H: 3 });
 	});
 });
 
@@ -283,9 +314,9 @@ describe('user data: what may cross from a frame', () => {
 		assert.deepEqual(checkSavedEdit({ action: 'save', name: 'N', cypher: 'RETURN 1', extra: 1 }), { action: 'save', name: 'N', cypher: 'RETURN 1' });
 		assert.deepEqual(checkSavedEdit({ action: 'rename', id: 'a', name: 'B' }), { action: 'rename', id: 'a', name: 'B' });
 		assert.deepEqual(checkSavedEdit({ action: 'delete', id: 'a' }), { action: 'delete', id: 'a' });
-		assert.deepEqual(checkStyleEdit({ kind: 'label', label: 'Person', style: { slot: 2, size: 'M', badge: 'initials', glow: 1 } }), { kind: 'label', label: 'Person', style: { slot: 2, size: 'M', badge: 'initials' } });
-		assert.deepEqual(checkStyleEdit({ kind: 'label', label: 'Person', style: null }), { kind: 'label', label: 'Person', style: null });
-		assert.deepEqual(checkStyleEdit({ kind: 'type', type: 'KNOWS', style: { slot: 0 } }), { kind: 'type', type: 'KNOWS', style: { slot: 0 } });
+		assert.deepEqual(checkStyleEdit({ kind: 'label', label: 'Person', patch: { slot: 2, size: 'M', badge: 'initials', caption: 'name' }, extra: 1 }), { kind: 'label', label: 'Person', patch: { slot: 2, size: 'M', badge: 'initials', caption: 'name' }, clear: [] });
+		assert.deepEqual(checkStyleEdit({ kind: 'label', label: 'Person', clear: ['slot', 'caption'] }), { kind: 'label', label: 'Person', patch: {}, clear: ['slot', 'caption'] });
+		assert.deepEqual(checkStyleEdit({ kind: 'type', type: 'KNOWS', patch: { slot: 0 } }), { kind: 'type', type: 'KNOWS', patch: { slot: 0 }, clear: [] });
 		assert.deepEqual(checkStyleEdit({ kind: 'reset' }), { kind: 'reset' });
 	});
 
@@ -293,7 +324,7 @@ describe('user data: what may cross from a frame', () => {
 		for (const bad of [null, 'save', {}, { action: 'clear' }, { action: 'delete' }, { action: 'delete', id: '' }, { action: 'rename', id: 'a' }, { action: 'save', name: 'n' }, { action: 'save', name: 1, cypher: 'x' }]) {
 			assert.throws(() => checkSavedEdit(bad), refused(/not one this app makes/), JSON.stringify(bad));
 		}
-		for (const bad of [null, {}, { kind: 'assign', assigned: { A: 0 } }, { kind: 'label', style: {} }, { kind: 'label', label: 'P', style: { slot: 6 } }, { kind: 'label', label: 'P', style: { size: 'XL' } }, { kind: 'label', label: 'P', style: { badge: 'star' } }, { kind: 'type', type: 'T', style: { slot: 1.5 } }, { kind: 'type', type: 'T', style: { size: 'S' } }, { kind: 'label', label: 'P', style: 'red' }]) {
+		for (const bad of [null, {}, { kind: 'assign', add: { A: 0 }, release: [] }, { kind: 'label', patch: {} }, { kind: 'label', label: 'P', patch: { slot: 6 } }, { kind: 'label', label: 'P', patch: { size: 'XL' } }, { kind: 'label', label: 'P', patch: { badge: 'star' } }, { kind: 'label', label: 'P', patch: { caption: '' } }, { kind: 'label', label: 'P', patch: { caption: 'x'.repeat(257) } }, { kind: 'label', label: 'P', patch: { glow: true } }, { kind: 'label', label: 'P', clear: ['glow'] }, { kind: 'label', label: 'P', clear: 'slot' }, { kind: 'type', type: 'T', patch: { slot: 1.5 } }, { kind: 'type', type: 'T', patch: { size: 'S' } }, { kind: 'label', label: 'P', patch: 'red' }]) {
 			assert.throws(() => checkStyleEdit(bad), refused(/not one this app makes/), JSON.stringify(bad));
 		}
 	});
