@@ -122,6 +122,10 @@ test('the run surface takes its editor request from the host\'s slot, and the ho
 	assert.ok(/loadSlot=\{slotOf\(tab\.id\)\}/.test(tag) && /loadSeq=\{seqs\[tab\.id\] \?\? 0\}/.test(tag), 'every tab\'s surface takes from its own slot');
 	assert.ok(/tabId=\{tab\.id\}/.test(tag) && /active=\{shown\}/.test(tag), 'and knows its tab');
 	assert.ok(/draftKey=\{tab\.id === FIRST_QUERY_TAB \? undefined : null\}/.test(tag), 'only Query 1 keeps the persisted draft');
+	// DA I1: a text put into another tab (a preview, an Ask draft) must never reach Query 1's persisted draft.
+	const changeText = surface.slice(surface.indexOf('const changeText = useCallback'), surface.indexOf('useEffect(() => () => { if (draftTimer.current)'));
+	assert.ok(/setText\(next\);\s*if \(draftKey === null\) return;/.test(changeText), 'a tab without a draft key writes no draft');
+	assert.ok(/const bag = draftKey === null \? null : prefs\.getPref\(DRAFTS_PREF_KEY\);/.test(surface), 'and reads none: a new tab never opens with Query 1\'s draft');
 	const deliver = workbench.slice(workbench.indexOf('const deliver = useCallback'), workbench.indexOf('const activate = useCallback'));
 	assert.ok(/const placed = placeRequest\(tabsNow\.current, request\);/.test(deliver), 'where text goes is decided by the pure tab model');
 	assert.ok(/const runNow = placed\.put\.run && now\.mounted && now\.paused === null;/.test(deliver), 'a run is asked for only while the surface can run it');
