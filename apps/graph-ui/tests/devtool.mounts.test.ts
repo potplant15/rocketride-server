@@ -183,7 +183,7 @@ describe('T12 - the full app (app:) runs on the LOCAL env', () => {
 		assert.match(app, /getBusExplorerClient\(ConnectionManager\.getInstance\(\)\)/);
 		assert.match(app, /createLocalGraphEnv\(\{ mount: 'app', ready: isConnected, client, stores: APP_STORES,/);
 		assert.match(app, /<GraphEnvProvider value=\{env\}><GraphSidebar \/><\/GraphEnvProvider>/);
-		assert.match(app, /historyPrivacyNote: APP_HISTORY_PRIVACY_NOTE/);
+		assert.match(app, /historyPrivacyNote: \(\) => appHistoryNote\(APP_WORKSPACE_PIN\.access\(owner\.current\)\)/, 'the History note follows the account signed in now (graph/workspacePin.ts appHistoryNote)');
 	});
 
 	it('names a connection the way #2625 does: listTasks\'s status name, else the source component\'s name; keys unchanged', async () => {

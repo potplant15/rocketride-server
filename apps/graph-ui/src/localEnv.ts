@@ -67,11 +67,14 @@ export interface ILocalGraphEnvOptions {
 	activeConnection: IReadable<string | null>;
 	openDocument(target: DocTarget): void;
 	prefs: IPrefsAccessor;
-	historyPrivacyNote: string;
+	/** What the History panel says about where history is kept (read each time: it can follow the account). */
+	historyPrivacyNote: string | (() => string);
 	/** Override discovery (the controller gates it on identity and activation). */
 	refresh?: IGraphEnv['refresh'];
 	/** Styles and saved queries (default: kept in memory for the session, one store per set of stores). */
 	userData?: IGraphUserData;
+	/** Grid layouts (default: the full app's APP_GRIDS, the controller's session store). */
+	gridPersistence?: IDataGridPersistence;
 }
 
 /**
@@ -79,8 +82,9 @@ export interface ILocalGraphEnvOptions {
  * grid config channel, but stored and handed out as plain-JSON copies, so
  * Tabulator never rewrites a stored layout in place
  * (shared/explorer/devtool/gridPersistence). The channel is made on first use.
+ * GraphApp hands its env these behind the page's pin (graph/workspacePin.ts).
  */
-const APP_GRIDS: IDataGridPersistence = createCopyingGridPersistence(() => createMessageGridPersistence());
+export const APP_GRIDS: IDataGridPersistence = createCopyingGridPersistence(() => createMessageGridPersistence());
 
 /** The controller's: a dev-tool mount never writes the host's prefs, so any layout stays in the session (it renders no grid today). */
 const CONTROLLER_GRIDS: IDataGridPersistence = createSessionGridPersistence();
@@ -224,10 +228,13 @@ export function createLocalGraphEnv(opts: ILocalGraphEnvOptions): IGraphEnv {
 			consume: (nonce) => stores.previews.consume(nonce),
 		},
 		activeConnection: opts.activeConnection,
-		gridPersistence: opts.mount === 'app' ? APP_GRIDS : CONTROLLER_GRIDS,
+		gridPersistence: opts.gridPersistence ?? (opts.mount === 'app' ? APP_GRIDS : CONTROLLER_GRIDS),
 		openDocument: opts.openDocument,
 		prefs: opts.prefs,
-		historyPrivacyNote: opts.historyPrivacyNote,
+		get historyPrivacyNote() {
+			const note = opts.historyPrivacyNote;
+			return typeof note === 'function' ? note() : note;
+		},
 		userData: opts.userData ?? sessionUserData(stores),
 	};
 }

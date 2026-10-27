@@ -17,6 +17,8 @@ import { parseSchema } from '../src/graph/schema';
 import { createSchemaStore } from '../src/graph/schemaStore';
 import type { ReadQueryResult } from '../src/graph/types';
 import { schemaViewOf } from '../src/localEnv';
+import { asPreview, previewStatement } from '../src/graph/previews';
+import type { PreviewAction } from '../src/graph/previews';
 import { fixture, node, rel } from './support/builders';
 
 const envelope = (rows: ReadQueryResult['rows']): ReadQueryResult => ({ columns: ['c0', 'c1', 'c2'], rows, row_limit: 1000, truncated: false, truncated_by: null, element_limit: 10000, elements: 0, value_limit: 500000, values: 0 });
@@ -92,4 +94,15 @@ test('schemaViewOf: null until a load completed, then the view; a failed first l
 	assert.deepEqual(schemaViewOf(store.get('k')), parseSchema(fixture('schema_v2')));
 	await store.load('bad', async () => Promise.reject(new Error('down')), () => ({ variant: 'error', headline: 'down', detail: '', verbatim: '', generic: false, hint: null, ignore: false }));
 	assert.equal(schemaViewOf(store.get('bad'))?.evidence, 'unknown');
+});
+
+test('preview requests: the two previews run, and a new query with a label or type is put in the editor and never run', () => {
+	const engine = { dialect: 'neo4j' as const, version: '5.26.31' };
+	const of = (action: PreviewAction, name: string) => previewStatement(engine, { action, name });
+	assert.deepEqual(of('label-preview', 'Person'), { recipe: { cypher: 'MATCH (n:`Person`) RETURN n LIMIT 25', params: {}, limit: 25 }, run: true });
+	assert.deepEqual(of('type-preview', 'KNOWS'), { recipe: { cypher: 'MATCH (a)-[r:`KNOWS`]->(b) RETURN a, r, b LIMIT 25', params: {}, limit: 25 }, run: true });
+	assert.deepEqual(of('label-query', 'Person'), { recipe: of('label-preview', 'Person').recipe, run: false }, 'the label\'s query, not the type\'s, and not run');
+	assert.deepEqual(of('type-query', 'KNOWS'), { recipe: of('type-preview', 'KNOWS').recipe, run: false });
+	for (const action of ['label-preview', 'type-preview', 'label-query', 'type-query'] as const) assert.equal(asPreview({ nonce: 'n', endpointKey: 'k', action, name: 'X', at: 1 })?.action, action, `${action} crosses a channel`);
+	assert.equal(asPreview({ nonce: 'n', endpointKey: 'k', action: 'label-run', name: 'X', at: 1 }), null);
 });

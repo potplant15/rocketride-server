@@ -31,10 +31,13 @@
 //     colours in order (blue, green, yellow, purple, orange, red).
 //   - Every further label, and any label not in the schema (the schema is a
 //     snapshot), takes a colour from a stable hash of its name.
-//   - Under a connection's stored style (graph/userData.ts, `labelColors`), a
-//     label keeps the slot it was given when first seen, and a new label takes
-//     the lowest slot still free (`nextAssignments`), so adding a label never
-//     moves the colour of another. A person's own choice comes before both.
+//   - Under a connection's style (graph/userData.ts, `labelColors`), a label
+//     keeps the slot it was given when first seen, and a new label takes the
+//     lowest slot still free (`nextAssignments`), so adding a label never moves
+//     the colour of another. The slots come from the connection's whole schema
+//     (the realm that owns it gives them), never from the labels one screen
+//     passes, so every screen agrees; a label without a slot takes its hashed
+//     colour. A person's own choice comes before both.
 //
 // Colour alone is never the only carrier of meaning: every node has an outline,
 // carries its label in its spoken name and its inspector, and the legend names
@@ -139,7 +142,8 @@ export function nextAssignments(assigned: Readonly<Record<string, number>>, labe
 	for (const label of fresh) {
 		while (slot < CHART_COLOR_VARS.length && held.has(slot)) slot += 1;
 		if (slot >= CHART_COLOR_VARS.length) break;
-		out[label] = slot;
+		// An own entry: a label may be named `__proto__`, and is just another key here.
+		Object.defineProperty(out, label, { value: slot, enumerable: true, writable: true, configurable: true });
 		held.add(slot);
 	}
 	return out;
@@ -157,9 +161,9 @@ function isSlot(slot: unknown): slot is number {
 
 /**
  * The colours of a connection's labels under its style: the person's own slot first, then the slot the label was
- * given when first seen, then the slot it WOULD be given now ({@link nextAssignments}, so a label not yet stored is
- * drawn as it will be once it is), and past six labels the hashed colour. With nothing assigned, this is
- * {@link assignLabelColors}.
+ * given (style.assigned: by the realm that owns the schema, from the connection's whole label list, shown before it is
+ * stored), else the label's hashed colour. Which labels a screen passes never changes the colour of any of them.
+ * Draw labels in a neutral colour until the style is ready (graph/userData.ts IStyleView).
  *
  * @param style - The connection's style (graph/userData.ts).
  * @param labels - The labels to colour (any order, duplicates allowed).
@@ -167,11 +171,10 @@ function isSlot(slot: unknown): slot is number {
  */
 export function labelColors(style: IConnectionStyle, labels: Iterable<string>): Map<string, ILabelColor> {
 	const distinct = Array.from(new Set(labels)).filter((label) => label !== '');
-	const pending = nextAssignments(style.assigned, distinct);
 	const out = new Map<string, ILabelColor>();
 	for (const label of distinct.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
 		const own = Object.prototype.hasOwnProperty.call(style.labels, label) ? style.labels[label]?.slot : undefined;
-		const given = Object.prototype.hasOwnProperty.call(style.assigned, label) ? style.assigned[label] : pending[label];
+		const given = Object.prototype.hasOwnProperty.call(style.assigned, label) ? style.assigned[label] : undefined;
 		const slot = isSlot(own) ? own : isSlot(given) ? given : null;
 		out.set(label, slot === null ? { label, fill: hashColor(label), slot: null } : { label, fill: `var(${CHART_COLOR_VARS[slot]})`, slot });
 	}

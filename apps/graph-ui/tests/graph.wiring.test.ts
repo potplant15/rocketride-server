@@ -196,7 +196,7 @@ test('the landing renders its cards whenever there are any, under its message, a
 test('a change of identity closes every connection document and clears the per-connection caches', () => {
 	const app = code(read('GraphApp.tsx'));
 	assert.ok(/const fingerprint = identityFingerprint\(identityFromConnectResult\(identity\)\);/.test(app), 'the app tracks the fingerprint the shared store tracks');
-	assert.ok(/useEffect\(\(\) => \{\s*forgetConnections\(getDocs\(\), \{ schemas \}\);\s*\}, \[fingerprint\]\);/.test(app), 'every change of it forgets the connections');
+	assert.ok(/useLayoutEffect\(\(\) => \{\s*forgetConnections\(getDocs\(\), \{ schemas \}\);\s*pinned\.userData\.forget\(\);\s*\}, \[pinned, fingerprint\]\);/.test(app), 'every change of it forgets the connections, and the colour slots wanted for them, before the next paint');
 });
 
 // #2625 9bd5d931f gave Documents a dirty-close policy and moved every app's group close onto it; the full app follows.
@@ -217,12 +217,17 @@ test('the connection drawer starts fresh for every card, and words its Test resu
 });
 
 // One body and one Test step for both places that show a connection's details: the full app's drawer (a DetailPanel
-// over the window) and a dev-tool document's inline panel.
-test('the connection details (Status, Connection, What to know, the Test result) are one component the drawer renders', () => {
+// over the window) and a dev-tool document's inline panel. The summary comes first (Status with the chips, Graph);
+// the plumbing (pipeline, node, run, writes, What to know) sits behind the "Connection details" disclosure.
+test('the connection details (Status, Graph, the plumbing behind a disclosure, the Test result) are one component the drawer renders', () => {
 	const details = code(read('components', 'ConnectionDetails.tsx'));
 	assert.ok(/export function useConnectionTest\(/.test(details));
 	assert.ok(/export const ConnectionDetailsBody: React\.FC<IConnectionDetailsBodyProps>/.test(details));
-	for (const label of ['Status', 'Connection', 'What to know']) assert.ok(details.includes(`<Section label="${label}">`), label);
+	for (const label of ['Status', 'Graph']) assert.ok(details.includes(`<Section label="${label}">`), label);
+	assert.match(details, /<button type="button" style=\{styles\.disclosure\} aria-expanded=\{plumbingOpen\}/, 'the plumbing is a disclosure');
+	assert.match(details, /Connection details <span style=\{styles\.disclosureHint\}>pipeline, node, run, read boundary<\/span>/);
+	assert.match(details, /<div style=\{styles\.notesHeading\}>What to know<\/div>/, 'What to know is inside it');
+	assert.match(details, /const schema = useSchemaView\(endpoint\.key\);/, 'counts only from a schema already read');
 	assert.ok(/\{tested && <div style=\{styles\.notice\}><Banner variant=\{tested\.variant\}>\{tested\.text\}<\/Banner><\/div>\}/.test(details), 'the Test result in the Status section');
 	assert.doesNotMatch(details, /DetailPanel|addEventListener|style=\{\{/, 'a body only: no overlay, no listener, styles in `styles`');
 	const drawer = code(read('components', 'ConnectionDrawer.tsx'));

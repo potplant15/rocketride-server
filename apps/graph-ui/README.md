@@ -59,16 +59,48 @@ from are not listed (the server still lets you reach them from other clients);
 your own runs under another team of the same organization are. A task whose
 team the server does not report, or a sign-in whose organization data carries
 no team list at all, is not filtered; an organization that lists none of your
-teams shows only tasks that name no team. A card shows the pipeline, the node and a state: **Checking** while
-the node is being asked who it is, **Running** once it answered, **Stopped**,
-**Unreachable**, **No access** (you can see a team deployment but your role
-cannot call it), or **Needs upgrade**. Your own development run and a team's
-deployment of the same pipeline are separate connections, and two owners' runs
-never merge. Selecting a card opens a drawer with the engine and version the
-node reports, its target (database or graph), whether writes are allowed, and a
-sentence on what the node's read path guarantees. **Test connection** asks the
-node again; when nothing could be sent (the pipeline is not running, or a check
-is already in progress) it says "Not tested".
+teams shows only tasks that name no team. A card shows the node, its provider,
+the engine and version the node reports (once it answered), the pipeline, and a
+state: **Checking** while the node is being asked who it is, **Running** once it
+answered, **Stopped**, **Unreachable**, **No access** (you can see a team
+deployment but your role cannot call it), or **Needs upgrade**. Your own
+development run and a team's deployment of the same pipeline are separate
+connections, and two owners' runs never merge.
+
+A card also carries chips, each from what the node itself reports:
+
+- **Writes allowed** or **Read-only**: writes are allowed when the node has
+  `execute` on and supports the graph result shape (the write console is
+  offered only then).
+- The size, such as **60 nodes (per label) · 92 relationships**, once the
+  connection's schema was read in this session (opening its workbench reads
+  it). No card asks the node for it. The node total adds up the per-label
+  counts, so on Neo4j and FalkorDB a node with two labels counts twice; the
+  relationship total counts each relationship once. When the node listed only
+  part of a very large schema, both totals say *at least*. A count the database
+  estimates (Apache AGE) says *about*. Where counts are missing (AGE before its
+  tables were analysed), a part says *nodes not reported* or *relationships not
+  reported* when it has none, and *some node counts not reported* (or
+  relationship) when only some are missing; with no total at all, the card says
+  *counts not reported* or *some counts not reported*. When the last refresh
+  failed, the counts are the last successful read's and say *(as of the last
+  read)*.
+- **Empty graph**, only when a schema read in this session lists no label and
+  no relationship type. A node that could not read its schema, or an older
+  node, never shows it.
+
+Selecting a card, or pressing Enter or Space on it, opens a drawer. Its summary
+comes first: the state and the chips (with **Supported (Cypher)** for a node
+that has `read_query`), the engine and version, the database or graph, and, once
+the schema was read, its size in the same words as the card, and a line such as
+"5 labels · 7 relationship types · 21 property keys (sampled)"; a fresh read
+that lists nothing says **Empty**. A read that lists nothing and proves nothing
+never says "0 labels": the Schema line says **Could not be read** when the read
+failed, and **Not reported by this node** for a node too old to report one. **Connection details** opens the rest: the pipeline, the node, whose
+run it is, whether writes are allowed, and a sentence on what the node's read
+path guarantees. **Test connection** asks the node again; when nothing could be
+sent (the pipeline is not running, or a check is already in progress) it says
+"Not tested".
 
 An empty list does not say why. If the task list is empty the page says that it
 cannot tell whether nothing is running or something is wrong. A node that fails
@@ -83,6 +115,21 @@ shows. Task tokens are kept in memory only, per session. Signing out, or a
 switch to another organization or development team, forgets every connection
 and closes every workbench and write console, so nothing from before stays on
 screen.
+
+**Accounts in the full app.** The shell reads your workspace file once per page
+and keeps it until the page reloads. So after another account signs in without
+a reload, the app shows none of the first account's history, drafts, caption
+choices, editor height, grid layouts, label styles or saved queries, and saves
+none of them, nor anything of the new account's, until the page is reloaded (or
+the first account signs in again). The new account's statements are recorded
+for this session only, and the History panel says so. The saved queries say
+`Signed in as a different account: reload the page to see your saved queries
+and styles.`, and a change to them or to a style is refused with the same
+advice. A write the
+shell itself makes in that time, such as switching to another app or changing
+the theme, still writes the preferences it holds, the first account's history,
+styles and saved queries among them, into the signed-in account's file, so
+reload the page before working as another account.
 
 ## The workbench
 
@@ -265,15 +312,53 @@ result for anyone who would rather not use the canvas.
 ## The sidebar
 
 For the active connection the sidebar lists its **node labels** and
-**relationship types**, each with its properties and the types observed for
-them, and a count where the node has one. A count marked *about* is the
-database's estimate. Selecting a label or type shows and runs a preview of 25
-rows in the workbench. **Refresh** asks the node to read the database again. A
-Refresh pressed while the schema is first being read is sent once that read
-ends; one pressed while the connection is being checked again sends nothing and
-says so.
+**relationship types**, with how many there are of each, and a count per label
+or type where the node has one. A count marked *about* is the database's
+estimate; where counts are missing (Apache AGE before its tables were
+analysed), a line under the list says they are not reported. Each label has a
+colour dot: the colour the label is drawn in on every screen. Colours are kept
+per connection and per account:
 
-The line under the tree says how far the schema can be trusted: how long ago it
+- A label gets one of the six chart colours the first time a schema read lists
+  it, and keeps it, so a label added to the graph later never changes the
+  colour of another. New labels take the free colours in name order, so six
+  labels or fewer never share one. The colours come from the connection's
+  whole schema, not from what one screen happens to draw.
+- When all six are taken, a further label gets a colour of its own from its
+  name. A chart colour is given back only when a new label needs one and a
+  complete schema read (fresh, not cut short) no longer lists the label that
+  had it.
+- The colour you choose for a label comes first. Resetting the styles clears
+  your choices and keeps the given colours, so nothing else moves.
+- Until the stored colours are read (the workspace file in the app, the styles
+  file as a dev tool), the dots are grey rather than a colour that would change
+  a moment later.
+
+A relationship type shows a line in the colour chosen for it, or in the
+relationship colour when none was chosen.
+
+- Select a label or type, or press Enter on it, to show and run a preview of
+  25 rows in the workbench.
+- The arrow before a name, or Right and Left, opens and closes what the schema
+  holds about it: a label's properties with the types observed for them, a
+  type's start and end labels (*seen* in data, or *inferred*) and its
+  properties. **Collapse all** closes every one.
+- Right-click a label or type, use its **…** button, or press Shift+F10 or the
+  Menu key on it for its menu: **Preview 25 in a new tab**, **New query with
+  this label** (or type: the same query, put in a new tab and not run), **Copy
+  name**, and **Copy as pattern**, such as ``(:`Person`)``, quoted the way the
+  connection's engine quotes a name. Apache AGE takes plain names only, so for
+  any other name there is no pattern to copy. A line under the header says
+  what was copied, or, where the window does not allow the clipboard, shows
+  the text to copy by hand.
+- Keys: Tab moves into the labels, then the relationship types; Up and Down
+  move between rows (and through an open row's lines), Home and End jump.
+
+**Refresh schema** asks the node to read the database again. A Refresh pressed
+while the schema is first being read is sent once that read ends; one pressed
+while the connection is being checked again sends nothing and says so.
+
+The lines under the list say how far the schema can be trusted: how long ago it
 was read, that property keys are **sampled** from a few nodes per label (so a
 property can exist that is not listed), that a refresh failed and the last good
 snapshot is shown, or that an older node reports a schema it cannot refresh. An
@@ -316,12 +401,15 @@ and in the RocketRide workspace. There the sidebar lists your graph connections
 and shows the active connection's schema, and each workbench and write console
 opens as its own document. A connection's row shows its state as a dot and,
 when it is not running, in words (**Checking**, **Stopped**, **Unreachable**,
-**No access**, **Needs upgrade**); its tooltip names the pipeline and says why
-it cannot be browsed. Click a row, or press Enter or Space on it, to open its
+**No access**, **Needs upgrade**); its tooltip names the engine and version,
+the pipeline, whether it is **Read-only** or **Writes allowed**, and why it
+cannot be browsed. There are no cards, so the counts and the other chips are in
+the connection's details (see below) instead. Click a row, or press Enter or Space on it, to open its
 workbench. **Refresh** is on the Connections header, and a line under the rows
 says when discovery is running, found nothing, or failed. What a card's drawer
 shows in the full app (engine, version, target, writes, **Test connection**)
-shows inside the connection's own document instead, under its header:
+shows inside the connection's own document instead (the size once the
+sidebar has read the schema), under its header:
 **Details** on the workbench header shows or hides it, and **Test connection**
 where a connection cannot be browsed or its write console is not available
 shows it and tests. Close it with its close button, or Escape inside it. The tool's own page, with no document, only says to
@@ -351,6 +439,28 @@ What is different there:
     history is still loading (usually under a second), is lost if the account
     changes again before the load finishes. It is never added to another
     account's history.
+- Saved queries and label styles (the colours, sizes and badges given to
+  labels and relationship types) are kept in two more files in your user
+  folder on the server, `rocketride.graph.saved.json` and
+  `rocketride.graph.styles.json`, not in the history file, each with one
+  section per account. The sidebar reads and writes them, about a second after
+  a change; documents read and change them through the sidebar, for the
+  account they were opened under only.
+  - The saved-queries file is written only when you save, rename or delete a
+    query. The styles file is also written when the sidebar gives new labels
+    their colours, and only once it has read that file.
+  - Two windows writing the same file at the same time keep the later one's
+    copy, of the saved queries as of the styles. The colours the sidebar gives
+    by itself only ever write the styles file, so they never cost a saved
+    query.
+  - If a file cannot be read, what it holds is kept for the session only, the
+    file is left alone, and the Saved queries panel says so.
+  - After a disconnect or a sign-out, the last changes are written once the
+    same account is back while the sidebar is open; if the sidebar closes
+    first (VS Code closes it on every disconnect), they are lost. After a
+    switch to another account they are dropped, colours the sidebar was about
+    to give the previous account's labels included, and that account never
+    sees them.
 - Editor drafts and caption choices last for the session only.
 - Results grid layouts (sort, column widths) are kept in memory: in
   rocket-ui until the page reloads, in VS Code until the document's panel

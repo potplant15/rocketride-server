@@ -32,21 +32,43 @@ test('nextAssignments never gives a slot past the sixth: further labels stay has
 	assert.deepEqual(Object.values(nextAssignments({}, ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])).sort(), [0, 1, 2, 3, 4, 5]);
 });
 
-test('labelColors with nothing stored is today\'s assignment', () => {
-	const labels = ['Zebra', 'Apple', 'Mango', 'Cherry', 'Banana', 'Fig', 'Grape', 'Date'];
-	assert.deepEqual(labelColors(EMPTY_STYLE, labels), assignLabelColors(labels));
+test('labelColors: the colours come from the style alone, never from which labels a screen passes', () => {
+	const style: IConnectionStyle = { ...EMPTY_STYLE, assigned: { Company: 0, Person: 1 } };
+	const canvas = labelColors(style, ['Person', 'Company', 'Drawn']);
+	const legend = labelColors(style, ['Drawn', 'Person']);
+	assert.equal(slotOf(canvas, 'Person'), 1);
+	assert.equal(slotOf(legend, 'Person'), 1, 'the same slot on every screen');
+	assert.deepEqual(canvas.get('Drawn'), legend.get('Drawn'), 'a label without a slot is hashed the same way everywhere');
+	assert.deepEqual(canvas.get('Drawn'), { label: 'Drawn', fill: hashColor('Drawn'), slot: null });
+	assert.equal(labelColors(EMPTY_STYLE, ['A']).get('A')?.slot, null, 'nothing given: hashed (draw neutral until the style is ready)');
 });
 
-test('labelColors keeps Person\'s slot when Aardvark appears, once the first run is stored', () => {
+test('labelColors keeps Person\'s slot when Aardvark appears', () => {
 	const first = ['Company', 'Person'];
-	const before = labelColors(EMPTY_STYLE, first);
 	const style: IConnectionStyle = { ...EMPTY_STYLE, assigned: nextAssignments({}, first) };
+	const before = labelColors(style, first);
 	const after = labelColors({ ...style, assigned: { ...style.assigned, ...nextAssignments(style.assigned, ['Aardvark', ...first]) } }, ['Aardvark', ...first]);
 	assert.equal(slotOf(after, 'Person'), slotOf(before, 'Person'));
 	assert.equal(slotOf(after, 'Company'), slotOf(before, 'Company'));
 	assert.equal(slotOf(after, 'Aardvark'), 2);
-	// Without the stored assignment, today's rule would have moved them both.
+	// Today's rule (sorted order) would have moved them both.
 	assert.notEqual(slotOf(assignLabelColors(['Aardvark', ...first]), 'Person'), slotOf(before, 'Person'));
+});
+
+test('six labels or fewer always get six distinct chart colours, in any order they arrive', () => {
+	const labels = ['Product', 'Order', 'Person', 'Company', 'Topic', 'Document'];
+	// Every arrival order of the labels, in batches of one, two or all.
+	for (let rotation = 0; rotation < labels.length; rotation += 1) {
+		const order = [...labels.slice(rotation), ...labels.slice(0, rotation)];
+		for (const batch of [1, 2, 6]) {
+			let assigned: Record<string, number> = {};
+			for (let i = 0; i < order.length; i += batch) assigned = { ...assigned, ...nextAssignments(assigned, order.slice(0, i + batch)) };
+			const colors = labelColors({ ...EMPTY_STYLE, assigned }, labels);
+			const slots = labels.map((label) => colors.get(label)?.slot);
+			assert.ok(slots.every((slot) => typeof slot === 'number'), `every label has a chart colour (${order.join(',')}, batch ${batch})`);
+			assert.equal(new Set(slots).size, labels.length, `no two labels share one (${order.join(',')}, batch ${batch})`);
+		}
+	}
 });
 
 test('labelColors: a person\'s slot comes first; a slot out of range is ignored; past six labels hash', () => {
@@ -58,13 +80,16 @@ test('labelColors: a person\'s slot comes first; a slot out of range is ignored;
 	assert.deepEqual(labelColors(full, ['G']).get('G'), { label: 'G', fill: hashColor('G'), slot: null });
 });
 
-test('applyStyleEdit sets and clears one label or type, and reset keeps the first-seen slots', () => {
+test('applyStyleEdit merges field by field, clears what it names, and reset keeps the first-seen slots', () => {
 	const start: IConnectionStyle = { assigned: { Person: 0 }, labels: {}, types: {} };
-	const styled = applyStyleEdit(start, { kind: 'label', label: 'Person', style: { slot: 3, size: 'L' } });
-	assert.deepEqual(styled.labels, { Person: { slot: 3, size: 'L' } });
-	const typed = applyStyleEdit(styled, { kind: 'type', type: 'KNOWS', style: { slot: 1 } });
+	const purple = applyStyleEdit(start, { kind: 'label', label: 'Person', patch: { slot: 4 } });
+	const styled = applyStyleEdit(purple, { kind: 'label', label: 'Person', patch: { size: 'L', caption: 'name' } });
+	assert.deepEqual(styled.labels, { Person: { slot: 4, size: 'L', caption: 'name' } }, 'the second edit keeps the first');
+	assert.deepEqual(applyStyleEdit(styled, { kind: 'label', label: 'Person', clear: ['size'] }).labels, { Person: { slot: 4, caption: 'name' } });
+	const typed = applyStyleEdit(styled, { kind: 'type', type: 'KNOWS', patch: { slot: 1 } });
 	assert.deepEqual(typed.types, { KNOWS: { slot: 1 } });
-	assert.deepEqual(applyStyleEdit(typed, { kind: 'label', label: 'Person', style: null }).labels, {});
+	assert.deepEqual(applyStyleEdit(typed, { kind: 'label', label: 'Person', clear: ['slot', 'size', 'badge', 'caption'] }).labels, {}, 'clearing every field is the default again');
+	assert.deepEqual(applyStyleEdit(typed, { kind: 'type', type: 'KNOWS', clear: ['slot'] }).types, {});
 	const reset = applyStyleEdit(typed, { kind: 'reset' });
 	assert.deepEqual(reset, { assigned: { Person: 0 }, labels: {}, types: {} });
 	assert.equal(applyStyleEdit(reset, { kind: 'reset' }), reset, 'nothing to reset: the same object');
@@ -77,15 +102,15 @@ test('session-only user data: one stable readable per key, edits applied and tol
 	assert.equal(data.privacyNote, 'kept for the session');
 	assert.equal(data.style('k'), data.style('k'));
 	assert.equal(data.saved('k'), data.saved('k'));
-	assert.equal(data.style('k').get(), EMPTY_STYLE);
+	assert.deepEqual(data.style('k').get(), { ready: true, style: EMPTY_STYLE });
 	assert.deepEqual(data.saved('k').get(), { status: 'session', queries: [], note: null });
 
 	let told = 0;
 	const off = data.style('k').subscribe(() => (told += 1));
-	await data.editStyle('k', { kind: 'label', label: 'Person', style: { slot: 2 } });
+	await data.editStyle('k', { kind: 'label', label: 'Person', patch: { slot: 2 } });
 	assert.equal(told, 1);
-	assert.deepEqual(data.style('k').get().labels, { Person: { slot: 2 } });
-	assert.equal(data.style('other').get(), EMPTY_STYLE, 'one connection\'s style is its own');
+	assert.deepEqual(data.style('k').get().style.labels, { Person: { slot: 2 } });
+	assert.equal(data.style('other').get().style, EMPTY_STYLE, 'one connection\'s style is its own');
 	off();
 
 	await data.editSaved('k', { action: 'save', name: 'Who works where', cypher: 'MATCH (p)-[:WORKS_AT]->(c) RETURN p, c' });

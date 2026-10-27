@@ -331,7 +331,10 @@ describe('T11 - no bulk result is retained state, and sizes are guarded', () => 
 		return settle().then(() => {
 			const schemas = schemasSnapshot(store.keys().map((k) => [k, store.get(k)] as const));
 			assert.ok(jsonByteLength(schemas) <= SCHEMAS_STATE_BYTES);
-			assert.ok(Object.keys(schemas).length > 0 && Object.keys(schemas).length < 40, 'cut to the budget, newest first');
+			const named = Object.values(schemas).filter((item) => item.labels.length > 0);
+			assert.ok(named.length > 0 && named.length < 40, 'the label names are cut to the budget, newest first');
+			assert.equal(Object.keys(schemas).length, 40, 'but every connection crosses, so its frames still see each completed load');
+			assert.ok(Object.values(schemas).every((item) => item.labels.length > 0 || item.labelsCut === true));
 		});
 	});
 
@@ -359,8 +362,10 @@ describe('T11 - no bulk result is retained state, and sizes are guarded', () => 
 		const endpoints = map[STATE.endpoints]?.snapshot as { endpoints: unknown[]; omitted: number; truncated?: unknown };
 		assert.ok(endpoints.omitted > 0 && endpoints.omitted + endpoints.endpoints.length === 400, 'the endpoints are cut by the protocol, and counted');
 		assert.equal(endpoints.truncated, undefined, 'never the generic truncated marker: the frames read omitted');
-		const schemas = map[STATE.schemas]?.snapshot as Record<string, unknown>;
-		assert.ok(Object.keys(schemas).length > 0 && Object.keys(schemas).length < 40, 'schemas cut newest first');
+		const schemas = map[STATE.schemas]?.snapshot as Record<string, { labels: unknown[]; labelsCut?: boolean }>;
+		const named = Object.values(schemas).filter((item) => item.labels.length > 0);
+		assert.ok(named.length > 0 && named.length < 40, 'the label names are cut newest first');
+		assert.equal(Object.keys(schemas).length, 40, 'every loaded connection still crosses, without its names (labelsCut)');
 		const published = map[STATE.dataVersions]?.snapshot as Record<string, number>;
 		assert.equal(published[keys[0]], 1, 'the listed connection that had a write keeps its version first');
 		assert.ok(jsonByteLength(published) <= VERSIONS_STATE_BYTES && Object.keys(published).length < 2_001, 'the versions are cut to their own budget');
