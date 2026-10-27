@@ -55,7 +55,7 @@
 import { ExplorerToolError } from 'shared/explorer';
 import type { IPrefsAccessor } from 'shared/explorer';
 import { isPlainObject } from 'shared/explorer/checks';
-import { CHART_COLOR_VARS, nextAssignments } from './colors';
+import { CHART_COLOR_VARS, TYPE_COLOR_SLOTS, nextAssignments } from './colors';
 import type { BadgeMode, IConnectionStyle, ILabelStyle, ISavedQuery, ITypeStyle, LabelSize, SavedEdit, StyleEdit } from './userData';
 
 // =============================================================================
@@ -357,7 +357,18 @@ function readLabelStyle(value: unknown): ILabelStyle | null {
  * @returns The style, or null when it holds nothing this build uses.
  */
 function readTypeStyle(value: unknown): ITypeStyle | null {
-	return isPlainObject(value) && isSlot(value.slot) ? { slot: value.slot } : null;
+	return isPlainObject(value) && isTypeSlot(value.slot) ? { slot: value.slot } : null;
+}
+
+/**
+ * Whether a value is a slot a relationship type may be drawn in: only the colours measured at 3:1 against the canvas
+ * in every shipped theme (graph/colors.ts TYPE_COLOR_SLOTS). A thin line in a colour that fails it would be hard to see.
+ *
+ * @param value - Anything.
+ * @returns True for one of TYPE_COLOR_SLOTS.
+ */
+export function isTypeSlot(value: unknown): value is number {
+	return isSlot(value) && TYPE_COLOR_SLOTS.includes(value);
 }
 
 /**
@@ -440,6 +451,7 @@ export function applyStyleChange(bag: StoredBag, key: string, change: StyleChang
 			break;
 		}
 		case 'type': {
+			if (change.patch?.slot !== undefined && !isTypeSlot(change.patch.slot)) throw refuse('The style was not changed: a relationship type cannot be drawn in that colour (it is too faint against the canvas in some themes).');
 			const types = entry.types as Record<string, unknown>;
 			const next = patched(Object.hasOwn(types, change.type) ? types[change.type] : undefined, change.patch, change.clear);
 			if (next === null) delete types[change.type];
@@ -528,6 +540,67 @@ export function editStyleIn(prefs: IPrefsAccessor, key: string, change: StyleCha
 	const next = applyStyleChange(bag, key, change);
 	if (next === bag) return false;
 	prefs.setPref(STYLES_PREF, next);
+	return true;
+}
+
+// =============================================================================
+// CAPTIONS FROM AN OLDER FORMAT (the full app's `graph.captions`, before 1.3)
+// =============================================================================
+
+/**
+ * One connection's caption choices in the older format (`{ [key]: { [label]: choice } }`), the valid ones only.
+ *
+ * @param raw - What the older key holds.
+ * @param key - The connection's endpoint key.
+ * @returns Label to caption choice (empty when there are none).
+ */
+export function legacyCaptionsIn(raw: unknown, key: string): Record<string, string> {
+	const out: Record<string, string> = {};
+	const own = isPlainObject(raw) && Object.hasOwn(raw, key) && isPlainObject(raw[key]) ? (raw[key] as Record<string, unknown>) : null;
+	if (own) for (const [label, choice] of Object.entries(own)) if (isCaption(choice)) setOwn(out, label, choice);
+	return out;
+}
+
+/**
+ * A style with older caption choices shown for the labels it has no caption for (the style's own always wins).
+ *
+ * @param style - The style.
+ * @param captions - Label to caption choice.
+ * @returns The style as it will be once they are moved in (the same object when none applies).
+ */
+export function withLegacyCaptions(style: IConnectionStyle, captions: Readonly<Record<string, string>>): IConnectionStyle {
+	const missing = Object.entries(captions).filter(([label]) => !(Object.hasOwn(style.labels, label) && style.labels[label].caption !== undefined));
+	if (missing.length === 0) return style;
+	const labels: Record<string, ILabelStyle> = { ...style.labels };
+	for (const [label, caption] of missing) setOwn(labels, label, { ...(Object.hasOwn(labels, label) ? labels[label] : {}), caption });
+	return { ...style, labels };
+}
+
+/**
+ * Move the older caption choices of every connection into the styles (only for labels with no caption yet), then
+ * clear the older key, so it happens once.
+ *
+ * @param prefs - The accessor (both keys).
+ * @param legacyPref - The older key.
+ * @returns True when anything was written.
+ */
+export function moveLegacyCaptions(prefs: IPrefsAccessor, legacyPref: string): boolean {
+	const raw = prefs.getPref(legacyPref);
+	if (raw === undefined) return false;
+	if (isPlainObject(raw)) {
+		for (const key of Object.keys(raw)) {
+			const style = styleIn(prefs, key);
+			for (const [label, caption] of Object.entries(legacyCaptionsIn(raw, key))) {
+				if (Object.hasOwn(style.labels, label) && style.labels[label].caption !== undefined) continue;
+				try {
+					editStyleIn(prefs, key, { kind: 'label', label, patch: { caption } });
+				} catch {
+					// Styles are full: that choice is not moved (the label shows its automatic caption).
+				}
+			}
+		}
+	}
+	prefs.setPref(legacyPref, undefined);
 	return true;
 }
 
@@ -621,7 +694,7 @@ export function checkStyleEdit(value: unknown): StyleEdit {
 			return { kind: 'label', label: value.label, patch: patch as Partial<ILabelStyle>, clear: clear as Array<keyof ILabelStyle> };
 		}
 		case 'type': {
-			const patch = checkedPatch(value.patch, { slot: isSlot });
+			const patch = checkedPatch(value.patch, { slot: isTypeSlot });
 			const clear = checkedClear(value.clear, ['slot']);
 			if (typeof value.type !== 'string' || patch === null || clear === null) return notOurs();
 			return { kind: 'type', type: value.type, patch: patch as Partial<ITypeStyle>, clear: clear as Array<keyof ITypeStyle> };

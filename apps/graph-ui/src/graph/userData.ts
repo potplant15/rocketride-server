@@ -48,9 +48,13 @@
 // label needs one and a complete schema read no longer lists its label. The
 // slots come from the connection's whole schema, never from the labels one
 // screen happens to draw, so every screen agrees. The owning realm shows them
-// at once and writes them (debounced) only to a store it has READ: never while
-// it loads, never to a session-only fallback, never before the full app's
-// preferences are loaded. A reset clears a person's choices and keeps the
+// at once and writes them only to a store it has READ: never while it loads,
+// never to a session-only fallback, never before the full app's preferences
+// are loaded. The controller writes them debounced; the full app only with the
+// person's next change in that page (`holdSlots`), since each page writes its
+// whole preferences partition and an older page must not overwrite by itself.
+// The full app also shows the caption choices 1.2 kept under `graph.captions`
+// and moves them into the styles the same way, once. A reset clears a person's choices and keeps the
 // slots, so colours stay where they are.
 //
 // READY. A style read says whether its store has been read (`ready`): until
@@ -62,7 +66,7 @@
 import type { IPrefsAccessor } from 'shared/explorer';
 import type { IReadable } from '../env';
 import type { ISchemaStore } from './schemaStore';
-import { EMPTY_STYLE, SAVED_QUERIES_PREF, assignmentFor, editSavedIn, editStyleIn, savedQueriesIn, setOwn, styleIn, withAssignment } from './userDataStore';
+import { EMPTY_STYLE, SAVED_QUERIES_PREF, assignmentFor, editSavedIn, editStyleIn, legacyCaptionsIn, moveLegacyCaptions, savedQueriesIn, setOwn, styleIn, withAssignment, withLegacyCaptions } from './userDataStore';
 import type { IAssignment } from './userDataStore';
 
 // =============================================================================
@@ -278,6 +282,14 @@ export interface IStoredUserDataOptions {
 	 * stored): the controller moves its styles revision, so frames read them now, not after the write.
 	 */
 	onShownChange?: () => void;
+	/**
+	 * Save the colour slots (and anything moved from an older format) only together with the next change the person
+	 * makes in this page (`userWrote`), never by themselves. The full app: its page writes its whole preferences
+	 * partition on any write, so merely opening a connection in an older page must not overwrite what another page saved.
+	 */
+	holdSlots?: boolean;
+	/** The full app's older caption key (`graph.captions`): shown at once, moved into the styles once (held like the slots). */
+	legacyCaptionsPref?: string;
 }
 
 /** A user data owned by a realm that holds its bags: the full app, the controller, or memory. */
@@ -297,6 +309,8 @@ export interface IOwnedUserData extends IGraphUserData {
 	want(schemas: readonly IWantedSchema[]): void;
 	/** The account changed (or is gone): forget what was wanted and drop the pending slot write. */
 	forget(): void;
+	/** The person made a change in this page: what is held (`holdSlots`) is saved with it, for the account signed in now. */
+	userWrote(): void;
 	/** Read again: a source's state, or the account, may have changed. */
 	notify(): void;
 	/** Be told about every change, of any connection. */
@@ -379,7 +393,7 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 	let wantedFor: string | null = null;
 	// One view per key, with what it was made from: the same inputs (most hosts hand out the same objects) are not read
 	// again, and equal text gives the same view, so a host that copies values still gives a stable snapshot.
-	const styles = new Map<string, { stored: IConnectionStyle; want: unknown; text: string; view: IStyleView }>();
+	const styles = new Map<string, { stored: IConnectionStyle; want: unknown; legacy: unknown; text: string; view: IStyleView }>();
 	const views = new Map<string, { raw: unknown; view: ISavedQueriesView }>();
 	let cancelWrite: (() => void) | null = null;
 
@@ -388,13 +402,15 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 		if (!('prefs' in read)) return read.status === 'loading' ? STYLE_LOADING : STYLE_NONE;
 		const stored = styleIn(read.prefs, key);
 		const want = wantedFor === sources.owner() ? wanted.get(key) : undefined;
+		const legacy = opts.legacyCaptionsPref ? read.prefs.getPref(opts.legacyCaptionsPref) : undefined;
 		const last = styles.get(key);
-		if (last && last.stored === stored && last.want === want) return last.view;
+		if (last && last.stored === stored && last.want === want && last.legacy === legacy) return last.view;
 		const delta = want ? assignmentFor(stored.assigned, want.labels, want.complete) : null;
-		const style = delta && changes(delta) ? withAssignment(stored, delta) : stored;
+		const assigned = delta && changes(delta) ? withAssignment(stored, delta) : stored;
+		const style = legacy === undefined ? assigned : withLegacyCaptions(assigned, legacyCaptionsIn(legacy, key));
 		const text = JSON.stringify(style);
 		const view = last && last.text === text ? last.view : { ready: true, style };
-		styles.set(key, { stored, want, text, view });
+		styles.set(key, { stored, want, legacy, text, view });
 		return view;
 	};
 	const savedOf = (key: string): ISavedQueriesView => {
@@ -410,22 +426,38 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 
 	// The slots are written only to a styles store that was READ (never while it loads, never to a session-only
 	// fallback: an automatic write must never replace what it has not seen), only when they change something, and only
-	// for the account they were computed for, still the one signed in when the write is due.
-	const writeSlots = (owner: string | null): void => {
+	// for the account they were computed for, still the one signed in when the write is due. Older captions are moved
+	// the same way (the full app), for the account signed in now. Returns whether anything was written.
+	let writing = false;
+	const writeHeld = (owner: string | null): boolean => {
 		cancelWrite = null;
 		const read = sources.styles.read();
-		if (read.status !== 'ready' || owner === null || owner !== wantedFor || owner !== sources.owner()) return;
+		if (writing || read.status !== 'ready' || owner === null || owner !== sources.owner()) return false;
+		// Writing through the page's preferences tells `userWrote` again: once is enough.
+		writing = true;
 		let wrote = false;
-		for (const [key, want] of wanted) {
-			const delta = assignmentFor(styleIn(read.prefs, key).assigned, want.labels, want.complete);
-			if (changes(delta) && editStyleIn(read.prefs, key, { kind: 'assign', ...delta })) wrote = true;
+		try {
+			if (opts.legacyCaptionsPref && moveLegacyCaptions(read.prefs, opts.legacyCaptionsPref)) wrote = true;
+			if (owner === wantedFor) {
+				for (const [key, want] of wanted) {
+					const delta = assignmentFor(styleIn(read.prefs, key).assigned, want.labels, want.complete);
+					if (changes(delta) && editStyleIn(read.prefs, key, { kind: 'assign', ...delta })) wrote = true;
+				}
+			}
+		} finally {
+			writing = false;
 		}
-		if (!wrote) return;
+		return wrote;
+	};
+	const writeSlots = (owner: string | null): void => {
+		if (!writeHeld(owner)) return;
 		notify();
 		sources.styles.changed?.();
 	};
 	const scheduleSlots = (): void => {
 		cancelWrite?.();
+		// Held: saved only with the next change the person makes (userWrote).
+		if (opts.holdSlots) return;
 		const owner = wantedFor;
 		cancelWrite = schedule(() => writeSlots(owner), delay);
 	};
@@ -453,13 +485,16 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 		async editStyle(key, edit, check) {
 			const prefs = await sources.styles.accessor('styleEdit');
 			check?.();
-			if (!editStyleIn(prefs, key, edit)) return;
+			// What is held goes first, so the person's edit is applied over it (a caption cleared stays cleared).
+			const held = opts.holdSlots ? writeHeld(sources.owner()) : false;
+			if (!editStyleIn(prefs, key, edit) && !held) return;
 			notify();
 			sources.styles.changed?.();
 		},
 		async editSaved(key, edit, check) {
 			const prefs = await sources.saved.accessor('savedEdit');
 			check?.();
+			if (opts.holdSlots) writeHeld(sources.owner());
 			editSavedIn(prefs, key, edit, { id: newSavedId(now), at: now() });
 			notify();
 			sources.saved.changed?.();
@@ -484,6 +519,9 @@ export function createStoredUserData(sources: IUserDataSources, opts: IStoredUse
 				opts.onShownChange?.();
 			}
 			if (wanted.size > 0 && sources.styles.read().status === 'ready') scheduleSlots();
+		},
+		userWrote() {
+			if (opts.holdSlots) writeSlots(sources.owner());
 		},
 		forget() {
 			cancelWrite?.();

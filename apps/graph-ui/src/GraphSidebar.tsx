@@ -56,7 +56,7 @@ import { panelStyles } from 'shared/tools/core/chrome/panelStyles';
 import SchemaList from './components/SchemaList';
 import { useActiveConnection, useConnectionStyle, useGraphEndpoints, useGraphEnv } from './env';
 import type { IGraphEnv } from './env';
-import { CHART_COLOR_VARS, labelColors } from './graph/colors';
+import { labelColors, typeColorsOf } from './graph/colors';
 import { connectionRow, sidebarListLine } from './graph/connections';
 import type { IBadge } from './graph/connections';
 import { parseDialect } from './graph/dialect';
@@ -241,11 +241,8 @@ const GraphSidebar: React.FC<IGraphSidebarProps> = ({ devtool = false }) => {
 	// Until the stored style is read, every dot is neutral: never a colour that would change a moment later.
 	const { ready: styleReady, style } = useConnectionStyle(activeKey ?? '');
 	const colors = useMemo(() => (styleReady ? labelColors(style, entry.view.labels.map((label) => label.name)) : new Map()), [styleReady, style, entry.view.labels]);
-	const typeColors = useMemo(() => {
-		const out = new Map<string, string>();
-		for (const [type, chosen] of Object.entries(style.types)) if (chosen.slot !== undefined) out.set(type, `var(${CHART_COLOR_VARS[chosen.slot]})`);
-		return out;
-	}, [style.types]);
+	// Only the type colours the canvas draws (graph/colors.ts TYPE_COLOR_SLOTS), so the two always agree.
+	const typeColors = useMemo(() => typeColorsOf(style), [style]);
 	const dialect = probe?.ok ? parseDialect(probe.info)?.dialect ?? null : null;
 
 	// Read the schema once when a connection becomes active and has answered its probe.

@@ -125,11 +125,25 @@ the first account signs in again). The new account's statements are recorded
 for this session only, and the History panel says so. The saved queries say
 `Signed in as a different account: reload the page to see your saved queries
 and styles.`, and a change to them or to a style is refused with the same
-advice. A write the
-shell itself makes in that time, such as switching to another app or changing
-the theme, still writes the preferences it holds, the first account's history,
-styles and saved queries among them, into the signed-in account's file, so
-reload the page before working as another account.
+advice. A write the shell itself makes in that time, such as switching to
+another app or changing the theme, still writes the preferences it holds, the
+first account's history, styles and saved queries among them, into the
+signed-in account's file, so reload the page before working as another account.
+
+**One page at a time.** Each page of the app holds the workspace file as it was
+when the page loaded, and any change it saves (a keystroke in a draft, a run, a
+style, a saved query) writes all of it back. So with two pages of the same
+account open, a change saved in the older page overwrites what the newer one
+saved, saved queries included: change things in one page at a time; the last
+page to save wins. The colours the app gives new labels are not saved by
+themselves (opening a connection writes nothing): they are shown at once and
+saved with the next change you make in that page.
+
+**Captions from 1.2.** The caption choices the app kept before 1.3
+(`graph.captions`) are shown as the labels' captions at once, and moved into
+the styles with the next change you make, once, for labels that have no caption
+in their style yet; the old key is then removed. Nothing is moved for another
+account signed in without a reload.
 
 ## The workbench
 
@@ -541,7 +555,9 @@ per connection and per account:
   a moment later.
 
 A relationship type shows a line in the colour chosen for it, or in the
-relationship colour when none was chosen.
+relationship colour when none was chosen. Only the four colours the canvas
+draws types in are shown or kept (a colour that is too faint against the canvas
+in some themes, as an older file may hold, is not).
 
 - Select a label or type, or press Enter on it, to show and run a preview of
   25 rows in the workbench.
