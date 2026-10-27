@@ -44,7 +44,10 @@
 //   - the graph can fill the whole document (an in-document full screen, not the
 //     browser's Fullscreen API, which VS Code panels and dev-tool frames may not
 //     allow): its area is positioned over the document, nothing remounts, and
-//     Escape (that nothing inside used) or the graph's own button leaves it;
+//     Escape (that nothing inside used) or the graph's own button leaves it. The
+//     host hides everything it covers (`onFullScreen`: visibility hidden on the
+//     document, visible on the graph), so the keyboard and screen readers cannot
+//     reach what is not on screen, and the hidden editor runs nothing;
 //   - only the shown tab draws its results: a hidden tab keeps its runs, result
 //     and graph session, and draws the canvas or the grid again when shown.
 //
@@ -160,6 +163,8 @@ export interface IRunSurfaceProps {
 	barHost?: HTMLElement | null;
 	/** The host's gate: one request at a time (across the workbench's tabs, or the write console's). */
 	gate?: IRequestGate;
+	/** Told when the graph starts or stops filling the document, so the host can hide what it covers. */
+	onFullScreen?(on: boolean): void;
 }
 
 /** The space the divider and the paddings take from the surface; the editor and the results share the rest. */
@@ -178,8 +183,9 @@ const styles = {
 	resultsRow: { flex: 1, minHeight: 0, display: 'flex' } as CSSProperties,
 	results: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '2px 24px 6px' } as CSSProperties,
 	body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', outline: 'none' } as CSSProperties,
-	// Full screen: the graph's area covers the whole document (the host document root is the positioned ancestor).
-	maximized: { position: 'absolute', inset: 0, zIndex: 20, display: 'flex', flexDirection: 'column', background: 'var(--rr-bg-default)', outline: 'none' } as CSSProperties,
+	// Full screen: the graph's area covers the whole document (the host document root is the positioned ancestor). The
+	// host hides the document meanwhile (onFullScreen); this area alone is visible again.
+	maximized: { position: 'absolute', inset: 0, zIndex: 20, display: 'flex', flexDirection: 'column', background: 'var(--rr-bg-default)', outline: 'none', visibility: 'visible' } as CSSProperties,
 	fill: { flex: 1, minHeight: 0 } as CSSProperties,
 	footer: { display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 4 } as CSSProperties,
 	notes: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } as CSSProperties,
@@ -290,7 +296,7 @@ const NotesLine: React.FC<{ notes: readonly IResultNote[] }> = ({ notes }) => {
  * @param props - See {@link IRunSurfaceProps}.
  * @returns The surface.
  */
-export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused = null, loadSlot, loadSeq, tabId = 'main', draftKey: draftKeyProp, defaultText, active = true, onTextChange, onOpenHistory, historyOpen, onOpenSaved, savedOpen, onAsk, askOpen, onNewQuery, barHost, gate }) => {
+export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused = null, loadSlot, loadSeq, tabId = 'main', draftKey: draftKeyProp, defaultText, active = true, onTextChange, onOpenHistory, historyOpen, onOpenSaved, savedOpen, onAsk, askOpen, onNewQuery, barHost, gate, onFullScreen }) => {
 	const env = useGraphEnv();
 	const prefs = env.prefs;
 	const { probes } = useGraphEndpoints();
@@ -564,7 +570,10 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	// Run reads the buffer, the selection and the caret from the LIVE editor in one call. The `text` state is a copy that
 	// lags a render behind fast typing; a caret taken from the editor against that copy points past its end and the run
 	// would send a truncated statement.
+	// While the graph fills the document the editor is hidden: a run key that still reaches it sends nothing.
+	const fullScreenNow = useRef(false);
 	const run = useCallback((all: boolean) => {
+		if (fullScreenNow.current) return;
 		const handle = editor.current;
 		const targets = handle ? targetsFromEditor(handle, all) : targetsFromEditor({ snapshot: () => ({ text: latestText.current, start: 0, end: 0, caret: latestText.current.length }) }, all);
 		lastBatch.current = all ? 'all' : 'editor';
@@ -641,16 +650,25 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	useEffect(() => {
 		if (maximizeWanted && !maximized) setMaximizeWanted(false);
 	}, [maximizeWanted, maximized]);
+	fullScreenNow.current = maximized;
 	const bodyRef = useRef<HTMLDivElement | null>(null);
 	const wasMaximized = useRef(false);
+	const fullScreenListener = useRef(onFullScreen);
+	fullScreenListener.current = onFullScreen;
 	useEffect(() => {
 		if (maximized === wasMaximized.current) return;
 		wasMaximized.current = maximized;
+		// The host hides what the graph covers, and shows it again on the way out.
+		fullScreenListener.current?.(maximized);
 		announce(maximized ? FULL_SCREEN_TEXT : 'Left full screen.');
 		// The Exit button goes away with full screen: keep the focus in the results rather than lose it to the page.
 		const focused = document.activeElement;
 		if (!maximized && (focused === null || focused === document.body)) bodyRef.current?.focus();
 	}, [maximized, announce]);
+	// A surface that goes while it fills the document (its tab closed) gives the document back.
+	useEffect(() => () => {
+		if (wasMaximized.current) fullScreenListener.current?.(false);
+	}, []);
 	const toggleMaximized = useCallback(() => setMaximizeWanted((value) => !value), []);
 
 	// ── Row inspector (Table) ────────────────────────────────────────────────

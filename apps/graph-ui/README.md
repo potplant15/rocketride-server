@@ -181,11 +181,13 @@ edited that tab's text, Explore opens a new one and runs the sample there.
   connection; the text of the other tabs lasts until the tab or the document is
   closed. Tabs are not restored when the document opens again.
 - **One request at a time.** A workbench sends one request at a time across
-  all its tabs: statements and the graph's actions alike. A statement you
+  all its tabs: statements, the graph's actions and Ask alike. A request you
   stopped waiting for counts until the database finishes it, because it still
   holds a connection there (Apache AGE's node has four). Meanwhile **Run** waits
   and says so, and anything asked for is not sent and says why; a statement
-  that was not sent is not recorded in History.
+  that was not sent is not recorded in History. **Refresh schema** is not
+  counted: it reads the connection's schema for every document at once, not
+  for one workbench.
 - **Room for the results.** The divider under the editor sets its height: drag
   it, or reach it with Tab and use ArrowUp and ArrowDown (24 px at a time) or
   Home to hide the editor; a double click hides it too, and so does **Hide
@@ -195,8 +197,11 @@ edited that tab's text, Explore opens a new one and runs the sample there.
   results change size when you let go. The height is kept in your preferences
   (`graph.editorHeight`).
 - **Full screen.** The graph's **Full screen** button fills the document with
-  the graph: the header, the tabs, the editor and the run bar are covered, and
-  the inspector stays. It is not the browser's full screen, so it works the same
+  the graph, and the inspector stays. Everything else in the document (the
+  header, the tabs, the run bar, Ask, the editor and its divider, an open
+  History or Saved panel) is hidden while it lasts, from the keyboard and
+  screen readers too, and a run key that reaches the hidden editor sends
+  nothing. It is not the browser's full screen, so it works the same
   in VS Code and in the RocketRide workspace. **Exit full screen** leaves it, and
   so does Escape when nothing inside the graph used it; a new result that opens
   as a table, or another tab, leaves it too.

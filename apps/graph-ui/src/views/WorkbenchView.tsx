@@ -33,21 +33,25 @@
 // The document opens on Overview (drawn from the schema already loaded, no
 // request of its own) beside Query 1. Nothing runs by itself: Explore runs its
 // sample on a click. Each query tab (graph/queryTabs.ts) owns a run surface with
-// its own editor, runs, graph and load slot; hidden tabs stay mounted, so a tab
-// keeps its graph. Text that arrives from elsewhere opens its own tab, so no
-// draft is replaced: a sidebar preview (run), an Ask draft (not run), History's
-// Run again (run) and Open in new tab, a saved query or a template, and the
-// graph's "New query from here". Only History's "Load into editor" and Saved's
-// "Insert" go into an existing tab (the query tab shown last), as an edit the
-// editor can undo. Query 1 keeps the persisted draft the one editor had before
-// tabs; the other tabs last for the session, and closing one whose text was
-// edited asks first. At most MAX_QUERY_TABS: past that, a sentence says to close
-// one, and nothing is dropped.
+// its own editor, runs, graph session and load slot. A hidden tab keeps its
+// surface mounted (its runs, result, session and how its graph is shown) but
+// draws no canvas or grid, so a tab shown again lays its graph out again: moved
+// nodes go back to computed places. Text that arrives from elsewhere opens its
+// own tab, so no draft is replaced: a sidebar preview (run), an Ask draft (not
+// run), History's Run again (run) and Open in new tab, a saved query or a
+// template, and the graph's "New query from here". Only History's "Load into
+// editor" and Saved's "Insert" go into an existing tab (the query tab shown
+// last), as an edit the editor can undo. Query 1 keeps the persisted draft the
+// one editor had before tabs; the other tabs last for the session, and closing
+// one whose text was edited asks first. At most MAX_QUERY_TABS: past that, a
+// sentence says to close one, and nothing is dropped.
 //
 // One row holds the tabs and the shown tab's run bar (each surface portals its
 // bar into it), or Overview's actions: the graph gets the height a second row
-// would take. Every read of every tab goes through one request gate
-// (graph/requestGate.ts), so the workbench sends one request at a time.
+// would take. Every read of every tab, and Ask, goes through one request gate
+// (graph/requestGate.ts), so the workbench sends one request at a time (Refresh
+// schema is the connection's, for every document, and is not counted). While a
+// tab's graph fills the document, the document hides what it covers.
 //
 // A sidebar click is a preview REQUEST (graph/previews.ts): this workbench takes
 // it by its nonce, once, whenever it mounts, so the click that summoned a cold
@@ -181,6 +185,8 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const [barHost, setBarHost] = useState<HTMLElement | null>(null);
 	// One request at a time across the tabs (graph/requestGate.ts).
 	const [requests] = useState(createRequestGate);
+	// True while a tab's graph fills the document: everything it covers is hidden (RunSurface onFullScreen).
+	const [fullScreen, setFullScreen] = useState(false);
 	// Why the last tab was not opened (the limit), until a tab opens or closes.
 	const [tabsNotice, setTabsNotice] = useState<string | null>(null);
 	// The banner on each tab Ask opened (its line, and what the text check found), until it is dismissed.
@@ -329,7 +335,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const failed = endpoint.state === 'unreachable' || endpoint.state === 'inaccessible';
 
 	return (
-		<div style={shared.documentRoot}>
+		<div style={fullScreen ? shared.documentRootCovered : shared.documentRoot}>
 			<ContentHeader
 				title={view.title}
 				subtitle={subtitle}
@@ -398,6 +404,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 							focusSeq={askFocus}
 							onAsked={() => { askFrom.current = tabsNow.current.lastQuery; }}
 							onDraft={onDraft}
+							gate={requests}
 							onClose={() => {
 								setAskOpen(false);
 								// The focus was in the bar: give it to the Ask button that showed it, in the tab row.
@@ -467,6 +474,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 												onNewQuery={openNewQuery}
 												barHost={barHost}
 												gate={requests}
+												onFullScreen={setFullScreen}
 											/>
 										</div>
 									</div>
