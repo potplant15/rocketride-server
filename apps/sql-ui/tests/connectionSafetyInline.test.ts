@@ -233,7 +233,7 @@ describe('the Query page offers the level in place', () => {
 
 	it('the README says where the level can be changed, and that lowering it asks', () => {
 		const prose = read('README.md').replace(/\s+/g, ' ');
-		assert.match(prose, /The line under the editor names the level and changes it in place: only the level is sent, so a direct connection's password is neither re-typed nor sent again\. Lowering the level asks first\./);
+		assert.match(prose, /The line under the editor names the level and changes it in place: only the level is sent, so a direct connection's password is neither re-typed nor sent again\. Lowering the level asks first, from the Query page or the connection editor\./);
 	});
 });
 

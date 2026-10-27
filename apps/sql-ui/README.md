@@ -52,7 +52,9 @@ The sidebar carries your connection list. Each saved connection is a row;
 hovering one offers edit and delete, **+ New Connection** opens the add
 dialog, and clicking a row opens that database's workbench. The list is
 saved per user on the server you are connected to, so the same connections
-appear in the shell, in the App Builder preview and in VS Code.
+appear in the shell, in the App Builder preview and in VS Code. Change
+connections in one window at a time: each window writes the whole list it
+holds, so the last to save wins, an older safety level included.
 
 <p align="center">
   <img src="./assets/new-connection.png" alt="Adding a connection" width="700">
@@ -146,8 +148,9 @@ slow on deep pages, because the pager can jump to any page.
 **Search and filters.** The search box looks in the text columns and ignores
 case; **contains** and **starts with** ignore case too; **equals** and **not
 equals** compare exactly, as the database does (on PostgreSQL `NOTE 2` does
-not match `note 2`; MySQL's usual collations ignore case). A `%`, `_` or `\`
-you type matches itself. **+ Filter** adds a chip
+not match `note 2`; MySQL's usual collations ignore case). Until the app
+knows the database, text matches follow the database's own `LIKE`. A `%`,
+`_` or `\` you type matches itself. **+ Filter** adds a chip
 above the grid: a column, an operator (equals, not equals, contains, starts
 with, `>`, `<`, `≥`, `≤`, is null, is not null) and a value. What you type is
 never pasted into the statement. On a number or yes/no column the value is
@@ -277,10 +280,11 @@ and the page and its row count are read again.
 Rows cannot be changed in a table without a primary key, on ClickHouse (no
 unique row keys, and its updates run as background mutations), on a
 connection that cannot run statements, in a table whose primary key is a
-binary column (`binary`, `varbinary`, the blob types, `bytea`, `bit`,
-`varbit`, or `VARCHAR(n) BINARY`), or while the connection (in the dev
-tool, the sidebar) cannot be reached. The buttons are off, and the drawer
-says why. A key beyond ±9,007,199,254,740,991 that the browser received as a
+binary column (`binary`, `varbinary`, the blob types, `bytea`, `bit` or
+`varbit`), or while the connection (in the dev tool, the sidebar) cannot be
+reached. The buttons are off, and the drawer says why. A MySQL
+`VARCHAR(n) BINARY` key is not one of these: the database reports it as text
+with a `_bin` collation, so it stays editable. A key beyond ±9,007,199,254,740,991 that the browser received as a
 number may already have been rounded, so that row cannot be changed here.
 
 ### Structure and Design
@@ -478,8 +482,8 @@ The level is stored on the saved connection, so it is the same in the app and
 as a dev tool. A connection saved before levels existed reads as **Ask before
 risky writes**. The line under the editor names the level and changes it in
 place: only the level is sent, so a direct connection's password is neither
-re-typed nor sent again. Lowering the level asks first. The dialog has no
-answer that turns asking off;
+re-typed nor sent again. Lowering the level asks first, from the Query page
+or the connection editor. The dialog has no answer that turns asking off;
 change the level there or in the connection editor instead.
 
 The dialog says what the statement does, quotes it, and says how it runs
@@ -684,7 +688,8 @@ there, with these differences:
   is signed in, a document says it is waiting for sign-in.
 - **Grid layouts are kept for the session.** A grid's sort, page size and the
   widths of fixed-size columns are kept in memory (a column that stretches to
-  fit is not kept at a width): in rocket-ui until the page reloads, in VS Code
+  fit is not kept at a width, and neither is a width under 60 px): in
+  rocket-ui until the page reloads, in VS Code
   until the document's panel closes. The full app keeps them in its workspace
   preferences.
 - **Account changes close documents.** A document opened under one account
