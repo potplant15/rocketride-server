@@ -478,20 +478,31 @@ one of its labels or any property value, ignoring case. Matching captions come
 first. The canvas dims the other nodes; Enter selects the current match and
 centres it, Down and Up step to the next and previous.
 
-**Layout and Export.** Layout offers Force, Tree (top down) and Left to right,
-Re-run layout, and whether nodes you dragged stay pinned. Export offers PNG and
-SVG images and the drawn graph as JSON. Where the host cannot download files
-(VS Code), it offers Copy SVG and Copy as JSON instead and says why PNG is not
-there. A PNG that would be too large to make says so and points at the SVG. Fit and Full screen sit beside them; the canvas does not refit when the inspector opens or the window resizes, only on Fit, a new layout and full screen.
+**View and Export.** The toolbar keeps the node actions, search, **Fit**, **View**
+and **Export** on one row. **View** holds Layout (Force, Tree (top down), Left to
+right), Re-run layout, whether nodes you dragged stay pinned, the legend, the
+keyboard shortcuts and Full screen (while full screen is on, **Exit full screen**
+is also a button on the toolbar). Export offers PNG and SVG images and the drawn
+graph as JSON, and waits until the canvas has loaded. Where the host cannot
+download files (VS Code), it offers Copy SVG and Copy as JSON instead and says why
+PNG is not there; if the clipboard refuses, the text is left on screen to copy by
+hand. When no PNG can be made it says why: too large (save the SVG), still
+loading, or the image could not be made. The canvas does not refit when the
+inspector opens or the window resizes, only on Fit, a new layout and full screen.
+Layout, pinning and the legend are kept by the host per tab where it asks for that,
+and by the view otherwise (they then reset when the view is remounted).
 
 **Status line.** One line under the graph replaces the notices that floated over
-it. It is one fixed line high (long text is cut with an ellipsis, so a notice never resizes the canvas) and holds at most one item of each kind: out of date, the session's notice,
-what is running, the canvas budget, the layout, a path pick, a shown path and the
-selection. A long text shows its first sentence and the rest behind **Details**, which opens over the canvas.
+it. It is one fixed line high, so a notice never resizes the canvas. It holds at most
+one item of each kind (out of date, the session's notice, what is running, the
+canvas budget, the layout, a path pick, a shown path and the selection); the most
+important sits on the line and the others are behind **N more**. A long text shows
+its first sentence and the rest behind **Details**. Both open one panel over the
+canvas, never two.
 An out of date drawing says so once, offers **Rerun**, and keeps the full
 explanation in its Details. The result line (rows, time) is on the right.
 
-**Legend and styles.** The legend sits in the column to the right of the canvas, with the inspector, so it costs the canvas no height; the **Legend** button hides it. It lists the labels and relationship types that
+**Legend and styles.** The legend is closed by default and opens from **View** in the column to the right of the canvas, with the inspector, so it takes width and no canvas height. Labels are still coloured on the canvas, and in the sidebar, without it. It lists the labels and relationship types that
 are drawn, with how many of each (drawn, not in the database). Clicking a label
 selects its drawn nodes. **Style** opens an editor under the legend: a label
 takes one of the six measured chart colours (or its automatic one), a size (S,
@@ -504,14 +515,16 @@ another label's colour, and up to six labels never share a colour unless you
 choose it (the editor says when two labels end up with the same one). Styles, captions included, are saved through the connection's user data; the legend
 says where on this mount once the mount knows (the sentence comes from the mount,
 not from this page). Until a connection's style has been read, labels are drawn in
-one neutral grey rather than in colours that would change a moment later.
+one light neutral grey (lighter than an unlabelled node), at the default size and
+with initials, rather than in colours that would change a moment later; relationship
+types are drawn in the ordinary line colour.
 
 **Badges.** The letters inside a node are the shortest start of its label that no
 other label of the connection shares: Person and Product show "Pe" and "Pr",
 Topic shows "T". Adding a label that starts the same way lengthens both badges;
 colours do not move.
 
-**Keys.** The **Keys** button, or `?`, opens the shortcuts as another inline
+**Keys.** **View**, Keyboard shortcuts, or `?`, opens the shortcuts as another inline
 column. Like the inspector it is not a dialog: Escape or Close ends it while
 focus is inside.
 

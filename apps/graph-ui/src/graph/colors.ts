@@ -191,6 +191,9 @@ export function labelColors(style: IConnectionStyle, labels: Iterable<string>): 
 	return out;
 }
 
+/** The fill of a label whose style has not been read: lighter than the grey of an unlabelled node, so the two are told apart. */
+export const NEUTRAL_LOADING_FILL = 'var(--rr-grey-200)';
+
 /**
  * The colour of every label while the connection's style has not been read yet: one neutral grey, so nothing is drawn in
  * a colour that would change a moment later.
@@ -200,7 +203,7 @@ export function labelColors(style: IConnectionStyle, labels: Iterable<string>): 
  */
 export function neutralColors(labels: Iterable<string>): Map<string, ILabelColor> {
 	const out = new Map<string, ILabelColor>();
-	for (const label of labels) if (label !== '') out.set(label, { label, fill: 'var(--rr-grey-400)', slot: null });
+	for (const label of labels) if (label !== '') out.set(label, { label, fill: NEUTRAL_LOADING_FILL, slot: null });
 	return out;
 }
 
