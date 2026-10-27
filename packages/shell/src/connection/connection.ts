@@ -559,13 +559,18 @@ export class ConnectionManager implements IConnectionManager {
 	private telemetry = ConnectionManager.newTelemetryChannel();
 	/** Ids of the facts delivered live (the channel numbers the held ones). */
 	private telemetrySeq = 0;
+	/** Counts the drops of held facts (dropHeldTelemetry), so a fact raised before a drop is never held after it. */
+	private telemetryDrops = 0;
+	/** Facts on their way to a listener (see reportTelemetry); a later fact queues behind them, so the hold keeps their order. */
+	private telemetryInFlight = 0;
 
 	/**
 	 * Record a product-telemetry fact the shell observed and broadcast it as
 	 * `shell:telemetry`. The shell carries no analytics SDK: the active app
 	 * forwards these to its own transport. Facts raised before any app subscribed
 	 * (the OAuth callback resolves identity before the home remote mounts) wait
-	 * in a bounded buffer until `drainTelemetry()` hands them over. Never throws.
+	 * in a bounded buffer until `drainTelemetry()` hands them over; so does a fact
+	 * whose last listener left before its dispatch. Never throws.
 	 *
 	 * @param event - Event name from the app's telemetry contract (e.g. 'auth:start').
 	 * @param props - Flat properties; the forwarding app adds its own super properties.
@@ -573,11 +578,39 @@ export class ConnectionManager implements IConnectionManager {
 	public reportTelemetry(event: string, props: Record<string, unknown>): void {
 		try {
 			const ts = Date.now();
-			// A delivered fact is not held: the listener forwards it at once and a later drain
-			// must not replay it. With nobody listening the fact waits in the channel (in a tab, mirrored
-			// to sessionStorage, so it survives a page load that never mounts the forwarding app).
-			if ((this.listeners.get('shell:telemetry')?.size ?? 0) > 0) this.emit('shell:telemetry', { event, props: { ...(props ?? {}) }, ts, id: `${ts.toString(36)}-l${(this.telemetrySeq++).toString(36)}` });
-			else this.telemetry.report(event, props, ts);
+			// With nobody listening the fact waits in the channel (in a tab, mirrored to sessionStorage,
+			// so it survives a page load that never mounts the forwarding app). While an earlier fact is
+			// still on its way (it may yet be held), this one queues behind it instead, so the order holds.
+			if (this.telemetryInFlight === 0 && (this.listeners.get('shell:telemetry')?.size ?? 0) === 0) {
+				this.telemetry.report(event, props, ts);
+				return;
+			}
+			// A delivered fact is not held: the listener forwards it at once and a later drain must not
+			// replay it. Dispatched like emit(), on a microtask, but to the listeners subscribed then: if
+			// the last one left in between (an app switch or unmount in the same tick), the fact is held
+			// instead of lost, unless the held facts were dropped meanwhile (a sign-out, a rejected credential).
+			const fact: TelemetryFact = { event, props: { ...(props ?? {}) }, ts, id: `${ts.toString(36)}-l${(this.telemetrySeq++).toString(36)}` };
+			const drops = this.telemetryDrops;
+			this.logDebug('shell:telemetry', fact);
+			this.telemetryInFlight++;
+			void Promise.resolve().then(() => {
+				try {
+					const live = this.listeners.get('shell:telemetry');
+					if (!live || live.size === 0) {
+						if (drops === this.telemetryDrops) this.telemetry.report(event, fact.props, ts);
+						return;
+					}
+					for (const fn of live) {
+						try {
+							fn(fact);
+						} catch (err) {
+							console.error("[ConnectionManager] Handler for 'shell:telemetry' threw:", err);
+						}
+					}
+				} catch { /* telemetry must never break the shell */ } finally {
+					this.telemetryInFlight--;
+				}
+			});
 		} catch { /* telemetry must never break the shell */ }
 	}
 
@@ -1386,6 +1419,7 @@ export class ConnectionManager implements IConnectionManager {
 	 * stamp (an embedded dev preview holds neither there; see newTelemetryChannel). Never throws.
 	 */
 	private dropHeldTelemetry(): void {
+		this.telemetryDrops++;
 		try { this.telemetry?.clear(); } catch { /* telemetry must never break the shell */ }
 		if (!isEmbeddedDevShell()) {
 			try { sessionStorage.removeItem(SS_AUTH_START_TS); } catch { /* storage unavailable */ }

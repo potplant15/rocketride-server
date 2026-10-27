@@ -37,7 +37,7 @@ import { ApiKeyAuthProvider } from '../auth/ApiKeyAuthProvider';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { CONNECT_TIMEOUT_MS, LS_TOKEN } from '../constants';
 import { resetDevGateForTests } from '../util/devGate';
-import { TelemetryChannel, TELEMETRY_STORAGE_KEY } from '../util/telemetryChannel';
+import { TelemetryChannel, TELEMETRY_STORAGE_KEY, type TelemetryFact } from '../util/telemetryChannel';
 
 type EmittedEvent = { event: string; payload: unknown };
 
@@ -126,8 +126,8 @@ function createTestManager(lastFailure?: ConnectionStatus['lastFailure']) {
 	manager.getPendingAppId = () => '';
 	manager.pendingEvents = new Map();
 	manager.connectionGeneration = 0;
-	// Object.create skips field initialisers: give the manager the telemetry channel its class field holds.
-	(manager as unknown as { telemetry: TelemetryChannel }).telemetry = new TelemetryChannel({ storage: null });
+	// Object.create skips field initialisers: give the manager the telemetry and debug-log fields its class holds.
+	Object.assign(manager, { telemetry: new TelemetryChannel({ storage: null }), telemetrySeq: 0, telemetryDrops: 0, telemetryInFlight: 0, debugLog: [], wildcardListeners: new Set() });
 	return { manager, emitted, savedTokens };
 }
 
@@ -456,32 +456,106 @@ type TelemetryInternals = {
 	startOAuth(register?: boolean, context?: { appId?: string; auto?: boolean }): Promise<void>;
 };
 
+/** The telemetry internals plus the shell's own event bus subscription. */
+type TelemetryBus = TelemetryInternals & {
+	on(event: 'shell:telemetry', handler: (fact: TelemetryFact) => void): () => void;
+	getDebugLog(): Array<{ event: string; payload: unknown }>;
+};
+
 /** The channel a real ConnectionManager creates for the staged environment. */
 const newTelemetryChannel = (): TelemetryChannel =>
 	(ConnectionManager as unknown as { newTelemetryChannel(): TelemetryChannel }).newTelemetryChannel();
 
-test('reportTelemetry delivers a fact live to a shell:telemetry listener and holds it when nobody listens', () => {
-	const { manager, emitted } = createTestManager();
-	const internals = manager as unknown as TelemetryInternals;
-	internals.listeners = new Map([['shell:telemetry', new Set<unknown>([() => {}])]]);
+test('reportTelemetry delivers a fact live to a shell:telemetry listener and holds it when nobody listens', async () => {
+	const { manager } = createTestManager();
+	const internals = manager as unknown as TelemetryBus;
+	delete (manager as { emit?: unknown }).emit; // the shell's own event bus, so the test holds however reportTelemetry dispatches
+	internals.listeners = new Map();
+	const received: TelemetryFact[] = [];
+	internals.on('shell:telemetry', (fact) => received.push(fact));
 	internals.reportTelemetry('auth:start', { register: true });
-	const live = emitted.filter((e) => e.event === 'shell:telemetry');
-	assert.equal(live.length, 1, 'delivered once, live');
-	const fact = live[0].payload as { event: string; props: Record<string, unknown>; ts: number; id: string };
+	await Promise.resolve(); // delivered on a microtask, like every shell event
+	assert.equal(received.length, 1, 'delivered once, live');
+	const fact = received[0];
 	assert.equal(fact.event, 'auth:start');
 	assert.deepEqual(fact.props, { register: true });
 	assert.ok(fact.ts > 0 && fact.id.length > 0, 'carries its time and a once-per-fact id');
+	assert.ok(
+		internals.getDebugLog().some((e) => e.event === 'shell:telemetry' && (e.payload as TelemetryFact).id === fact.id),
+		'the live fact is in the debug log, like every shell event',
+	);
 	assert.deepEqual(internals.drainTelemetry(), [], 'a delivered fact is not held for a later drain');
 
 	internals.listeners = new Map();
 	internals.reportTelemetry('auth:complete', { is_new: null, waitlisted: false, source: 'shell' });
-	assert.equal(emitted.filter((e) => e.event === 'shell:telemetry').length, 1, 'nobody listens: nothing more is emitted');
+	await Promise.resolve();
+	assert.equal(received.length, 1, 'nobody listens: nothing more is delivered');
 	assert.deepEqual(
 		internals.drainTelemetry().map((f) => [f.event, f.props]),
 		[['auth:complete', { is_new: null, waitlisted: false, source: 'shell' }]],
 		'held, then handed over',
 	);
 	assert.deepEqual(internals.drainTelemetry(), [], 'a drain hands each fact over only once');
+});
+
+test('a fact whose listener leaves before the dispatch is held for the next drain, unless the held facts are dropped first', async () => {
+	const { manager } = createTestManager();
+	const internals = manager as unknown as TelemetryBus;
+	delete (manager as { emit?: unknown }).emit; // the shell's own event bus, so the test holds however reportTelemetry dispatches
+	internals.listeners = new Map();
+	const received: TelemetryFact[] = [];
+
+	const leave = internals.on('shell:telemetry', (fact) => received.push(fact));
+	internals.reportTelemetry('auth:complete', { is_new: true, waitlisted: false, source: 'shell' });
+	leave(); // the forwarding app unmounts in the same tick (an app switch)
+	await Promise.resolve();
+	assert.equal(received.length, 0, 'nobody was listening by the dispatch');
+	assert.deepEqual(
+		internals.drainTelemetry().map((f) => [f.event, f.props]),
+		[['auth:complete', { is_new: true, waitlisted: false, source: 'shell' }]],
+		'held for the next drain, not lost',
+	);
+
+	const leaveAgain = internals.on('shell:telemetry', (fact) => received.push(fact));
+	internals.reportTelemetry('auth:start', { register: false, auto: false });
+	leaveAgain();
+	internals.dropRejectedCredential(); // a rejected credential (or a sign-out) in the same tick
+	await Promise.resolve();
+	assert.equal(received.length, 0, 'still nobody listening');
+	assert.deepEqual(internals.drainTelemetry(), [], 'a fact raised before a drop is not held after it');
+});
+
+test('facts on their way to a listener keep their order and are delivered or held exactly once', async () => {
+	const { manager } = createTestManager();
+	const internals = manager as unknown as TelemetryBus;
+	delete (manager as { emit?: unknown }).emit; // the shell's own event bus, so the test holds however reportTelemetry dispatches
+	internals.listeners = new Map();
+	const received: TelemetryFact[] = [];
+
+	// the listener leaves, then a second fact is raised in the same tick: both are held, in the order raised
+	const leave = internals.on('shell:telemetry', (fact) => received.push(fact));
+	internals.reportTelemetry('auth:start', { register: false, auto: false });
+	leave();
+	internals.reportTelemetry('auth:complete', { is_new: false, waitlisted: false, source: 'shell' });
+	await Promise.resolve();
+	assert.equal(received.length, 0, 'nobody was listening by the dispatch');
+	assert.deepEqual(internals.drainTelemetry().map((f) => f.event), ['auth:start', 'auth:complete'], 'held in the order raised');
+
+	// a remount in the same tick (StrictMode cleanup and mount): the new listener receives the fact, nothing is held
+	const first = internals.on('shell:telemetry', (fact) => received.push(fact));
+	internals.reportTelemetry('auth:start', { register: true, auto: false });
+	first();
+	internals.on('shell:telemetry', (fact) => received.push(fact));
+	await Promise.resolve();
+	assert.deepEqual(received.map((f) => f.event), ['auth:start'], 'delivered once, to the listener subscribed by the dispatch');
+	assert.deepEqual(internals.drainTelemetry(), [], 'delivered, so not held');
+
+	// a drop while the listener stays: the fact raised before it still reaches that listener, and nothing is held
+	internals.reportTelemetry('auth:complete', { is_new: true, waitlisted: false, source: 'shell' });
+	internals.dropRejectedCredential();
+	await Promise.resolve();
+	assert.deepEqual(received.map((f) => f.event), ['auth:start', 'auth:complete'], 'delivered live');
+	assert.deepEqual(internals.drainTelemetry(), [], 'nothing held');
 });
 
 test('startOAuth raises auth:start once per page load, past its one-shot guard, and stamps the round trip', async () => {
