@@ -127,7 +127,7 @@ describe('README claims', () => {
 		assert.match(prose, /whose Overview page lists that database's tables; the sidebar lists connections only\./);
 		// Don't ask still sends the row limit.
 		assert.doesNotMatch(prose, /every statement runs as typed/);
-		assert.match(prose, /\*\*Don't ask\*\*: nothing asks before a statement is sent\. What is sent does not change: the row limit still applies/);
+		assert.match(prose, /\*\*Don't ask\*\*: a statement you run from the editor is sent without asking\. \(History's rerun of a write still asks, and Apply always confirms\.\) The row limit still applies/);
 		// Only the plan drawer lacks EXPLAIN ANALYZE; a typed one runs and is checked.
 		assert.doesNotMatch(prose, /\*\*No `EXPLAIN ANALYZE`\.\*\*/);
 		assert.doesNotMatch(prose, /There is no `EXPLAIN ANALYZE`/);

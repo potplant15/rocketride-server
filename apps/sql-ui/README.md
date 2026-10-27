@@ -80,12 +80,13 @@ environment reference instead of the literal value — the server stores those
 encrypted.
 
 A connection whose pipeline is not running says so instead of opening.
-Signing out, or signing in as another user, organization or team, clears the
-connection list, which is read again for the new sign-in, and closes every
-document that belonged to a connection, so the previous account's results
-are not left on screen. A dropped connection alone closes nothing. The app
-does not keep a connection string or a task token in anything it saves or
-shows.
+Signing in as another user, organization or team clears the connection list,
+reads it again for the new sign-in, and closes every document that belonged
+to a connection, so the previous account's results are not left on screen.
+Signing out, or a dropped connection, closes nothing: open documents forget
+the schema and wait until an account is signed in again. The app never saves
+or shows a task token; a direct connection's configuration is saved as typed
+(see above).
 
 Each row says how its connection stands, from what the app already knows
 (nothing is sent to find out):
@@ -94,8 +95,8 @@ Each row says how its connection stands, from what the app already knows
   run of that pipeline is running.
 - **Direct**, for a direct connection, or **Open** while its temporary
   pipeline runs.
-- **Unreachable**: the connection failed to open, or its pipeline runs but
-  the database node does not answer.
+- **Unreachable**: the connection failed to open although its pipeline runs,
+  or the database node does not answer.
 - **No access**: its pipeline runs, but your role may not call the
   database node (a team deployment you can see but not use).
 
@@ -151,8 +152,8 @@ removing one clears that sort. Any change goes back to page 1.
 
 **Counting rows.** The total in the pager is counted once per filter; paging
 and changing the sort or page size reuse it. On a table with no filter, the
-app first reads the engine's own row estimate instead of scanning. From
-100,000 rows up, the grid shows `About N rows (estimate)` with a **Count
+app first reads the engine's own row estimate. Below 100,000 rows it then
+counts exactly; from 100,000 rows up, the grid shows `About N rows (estimate)` with a **Count
 exactly** button, and the estimate can be well off (MySQL's often is, by 40
 to 50 percent). When the engine has no estimate, the app counts exactly. A
 filtered search on a large table is not counted at all: the note says `More
@@ -161,7 +162,7 @@ exactly**.
 
 **Order.** With no sort of your own, the app orders by the primary key so
 paging is repeatable. A table with no primary key and no sort has no
-guaranteed row order between pages, and the grid says `No primary key — page
+guaranteed row order between pages, and the grid says `No primary key: page
 order is not guaranteed by the database` above the rows.
 
 **The record drawer.** Click a row to open it. The drawer lists every column
@@ -173,17 +174,21 @@ through the page. A value is shown as the browser received it (see
 A value that belongs to a foreign key is a link that opens the referenced row
 in a drawer on top, with a back arrow. If nothing matches, the drawer says
 so; if more than one row matches, it shows the first and says that too. A
-NULL key is not a link. A key that reached the browser as a number above
-9,007,199,254,740,992 was already rounded on the way, and could be another
+NULL key is not a link. A key that reached the browser as a number beyond
+±9,007,199,254,740,991 was already rounded on the way, and could be another
 row's key, so it is not looked up: the link is off and says `This key is too
 large to look up exactly in the browser.` A key the node sends as text is
-exact and is followed as usual.
+exact and is followed as usual. A binary key is sent as text that is not the
+stored key, so its link is off too and says `This key is binary, which the
+node sends as text, so it cannot be looked up here.`
 
 **Rows that reference this one** lists the tables whose foreign keys point at
 the row's table. **Show rows** opens that table's data with a chip already set
 to this row's key, and is off, with the same reason, for a key too large to
-hold exactly. The drawer also offers **Open data**, **Design**, **Copy name**,
-**Copy SELECT**, **Select top 100** and **Count rows** (the last two open a
+hold exactly, and for a binary key.
+
+The table's own drawer (**Details** on the Overview, or a name in Insights)
+offers **Open data**, **Design**, **Copy name**, **Copy SELECT**, **Select top 100** and **Count rows** (the last two open a
 new query with the statement written and nothing run), and a **Join path**:
 pick a second table and the app lists the shortest paths of declared foreign
 keys between them, up to four joins. **Open as query** writes the join into a
@@ -209,8 +214,9 @@ struck through. New rows are not shown in the grid. The bar above it counts
 every change, for example `3 pending changes to orders: 1 edited row, 1 new
 row, 1 deleted row. Nothing is saved yet, and closing this tab discards
 them.` **Discard** drops them all (it
-asks first when there are two or more), **Review SQL** shows the exact
-statements, and **Apply** asks first, then sends them. Opening another
+asks first when there are two or more), **Review SQL** shows each
+statement with its values written in place (Apply sends the values
+separately, never in the text), and **Apply** asks first, then sends them. Opening another
 table's data while changes are staged asks first (`You have 3 staged
 changes. Discard them and open customers?`).
 
@@ -230,13 +236,12 @@ accent-insensitive collation (MySQL `_ci` and `_ai` collations, PostgreSQL
 or accents, so a change of that kind alone is not detected.
 
 On PostgreSQL, and on a MySQL table whose storage engine keeps transactions
-(InnoDB), the changes run as one transaction: all are saved, or none, and the
+(InnoDB or NDB), the changes run as one transaction: all are saved, or none, and the
 confirmation says so. On a MySQL table whose engine keeps none (MyISAM, for
 one) each change commits on its own, and the confirmation says that instead;
-when the app cannot read the engine, the confirmation hedges. Where there is
-no transaction to have, nothing is sent: ClickHouse opens no transactions,
-and a node older than the transaction tools has none. The app then asks
-again, saying that each change will commit on its own and that a failure
+when the app cannot read the engine, or does not know it, the confirmation
+hedges. Where the node has no transaction tools (an older node), nothing is
+sent: the app asks again, saying that each change will commit on its own and that a failure
 leaves earlier changes saved, and sends the statements one by one only if you
 agree; the first failure stops the rest.
 
@@ -256,14 +261,16 @@ rolls the transaction back. If an apply's answer never arrives at all, the
 changes stay staged and the page is read again, but **Apply** waits until you
 open **Review SQL**, which says some rows may already be saved and that a new
 row could be inserted twice. After a successful apply, each statement is
-recorded in [Query history](#query-history), the saved changes leave the bar,
+recorded in [Query history](#query-history) (unless recording is off for the
+connection), the saved changes leave the bar,
 and the page and its row count are read again.
 
 Rows cannot be changed in a table without a primary key, on ClickHouse (no
 unique row keys, and its updates run as background mutations), on a
-connection that cannot run statements, or while the connection (in the dev
+connection that cannot run statements, in a table whose primary key is a
+binary column (the node sends binary as text), or while the connection (in the dev
 tool, the sidebar) cannot be reached. The buttons are off, and the drawer
-says why. A key above 9,007,199,254,740,992 that the browser received as a
+says why. A key beyond ±9,007,199,254,740,991 that the browser received as a
 number may already have been rounded, so that row cannot be changed here.
 
 ### Structure and Design
@@ -330,8 +337,9 @@ reads as `ran` and writes or DDL as `committed`: `1 ran · 2 committed · 3
 failed · 4–5 not run`. `BEGIN`, `COMMIT` and `ROLLBACK` are refused before
 anything is sent, because they would do nothing here: `Transaction
 statements have no effect here: each statement runs and commits on its own.`
-Only [Changing rows](#changing-rows) and a designer plan on PostgreSQL run as
-one transaction.
+Only Apply runs as one transaction: staged row changes on PostgreSQL and on
+MySQL tables whose engine keeps transactions, and a designer plan on
+PostgreSQL.
 
 **Row limit.** The header toggle offers **200**, **1000** and **All**. The
 results line says what applied: `1,000 rows returned (limit 1000)` when the
@@ -345,9 +353,14 @@ UPDATE`, `FOR SHARE`, MySQL's `LOCK IN SHARE MODE`) gets the limit in front of
 that clause, which both MySQL and PostgreSQL accept; ClickHouse `SETTINGS` and
 `FORMAT` clauses are handled the same way. A `SELECT … INTO` returns no rows,
 so it gets no limit, and it counts as a write. When the count equals the
-limit, a badge says `Limit reached — more rows may exist`. A locking, `LIMIT`,
-`SETTINGS` or `FORMAT` clause behind a `#` on the same line is left alone: the
-statement goes out as typed and the line reads `no limit applied`. Above the app's limit sits the node's own `max_execute_rows` cap. A statement over
+limit, a badge says `Limit reached — more rows may exist`. On PostgreSQL,
+where `#` is an operator, and before the dialect is known, a locking or `LIMIT`
+clause behind a `#` on the same line is left alone: the statement goes out as
+typed and the line reads `no limit applied`. Before the dialect is known, the
+same holds for `SETTINGS` and `FORMAT`. On MySQL and ClickHouse that text is a
+comment, and the limit goes on a new line.
+
+Above the app's limit sits the node's own `max_execute_rows` cap. A statement over
 it fails rather than returning a truncated answer, and the banner adds `The
 node caps results at N rows; choose a lower limit or add LIMIT.` **All** says
 so before anything runs: `All asks for every row. The node refuses results
@@ -425,8 +438,9 @@ drawer says `EXPLAIN is not available for <dialect> in SQL Explorer`.
 Each saved connection has a **safety level**, set in its connection editor
 under **Safety level for this connection**:
 
-- **Don't ask**: nothing asks before a statement is sent. What is sent does
-  not change: the row limit still applies (see [Query](#query)).
+- **Don't ask**: a statement you run from the editor is sent without asking.
+  (History's rerun of a write still asks, and Apply always confirms.) The row
+  limit still applies (see [Query](#query)).
 - **Ask before risky writes** (the default): asks before `UPDATE` or
   `DELETE` with no `WHERE`, an `UPDATE` or `DELETE` inside a `WITH` clause,
   `TRUNCATE`, `DROP` and `ALTER`, and before an `EXPLAIN ANALYZE` of
@@ -508,7 +522,9 @@ workspace preferences on the server, per user, not into the browser, and the
 drawer says so: `Saved in your RocketRide workspace file on the server, not in
 this browser. Statements are stored as typed, including literal values.` As a
 dev tool it goes to a history file in your user storage on the server (see
-[As a dev tool](#as-a-dev-tool)). A failed statement is stored with its
+[As a dev tool](#as-a-dev-tool)). A write whose outcome is not known (you stopped waiting, or a commit's answer
+never arrived) is shown as `outcome unknown`, because it may have been saved.
+A failed statement is stored with its
 failure message as it reached the app, and such a message can carry a value
 from the statement. Both stay until the entry is deleted, the list is cleared,
 or the bounds below trim it. It is not a server audit log, and not a place for
@@ -677,8 +693,11 @@ there, with these differences:
 - **Transactions only through Apply.** A statement you run commits on its own,
   and transaction control you type is refused. Only Apply (staged row changes
   on PostgreSQL and on transactional MySQL tables, and designer plans on
-  PostgreSQL) runs as one transaction. Other engines and ClickHouse commit per
-  statement, and you are asked again.
+  PostgreSQL) runs as one transaction. Elsewhere each statement commits on its
+  own, and the confirmation says so before anything is sent: a MySQL table
+  whose engine keeps no transactions, and every MySQL or ClickHouse designer
+  plan. A node without the transaction tools sends nothing until you agree to
+  that.
 - **Closing a connection's tab discards its staged changes.** Neither the app
   nor the dev tool can ask before a tab closes, so the pending-changes bar says
   so instead. Reloading the page discards them too. Apply or Discard first.
@@ -732,8 +751,11 @@ How the pieces behave underneath, for people changing the code.
   statement is read with every engine's comment rules (`#` is a comment on
   MySQL and ClickHouse, `/*! … */` is code on MySQL) and asks if any reading
   says it should.
-- **Apply runs through the node's transaction tools:** `begin`, the statements
-  on that one connection, then `commit`; any failure sends `rollback`. The
+- **An atomic apply runs through the node's transaction tools:** `begin`, the
+  statements on that one connection, then `commit`; any failure sends
+  `rollback`. A per-statement apply (no transaction tools, a table whose engine
+  keeps none, a MySQL or ClickHouse designer plan) sends each statement on its
+  own and stops at the first failure. The
   whole list is checked before anything is sent: each entry is exactly one
   statement, transaction control is refused, and on MySQL one transaction holds
   only `INSERT`, `UPDATE`, `DELETE` and `REPLACE`. Values are always bound,
@@ -745,6 +767,7 @@ How the pieces behave underneath, for people changing the code.
   write and gets no limit. ClickHouse's `LIMIT n BY` is not a statement limit.
   On ClickHouse, and on a connection whose dialect could not be probed, the
   limit goes in front of `SETTINGS` and `FORMAT`.
+
 ## Next steps
 
 - [`db_mysql`](../../nodes/src/nodes/db_mysql/README.md), [`db_postgres`](../../nodes/src/nodes/db_postgres/README.md)

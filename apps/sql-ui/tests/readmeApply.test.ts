@@ -85,11 +85,11 @@ describe('README claims: Apply', () => {
 		assert.equal(APPLY_STATEMENT_WAIT_MS, 5 * 60_000);
 		assert.equal(APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS);
 		assert.match(prose, /Each statement of an apply may take up to 5 minutes, the time the node keeps an idle transaction open\./);
-		assert.match(prose, /Where there is no transaction to have, nothing is sent/);
+		assert.match(prose, /Where the node has no transaction tools \(an older node\), nothing is sent/);
 	});
 
 	it('names where there is no transaction, as the code decides', () => {
-		assert.match(prose, /ClickHouse opens no transactions, and a node older than the transaction tools has none\./);
+		assert.match(prose, /every MySQL or ClickHouse designer plan/);
 		assert.equal(rowApplyMode('clickhouse', {}).atomic, false);
 		assert.equal(rowApplyMode('postgres', {}).atomic && rowApplyMode('mysql', { engine: 'InnoDB' }).atomic, true);
 	});
