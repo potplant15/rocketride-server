@@ -119,7 +119,7 @@ screen.
 **Accounts in the full app.** The shell reads your workspace file once per page
 and keeps it until the page reloads. So after another account signs in without
 a reload, the app shows none of the first account's history, drafts, caption
-choices, editor height, grid layouts, label styles or saved queries, and saves
+choices, editor height, label styles or saved queries, and saves
 none of them, nor anything of the new account's, until the page is reloaded (or
 the first account signs in again). The new account's statements are recorded
 for this session only, and the History panel says so. The saved queries say
@@ -131,14 +131,14 @@ first account's history, styles and saved queries among them, into the
 signed-in account's file, so reload the page before working as another account.
 
 **One page at a time.** Each page of the app holds the workspace file as it was
-when the page loaded, and any change it saves (a keystroke in a draft, a run, a
-grid layout, a style, a saved query) writes all of it back. So with two pages of
+when the page loaded, and any change it saves (a keystroke in a draft, a run or a History change, the
+editor height, a style, a saved query) writes all of it back. So with two pages of
 the same account open, a change saved in the older page overwrites what the
 newer one saved, saved queries included: change things in one page at a time;
 the last page to save wins. The colours the app gives new labels are not saved
 by themselves (opening a connection writes nothing): they are shown at once and
 saved with the next draft, editor height, style or saved query you change in
-that page. A run or a grid layout change does not save them. Colours shown in a
+that page. A run or a History change does not save them. Colours shown in a
 page that saves none of those are not kept, so if the connection's labels
 change before the next session, a label can get a different colour then.
 
@@ -180,15 +180,18 @@ edited that tab's text, Explore opens a new one and runs the sample there.
   already have: the query tab you were in last. In the code editor that is an
   edit, so Ctrl/Cmd+Z brings the previous text back. Arrow keys move between
   tabs, and Delete (Backspace on a Mac keyboard) closes the focused query tab;
-  closing a tab whose text you edited asks first. A workbench holds at most 8
+  closing a tab whose text you edited asks first, except Query 1, whose text is
+  kept as its draft (as a dev tool, only until the document closes). A workbench holds at most 8
   query tabs; past that, a line says to close one, and nothing is opened or
   closed for you. Query 1 keeps the draft the workbench has always kept for the
   connection; the text of the other tabs lasts until the tab or the document is
   closed. Tabs are not restored when the document opens again.
 - **One request at a time.** A workbench sends one request at a time across
   all its tabs: statements, the graph's actions and Ask alike. A request you
-  stopped waiting for counts until the database finishes it, because it still
-  holds a connection there (Apache AGE's node has four). Meanwhile **Run** waits
+  stopped waiting for still counts until the node answers it, or until the app's
+  own wait for it runs out (the statement timeout plus 10 seconds; two minutes
+  for Ask), because it may still hold a database connection (Apache AGE's node
+  has four). Meanwhile **Run** waits
   and says so, and anything asked for is not sent and says why; a statement
   that was not sent is not recorded in History. **Refresh schema** is not
   counted: it reads the connection's schema for every document at once, not
@@ -239,7 +242,7 @@ Every query tab has an editor, a row limit, and three views of its result
   workbench keeps its editor, results, graph and inspector on screen. Running and
   the graph's actions pause, with the reason above the editor, until the node
   answers again.
-- **The editor** highlights Cypher and keeps a draft per connection (text only).
+- **The editor** highlights Cypher and Query 1 keeps a draft per connection (text only).
   It is the platform's shared code editor, which comes with the app (nothing is
   fetched from a CDN). If it has not loaded after ten seconds, a plain text box
   is used, with the same run keys, drafts and history, and a notice says so; it
@@ -257,8 +260,8 @@ Every query tab has an editor, a row limit, and three views of its result
     are no label, type or property suggestions.
   - **A failed statement is marked.** When the database's text gives a line and
     column, that place in the statement that failed is underlined until you edit
-    the text. Neo4j gives one; Apache AGE gives one for a syntax error; FalkorDB
-    gives none, so nothing is underlined for it.
+    the text. Neo4j, FalkorDB and Apache AGE are marked where the database gives a
+    position (Apache AGE for a syntax error).
   - **A statement the read workbench would refuse is marked as you type**, from
     the same text check Run uses before it sends anything (see Browsing is
     read-only). It is a warning with the reason, not a database check.
@@ -322,7 +325,7 @@ a search or a column filter in the table does not change them. Where a download 
   (or a tab or a carriage return) gets a leading `'`. Numbers keep their sign.
 
 
-The Table keeps its sort and shown columns only for the result on screen, while the page is open; a new or reopened result, or a new page, starts from the statement's own order. It never remembers column widths: every result column fills the space, because a grid built while its tab was hidden would otherwise save crushed widths and restore them later.
+The Table keeps its sort and shown columns only while it stays on screen: switching to Graph or Raw, to another tab, or opening the result again starts from the statement's own order. Nothing about the Table is saved, and column widths always fill the space.
 
 ### Errors
 
@@ -333,13 +336,14 @@ in the banner itself, six lines at a time with the rest scrolling, not behind a
 button. **Copy error** copies the headline, where it was and that text. When a
 batch stopped part way and the workbench offers it, **Run from statement N** runs
 the batch again from the statement that failed. A hint, where the app knows what
-to do next, sits under the text. In the write console the banner also says the
-write may have been applied.
+to do next, sits under the text. In the write console, a failure that can come after the
+database ran the statement also says the write may have been applied.
 
 ## Overview
 
 A connection's Overview is drawn from the schema it last loaded. Opening it
-sends nothing. It holds:
+runs no query: it is drawn from the schema the connection already read (opening
+a workbench reads it once if it has not been read). It holds:
 
 - **Counts**: nodes, relationships, labels, relationship types and property
   keys. A count the engine estimated reads "about N" and one it did not report
@@ -364,8 +368,8 @@ called empty.
 
 ## The graph
 
-Nodes are coloured by their first label, with the label's badge inside, and a
-legend lists every label next to its colour. Colour is never the only carrier of
+Nodes are coloured by their first label, with the label's badge inside, and the
+legend (**View** > Legend and styles) lists every drawn label next to its colour. Colour is never the only carrier of
 meaning. How colours were chosen, and the contrast measured
 against every shipped theme, is in
 [docs/contrast.md](https://github.com/rocketride-org/rocketride-server/blob/develop/apps/graph-ui/docs/contrast.md).
@@ -445,9 +449,9 @@ are the app's own layered layout: the selected node (else the node with the most
 relationships) is the root, and each step away from it is one level further down
 (Tree) or to the right (Left to right). Relationships that close a cycle are still
 drawn but do not move nodes, each connected part of the graph gets its own tree,
-and nodes with no relationship go in a block beside the trees. It takes well
-under 50 ms at the canvas maximum (1,000 nodes, 2,000 relationships), so it runs
-on the main thread and works the same in a browser and in VS Code. Tree and Left
+and nodes with no relationship go in a block beside the trees. In the tests it
+lays out the canvas maximum (1,000 nodes, 2,000 relationships) in under 50 ms
+(measured in Node, not in a browser), so it runs on the main thread and works the same in a browser and in VS Code. Tree and Left
 to right lay the whole drawing out again when nodes are added; Force places only
 the new ones. **Re-run layout** lays out every node again; a node you dragged
 stays where you dropped it while **Keep dragged nodes pinned** is on. The view is
@@ -473,8 +477,8 @@ result for anyone who would rather not use the canvas.
 
 **Inspector.** Selecting a node or a relationship opens the inspector in a
 column to the right of the canvas. It is part of the page, not a drawer: it has
-no overlay, takes no focus when a click opens it (the canvas keeps panning and
-the keys keep working), and Escape closes it while focus is inside it. Enter,
+no overlay, takes no focus when a click opens it (a click moves keyboard focus to the
+clicked node, so the canvas keeps panning and the keys keep working), and Escape closes it while focus is inside it. Enter,
 Inspect and the menu's Inspect are explicit requests, and they move focus to its
 heading. A node shows its labels, id, properties (each with the kind of value that
 was received: string, integer, float, boolean, list, map and so on; a whole number
@@ -491,8 +495,9 @@ to the first item, Up, Down, Home and End move through it, a letter jumps,
 Enter or Space chooses, Right opens **Expand by type** and Left goes back,
 Escape closes it and returns focus to the node, and Tab closes it. Shift+F10 or
 the Menu key opens it at the focused node. Anything that asks the database is
-off while another request is running or the drawing is out of date, and says so
-in its title. **Expand by type (sampled)** lists the relationship types the schema says
+off while this graph's own request is running or the drawing is out of date, and
+says so in its title; one asked for while another tab's request runs is refused
+with a sentence. **Expand by type (sampled)** lists the relationship types the schema says
 can start or end at one of the node's labels; the schema is sampled, so the list can be incomplete. **Find path to...** then waits for
 you to click the second node (Escape cancels). **Connect the drawn nodes**
 connects every drawn node, as the toolbar button does.
@@ -505,8 +510,8 @@ centres it, Down and Up step to the next and previous.
 
 **View and Export.** The toolbar never wraps. When the width it has cannot hold
 every action (the inspector and the legend each take 320 px beside the canvas, and a
-VS Code panel is narrow), the least needed actions move into a **More** menu, one at a
-time and always in the same order: the focused-node label first, then Show more nodes,
+VS Code panel is narrow), the focused-node label is hidden first, then the least needed
+actions move into a **More** menu, one at a time and always in the same order: Show more nodes,
 Clear selection, Connect nodes, Dismiss, Collapse, Fit, Inspect, Find path and Expand;
 Stop waiting stays longest while a request runs. Search, **View** and **Export** never
 move. **More** follows the same menu keys as the others. **View** holds Layout (Force, Tree (top down), Left to
@@ -515,12 +520,12 @@ keyboard shortcuts and Full screen (while full screen is on, **Exit full screen*
 is also a button on the toolbar). Export offers PNG and SVG images and the drawn
 graph as JSON, and waits until the canvas has loaded. Where the host cannot
 download files (VS Code), it offers Copy SVG and Copy as JSON instead and says why
-PNG is not there; if the clipboard refuses, the text is left on screen to copy by
-hand. When no PNG can be made it says why: too large (save the SVG), still
+PNG is not there; if the clipboard refuses, text up to 5 million characters is left on
+screen to copy by hand. When no PNG can be made it says why: too large (save the SVG), still
 loading, or the image could not be made. The canvas does not refit when the
 inspector opens or the window resizes, only on Fit, a new layout and full screen.
-Layout, pinning and the legend are kept by the host per tab where it asks for that,
-and by the view otherwise (they then reset when the view is remounted).
+Each query tab, and the write console, keeps its layout choice, pinning and
+whether the legend is open while its document is open.
 
 **Status line.** One line under the graph replaces the notices that floated over
 it. It is one fixed line high, so a notice never resizes the canvas. It holds at most
@@ -590,7 +595,7 @@ older file still holds is ignored, and that type is drawn in the relationship
 colour.
 
 - Select a label or type, or press Enter on it, to show and run a preview of
-  25 rows in the workbench.
+  25 rows in a new tab of its workbench.
 - The arrow before a name, or Right and Left, opens and closes what the schema
   holds about it: a label's properties with the types observed for them, a
   type's start and end labels (*seen* in data, or *inferred*) and its
@@ -637,7 +642,9 @@ is not running, or the answer could not be read). The warnings include a node
 that cannot answer Ask yet, which gets the upgrade notice, and a wait the app
 gave up on, which says that the node may still be working on the question and
 that nothing here can cancel it. An empty question, or one longer than 2,000
-characters, is not sent. **Stop waiting** drops a late answer.
+characters, is not sent. **Stop waiting** drops a late answer. An Ask counts as the workbench's request
+(see One request at a time): Run waits until the node answers it, even after you
+stop waiting, for up to two minutes.
 
 ## History
 
@@ -680,8 +687,8 @@ and that the engine can quote:
 - on Neo4j, nodes with no relationships.
 
 Apache AGE gets only the first three: the two counts sort by a returned name
-(`ORDER BY` on an alias), which its node refuses, and whether it runs a pattern
-predicate has not been checked. No template takes parameters (the
+(`ORDER BY` on an alias), which its node refuses, and its node does not parse the
+pattern predicate in the last one (`WHERE NOT (n)--()` is a syntax error there). No template takes parameters (the
 editor sends none).
 
 ## As a dev tool
@@ -755,9 +762,8 @@ What is different there:
   last for the session only, and the other tabs' text until the tab or the
   document is closed. Caption choices are part of the label styles, so they
   are kept in `rocketride.graph.styles.json` (above).
-- Results grid layouts (sort, column widths) are kept in memory: in
-  rocket-ui until the page reloads, in VS Code until the document's panel
-  closes. They are never written into the host's own preferences.
+- The results Table keeps its sort and shown columns only while it stays on
+  screen, as in the full app; nothing about it is written anywhere.
 - A large graph is laid out by a worker. A panel that cannot start it (VS Code
   loads the app from the engine, a different origin) places the nodes on a
   grid, and a note says why.
@@ -822,15 +828,17 @@ and it always says what it is:
   not return its answer, the answer was not understood, or the app stopped
   waiting) says **the write may have been applied**. Only a refusal before
   anything was sent (the node does not support it, the pipeline is not running,
-  or execute is off) means nothing changed.
+  execute is off, or the console was still waiting for an earlier statement) means
+  nothing changed.
 - Every write that may have changed data marks the graphs drawn from that
   connection out of date, in every tab, even when it finishes after the console
   was closed.
 
 ## Safety
 
-- The browse editor, Ask, the sidebar previews and every graph action use
-  `read_query`, which the node runs read-only whatever the node allows
+- The browse editor, the sidebar previews, every graph action and Run on an Ask
+  draft use `read_query` (Ask itself calls `get_query`, which writes Cypher and
+  runs nothing), which the node runs read-only whatever the node allows
   elsewhere. A node that cannot do that is not browsable.
 - The text check that refuses writes in the browse editor is a convenience and
   can be wrong in both directions. It is not a boundary.
