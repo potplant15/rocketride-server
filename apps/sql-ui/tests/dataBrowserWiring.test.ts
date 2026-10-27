@@ -115,7 +115,9 @@ describe('Data page wiring in ConnectionView', () => {
 
 	it('carries preset chips in the data seed and hands them to the page', () => {
 		assert.match(nav, /openTableData\(table: string, chips\?: FilterChip\[\]\): void;/);
-		assert.match(connection, /openTableData: \(table: string, chips\?: FilterChip\[\]\) => \{\s*setDataSeed\(\{ table, chips: chips \?\? \[\], seq: \+\+seedSeqRef\.current \}\);/);
+		// The seed carries the chips; openTableData asks first while edits are staged (P4 R2-M2), then seeds.
+		assert.match(connection, /const openData = useCallback\(\(table: string, chips: FilterChip\[\]\) => \{\s*setDataSeed\(\{ table, chips, seq: \+\+seedSeqRef\.current \}\);/);
+		assert.match(connection, /openTableData: \(table: string, chips\?: FilterChip\[\]\) => \{[\s\S]*?openData\(table, chips \?\? \[\]\);/);
 		assert.match(connection, /<TableDataView key=\{dataSeed\.seq\} endpoint=\{endpoint\} table=\{dataSeed\.table\} presetFilters=\{dataSeed\.chips\} onOpenTable=\{pageNav\.openTableData\} \/>/);
 	});
 
