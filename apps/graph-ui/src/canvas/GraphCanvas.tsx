@@ -516,6 +516,21 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 		if (id !== null && id !== latest.current.focusedId) latest.current.onFocus(id);
 	}, []);
 
+	/**
+	 * Give DOM focus to a node's element, without scrolling or panning. Only the roving node is in the tab order, so any
+	 * other is made focusable first. Node and relationship ids overlap (FalkorDB), so the lookup is scoped to nodes.
+	 *
+	 * @param id - The node.
+	 * @returns True when the node now has focus.
+	 */
+	const focusElement = useCallback((id: GraphId): boolean => {
+		const el = container.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`);
+		if (!el) return false;
+		if (!el.hasAttribute('tabindex')) el.tabIndex = -1;
+		el.focus({ preventScroll: true });
+		return document.activeElement === el;
+	}, []);
+
 	/** Open a node's menu from the keyboard, at the node (a key press has no pointer position). */
 	const openNodeMenu = useCallback((id: GraphId) => {
 		const p = latest.current;
@@ -599,12 +614,19 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 		[pin]
 	);
 
-	const onNodeClick = useCallback((event: React.MouseEvent, node: GraphFlowNode) => {
-		const p = latest.current;
-		p.onFocus(node.id);
-		if (p.onNodeClick) p.onNodeClick(node.id, clickMode(event));
-		else p.onToggleSelect(node.id);
-	}, []);
+	const onNodeClick = useCallback(
+		(event: React.MouseEvent, node: GraphFlowNode) => {
+			const p = latest.current;
+			// The press gave DOM focus to whatever focusable element holds the canvas (only the roving node is focusable),
+			// and the canvas keys would stop reaching it: the clicked node takes keyboard focus and becomes the roving node.
+			// No pan: the node is already under the pointer.
+			focusElement(node.id);
+			p.onFocus(node.id);
+			if (p.onNodeClick) p.onNodeClick(node.id, clickMode(event));
+			else p.onToggleSelect(node.id);
+		},
+		[focusElement]
+	);
 	const onNodeDoubleClick = useCallback((_event: React.MouseEvent, node: GraphFlowNode) => latest.current.onExpand(node.id), []);
 	const onNodeContextMenu = useCallback(
 		(event: React.MouseEvent, node: GraphFlowNode) => {
@@ -661,18 +683,13 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 			},
 			focusNode(id: GraphId): boolean {
 				if (!latest.current.model.nodes.has(id)) return false;
-				// Node ids and relationship ids overlap (FalkorDB), so the lookup is scoped to node elements.
-				const el = container.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`);
-				if (!el) return false;
-				if (!el.hasAttribute('tabindex')) el.tabIndex = -1;
-				el.focus({ preventScroll: true });
-				return document.activeElement === el;
+				return focusElement(id);
 			},
 			fit: refit,
 			relayout: () => setRelayoutNonce((n) => n + 1),
 			exportImage: exportDrawing,
 		}),
-		[refit, exportDrawing]
+		[refit, exportDrawing, focusElement]
 	);
 
 	return (
