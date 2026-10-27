@@ -33,6 +33,7 @@
 import { colorFor } from './colors';
 import type { ILabelColor } from './colors';
 import type { IGraphModel } from './model';
+import type { ILabelStyle, StyleEdit } from './userData';
 
 /** One legend line. */
 export interface ILegendEntry {
@@ -96,4 +97,53 @@ export function nodeIdsOfLabel(model: Pick<IGraphModel, 'nodes'>, label: string)
 	const ids: string[] = [];
 	for (const node of model.nodes.values()) if ((node.labels[0] ?? '') === label) ids.push(node.id);
 	return ids;
+}
+
+/** The fields of a label's style a person edits. */
+const LABEL_FIELDS: ReadonlyArray<keyof ILabelStyle> = ['slot', 'size', 'badge', 'caption'];
+
+/**
+ * The edit that turns a label's own style into `next`. Only what changed is sent: a field given a value is a patch,
+ * and a field that was set and is now unset (or is back at its default, size M or badge initials) is cleared.
+ *
+ * @param label - The label.
+ * @param own - The person's choices now.
+ * @param next - The choices wanted.
+ * @returns The edit (a no-op patch when nothing differs).
+ */
+export function labelStyleEdit(label: string, own: ILabelStyle, next: ILabelStyle): StyleEdit {
+	const wanted: ILabelStyle = {};
+	if (next.slot !== undefined) wanted.slot = next.slot;
+	if (next.size !== undefined && next.size !== 'M') wanted.size = next.size;
+	if (next.badge !== undefined && next.badge !== 'initials') wanted.badge = next.badge;
+	if (next.caption !== undefined && next.caption !== '') wanted.caption = next.caption;
+	const patch: Record<string, unknown> = {};
+	const clear: Array<keyof ILabelStyle> = [];
+	for (const field of LABEL_FIELDS) {
+		if (wanted[field] !== undefined) {
+			if (wanted[field] !== own[field]) patch[field] = wanted[field];
+		} else if (own[field] !== undefined) clear.push(field);
+	}
+	return { kind: 'label', label, ...(Object.keys(patch).length > 0 ? { patch: patch as Partial<ILabelStyle> } : {}), ...(clear.length > 0 ? { clear } : {}) };
+}
+
+/**
+ * The edit that puts a label back to its defaults.
+ *
+ * @param label - The label.
+ * @returns The edit.
+ */
+export function resetLabelEdit(label: string): StyleEdit {
+	return { kind: 'label', label, clear: [...LABEL_FIELDS] };
+}
+
+/**
+ * The edit that gives a relationship type a colour, or takes it back (undefined).
+ *
+ * @param type - The type.
+ * @param slot - A chart colour slot, or undefined for the ordinary line colour.
+ * @returns The edit.
+ */
+export function typeStyleEdit(type: string, slot: number | undefined): StyleEdit {
+	return slot === undefined ? { kind: 'type', type, clear: ['slot'] } : { kind: 'type', type, patch: { slot } };
 }

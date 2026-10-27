@@ -39,6 +39,7 @@ import { Button } from 'shell';
 import { captionChoices } from '../graph/captions';
 import { CHART_COLOR_VARS, TYPE_COLOR_SLOTS } from '../graph/colors';
 import type { ILabelColor } from '../graph/colors';
+import { labelStyleEdit, resetLabelEdit, typeStyleEdit } from '../graph/legend';
 import type { ILegendEntry, ITypeLegendEntry } from '../graph/legend';
 import type { GraphNode } from '../graph/types';
 import type { ILabelStyle, IConnectionStyle, StyleEdit } from '../graph/userData';
@@ -56,7 +57,6 @@ export interface ILegendPanelProps {
 	nodes: readonly GraphNode[];
 	/** Select the drawn nodes of a label. */
 	onSelectLabel(label: string): void;
-	onCaption(label: string, choice: string): void;
 	/** Apply a style edit; rejects with the reason it could not be kept. */
 	onEdit(edit: StyleEdit): Promise<void>;
 	/** One true sentence: where styles are kept on this mount. */
@@ -84,7 +84,7 @@ type Editing = { kind: 'label'; name: string } | { kind: 'type'; name: string };
  * @param props - See {@link ILegendPanelProps}.
  * @returns The panel.
  */
-export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors, style, captions, nodes, onSelectLabel, onCaption, onEdit, privacyNote }) => {
+export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors, style, captions, nodes, onSelectLabel, onEdit, privacyNote }) => {
 	const [collapsed, setCollapsed] = useState(false);
 	const [editing, setEditing] = useState<Editing | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -101,14 +101,6 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 		onEdit(edit).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
 	};
 	const labelStyleOf = (label: string): ILabelStyle => (Object.prototype.hasOwnProperty.call(style.labels, label) ? style.labels[label] : {});
-	const clean = (next: ILabelStyle): ILabelStyle | null => {
-		const out: ILabelStyle = {};
-		if (next.slot !== undefined) out.slot = next.slot;
-		if (next.size !== undefined && next.size !== 'M') out.size = next.size;
-		if (next.badge !== undefined && next.badge !== 'initials') out.badge = next.badge;
-		return Object.keys(out).length === 0 ? null : out;
-	};
-
 	/** Close the editor and put focus back on the Style button it was opened from (its own controls are about to unmount). */
 	const closeEditor = (): void => {
 		const was = editing;
@@ -130,13 +122,10 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 					currentSlot={colors.get(label)?.slot ?? null}
 					usedBy={usedBy}
 					captionChoices={captionChoices(nodes.filter((n) => (n.labels[0] ?? '') === label))}
-					caption={captions.get(label) ?? ''}
-					onCaption={(choice) => onCaption(label, choice)}
-					onChange={(next) => apply({ kind: 'label', label, style: clean(next) })}
-					onReset={() => {
-						apply({ kind: 'label', label, style: null });
-						onCaption(label, '');
-					}}
+					caption={own.caption ?? captions.get(label) ?? ''}
+					onCaption={(choice) => apply(labelStyleEdit(label, own, { ...own, caption: choice }))}
+					onChange={(next) => apply(labelStyleEdit(label, own, { ...next, caption: own.caption }))}
+					onReset={() => apply(resetLabelEdit(label))}
 					onDone={closeEditor}
 					error={error}
 				/>
@@ -152,8 +141,8 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 				slots={TYPE_COLOR_SLOTS}
 				currentSlot={null}
 				usedBy={new Map()}
-				onChange={(next) => apply({ kind: 'type', type, style: next.slot === undefined ? null : { slot: next.slot } })}
-				onReset={() => apply({ kind: 'type', type, style: null })}
+				onChange={(next) => apply(typeStyleEdit(type, next.slot))}
+				onReset={() => apply(typeStyleEdit(type, undefined))}
 				onDone={closeEditor}
 				error={error}
 			/>
@@ -200,7 +189,7 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 							))}
 						</div>
 					)}
-					<div style={styles.note}>{`Colour, size, caption and badge per label; colour per relationship type. ${privacyNote}`}</div>
+					<div style={styles.note}>{`Colour, size, caption and badge per label; colour per relationship type.${privacyNote !== '' ? ` ${privacyNote}` : ''}`}</div>
 				</div>
 			)}
 			{!collapsed && editor}

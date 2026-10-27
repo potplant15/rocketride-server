@@ -443,8 +443,10 @@ canvas in every shipped theme (yellow and orange are below that in the light
 themes, so they are not offered). There is no free colour picker. A label keeps
 the colour it was first given, so a label added to the graph later never moves
 another label's colour, and up to six labels never share a colour unless you
-choose it (the editor says when two labels end up with the same one). Styles are saved through the connection's user data; the legend says
-where on this mount (the sentence comes from the mount, not from this page).
+choose it (the editor says when two labels end up with the same one). Styles, captions included, are saved through the connection's user data; the legend
+says where on this mount once the mount knows (the sentence comes from the mount,
+not from this page). Until a connection's style has been read, labels are drawn in
+one neutral grey rather than in colours that would change a moment later.
 
 **Badges.** The letters inside a node are the shortest start of its label that no
 other label of the connection shares: Person and Product show "Pe" and "Pr",

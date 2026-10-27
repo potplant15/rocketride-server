@@ -49,7 +49,7 @@ import { captionOf } from '../graph/captions';
 import { menuItemsFor, relationshipTypesFor } from '../graph/canvasMenu';
 import type { IMenuItem } from '../graph/canvasMenu';
 import { nodeLooks } from '../graph/badges';
-import { labelColors, typeColorsOf } from '../graph/colors';
+import { labelColors, neutralColors, typeColorsOf } from '../graph/colors';
 import type { IGraphSession, IGraphState } from '../graph/graphSession';
 import { inspectNode } from '../graph/inspector';
 import { legendOf, nodeIdsOfLabel, typeLegendOf } from '../graph/legend';
@@ -152,7 +152,8 @@ export interface IGraphViewProps {
 	schemaLabels: readonly string[];
 	/** Caption choice per label, owned by the workbench (persisted per connection). */
 	captions: ReadonlyMap<string, string>;
-	onCaption(label: string, choice: string): void;
+	/** No longer called: captions are kept with the connection's style. Accepted so a host that still passes it compiles. */
+	onCaption?(label: string, choice: string): void;
 	/** Open the inspector for a node. */
 	onInspect(id: string): void;
 	/** Text identifying this result, for the layout seed. */
@@ -179,11 +180,21 @@ export interface IGraphViewProps {
  * @param props - See {@link IGraphViewProps}.
  * @returns The view.
  */
-export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, captions, onCaption, onInspect, seedKey, announce, endpointKey, meta, onRerun, onNewQuery, maximized, onToggleMaximized, exportMode = 'download' }) => {
+export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, captions: hostCaptions, onInspect, seedKey, announce, endpointKey, meta, onRerun, onNewQuery, maximized, onToggleMaximized, exportMode = 'download' }) => {
 	const state: IGraphState = useSyncExternalStore(session.subscribe, session.getState, session.getState);
 	const env = useGraphEnv();
 	const key = endpointKey ?? '';
-	const style = useConnectionStyle(key);
+	const styleView = useConnectionStyle(key);
+	const style = styleView.style;
+	// A caption kept with the connection's style wins over one the host still passes.
+	const captions = useMemo(() => {
+		const merged = new Map(hostCaptions);
+		for (const label of Object.keys(style.labels)) {
+			const caption = style.labels[label]?.caption;
+			if (caption) merged.set(label, caption);
+		}
+		return merged;
+	}, [hostCaptions, style]);
 	const schema = useSchemaView(key);
 	const [layoutStatus, setLayoutStatus] = useState<LayoutStatus>({ state: 'idle' });
 	const [helpOpen, setHelpOpen] = useState(false);
@@ -218,7 +229,8 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		for (const node of state.model.nodes.values()) for (const l of node.labels.slice(0, 1)) labels.add(l);
 		return labels;
 	}, [schemaLabels, state.model.nodes]);
-	const colors = useMemo(() => labelColors(style, allLabels), [style, allLabels]);
+	// Until the style is read, nothing is drawn in a colour that would change a moment later.
+	const colors = useMemo(() => (styleView.ready ? labelColors(style, allLabels) : neutralColors(allLabels)), [styleView.ready, style, allLabels]);
 	const looks = useMemo(() => nodeLooks(allLabels, style), [style, allLabels]);
 	const typeColors = useMemo(() => typeColorsOf(style), [style]);
 	const legend = useMemo(() => legendOf(state.model, colors), [state.model, colors]);
@@ -641,7 +653,6 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 							onSelectLabel={(label) => {
 								session.selectMany(nodeIdsOfLabel(state.model, label), 'only');
 							}}
-							onCaption={onCaption}
 							onEdit={(edit) => env.userData.editStyle(key, edit)}
 							privacyNote={env.userData.privacyNote}
 						/>

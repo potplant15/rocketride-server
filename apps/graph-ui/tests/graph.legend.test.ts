@@ -10,8 +10,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CHART_COLOR_VARS, TYPE_COLOR_SLOTS, labelColors, typeColorsOf } from '../src/graph/colors';
-import { legendOf, nodeIdsOfLabel, typeLegendOf } from '../src/graph/legend';
+import { CHART_COLOR_VARS, TYPE_COLOR_SLOTS, labelColors, neutralColors, nextAssignments, typeColorsOf } from '../src/graph/colors';
+import { labelStyleEdit, legendOf, nodeIdsOfLabel, resetLabelEdit, typeLegendOf, typeStyleEdit } from '../src/graph/legend';
 import { modelFromResult } from '../src/graph/model';
 import { EMPTY_STYLE } from '../src/graph/userData';
 import { entitiesOf, node, rel } from './support/builders';
@@ -44,7 +44,8 @@ test('clicking a label selects the drawn nodes whose first label it is', () => {
 
 test('with six labels or fewer, every label has its own chart colour (Product and Order never share one)', () => {
 	for (const labels of [['Person', 'Product', 'Order'], ['Person', 'Product', 'Order', 'Company', 'Topic', 'Document'], ['Order', 'Product']]) {
-		const colors = labelColors(EMPTY_STYLE, labels);
+		// The realm that owns the schema gives each label its slot once (nextAssignments); every screen then reads it.
+		const colors = labelColors({ ...EMPTY_STYLE, assigned: nextAssignments({}, labels) }, labels);
 		const slots = [...colors.values()].map((c) => c.slot);
 		assert.ok(slots.every((s) => s !== null), labels.join());
 		assert.equal(new Set(slots).size, labels.length, labels.join());
@@ -63,4 +64,25 @@ test('type colours: only the offered slots count, and an unstyled or invalid typ
 	assert.deepEqual(TYPE_COLOR_SLOTS.slice().sort(), [0, 1, 2, 4]);
 	const colors = typeColorsOf({ ...EMPTY_STYLE, types: { A: { slot: 0 }, B: { slot: 3 }, C: { slot: 5 }, D: {} } });
 	assert.deepEqual([...colors.keys()], ['A']);
+});
+
+test('until the style is read, every label is the same neutral grey with no slot', () => {
+	const colors = neutralColors(['Person', 'Company', '', 'Person']);
+	assert.equal(colors.size, 2);
+	for (const c of colors.values()) assert.deepEqual([c.fill, c.slot], ['var(--rr-grey-400)', null]);
+});
+
+test('a style edit sends only what changed, and clears a field that went back to its default', () => {
+	assert.deepEqual(labelStyleEdit('Person', {}, { slot: 4 }), { kind: 'label', label: 'Person', patch: { slot: 4 } });
+	assert.deepEqual(labelStyleEdit('Person', { slot: 4, size: 'L' }, { slot: 4, size: 'M' }), { kind: 'label', label: 'Person', clear: ['size'] });
+	assert.deepEqual(labelStyleEdit('Person', { slot: 4 }, { slot: undefined }), { kind: 'label', label: 'Person', clear: ['slot'] });
+	assert.deepEqual(labelStyleEdit('Person', { badge: 'dot' }, { badge: 'initials' }), { kind: 'label', label: 'Person', clear: ['badge'] });
+	assert.deepEqual(labelStyleEdit('Person', { caption: 'name' }, { caption: 'title' }), { kind: 'label', label: 'Person', patch: { caption: 'title' } });
+	assert.deepEqual(labelStyleEdit('Person', { slot: 1 }, { slot: 1 }), { kind: 'label', label: 'Person' });
+});
+
+test('reset clears every field of the label; a type edit patches or clears its slot', () => {
+	assert.deepEqual(resetLabelEdit('Person'), { kind: 'label', label: 'Person', clear: ['slot', 'size', 'badge', 'caption'] });
+	assert.deepEqual(typeStyleEdit('KNOWS', 4), { kind: 'type', type: 'KNOWS', patch: { slot: 4 } });
+	assert.deepEqual(typeStyleEdit('KNOWS', undefined), { kind: 'type', type: 'KNOWS', clear: ['slot'] });
 });

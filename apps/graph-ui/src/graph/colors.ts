@@ -192,6 +192,19 @@ export function labelColors(style: IConnectionStyle, labels: Iterable<string>): 
 }
 
 /**
+ * The colour of every label while the connection's style has not been read yet: one neutral grey, so nothing is drawn in
+ * a colour that would change a moment later.
+ *
+ * @param labels - The labels (any order, duplicates allowed).
+ * @returns A neutral colour per distinct label.
+ */
+export function neutralColors(labels: Iterable<string>): Map<string, ILabelColor> {
+	const out = new Map<string, ILabelColor>();
+	for (const label of labels) if (label !== '') out.set(label, { label, fill: 'var(--rr-grey-400)', slot: null });
+	return out;
+}
+
+/**
  * The colours a connection's style gives its relationship types. Only a type with a chosen colour from
  * {@link TYPE_COLOR_SLOTS} is listed; every other type keeps the ordinary line colour.
  *
