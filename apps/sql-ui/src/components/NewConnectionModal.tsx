@@ -553,7 +553,7 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 					</label>
 				))}
 				<span style={styles.safetyDetail}>
-					Saved with this connection, for your account. The real gate is the node&apos;s allow_execute switch; this setting only adds questions.
+					Saved with this connection, for your account. The real gate is the node&apos;s allow_execute switch; this setting only adds questions. The Query page can also change it, without this form.
 				</span>
 			</fieldset>
 		</>

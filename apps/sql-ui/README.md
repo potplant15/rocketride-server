@@ -449,7 +449,7 @@ drawer says `EXPLAIN is not available for <dialect> in SQL Explorer`.
 ## Confirmations and safety levels
 
 Each saved connection has a **safety level**, set in its connection editor
-under **Safety level for this connection**:
+under **Safety level for this connection**, or on the Query page:
 
 - **Don't ask**: a statement you run from the editor is sent without asking.
   (History's rerun of a write still asks, and Apply always confirms.) The row
@@ -475,9 +475,10 @@ asks.
 
 The level is stored on the saved connection, so it is the same in the app and
 as a dev tool. A connection saved before levels existed reads as **Ask before
-risky writes**. The line under the editor names the level. The dialog has no
-answer that turns asking off; change the level in the connection editor
-instead.
+risky writes**. The line under the editor names the level and changes it in
+place: only the level is sent, so a direct connection's password is neither
+re-typed nor sent again. The dialog has no answer that turns asking off;
+change the level there or in the connection editor instead.
 
 The dialog says what the statement does, quotes it, and says how it runs
 (at once, committing on its own) and why it asked: `<connection> is set to

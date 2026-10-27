@@ -58,6 +58,7 @@ import type { IDeadline } from 'shared/explorer/devtool/deadline';
 import type { JsonValue, Reply } from 'shared/explorer/devtool/reply';
 import type { IIdentityState } from 'shared/explorer/devtool/frameIdentity';
 import type { SqlApplyResult, SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SavedConnectionsStatus, SqlDialect, SqlGetSqlResult } from './connect';
+import type { SafetyLevel } from './connect/savedConnections';
 import type { HistoryEdit, HistoryStorage } from './history/api';
 import type { HistoryEntry } from './history/types';
 import type { SavedQueriesStorage, SavedQuery, SavedQueryEdit } from './history/savedQueries';
@@ -121,6 +122,13 @@ export interface SqlOps extends ToolOpMap {
 	// ── Saved-connection mutations (the controller owns the list) ───────────
 	/** Insert or replace a saved connection (the editor document's save). */
 	'sql.saveConnection': ToolOpSpec<IDeadline & IOwnedCall & { connection: SavedSqlConnection }, Reply<null>>;
+	/**
+	 * Set one saved connection's safety level, and nothing else. Only the id
+	 * and the level cross: the owner changes the record it holds, so the
+	 * stored config (a direct connection's password included) is never sent
+	 * back or rebuilt for it.
+	 */
+	'sql.setConnectionSafety': ToolOpSpec<IDeadline & IOwnedCall & { connId: string; safety: SafetyLevel }, Reply<null>>;
 	/** Delete a saved connection (a direct one's temp pipeline is stopped first, best effort). */
 	'sql.deleteConnection': ToolOpSpec<IDeadline & IOwnedCall & { connId: string }, Reply<null>>;
 	// ── History (the controller owns it; frames read and edit through these) ──

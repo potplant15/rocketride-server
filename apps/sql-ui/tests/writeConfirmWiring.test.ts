@@ -123,8 +123,8 @@ describe('QueryView asks by the connection\'s safety level', () => {
 	});
 
 	it('names the level on the line under the editor, so it is never invisible', () => {
-		assert.match(view, /title="Safety level for this connection\. Change it in the connection's settings\."/);
-		assert.match(view, /\{SAFETY_LINE\[safety\]\}/);
+		assert.match(view, /aria-label="Safety level for this connection"/);
+		assert.match(view, /value=\{pendingSafety \?\? safety\}/);
 	});
 });
 

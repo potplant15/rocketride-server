@@ -76,7 +76,7 @@ import { liveBufferText, selectRunTargets } from '../sql/targets';
 import { classifyStatement } from '../sql/classify';
 import { needsConfirmation, parseRowEstimate, rowEstimateStatement, toWriteConfirmation } from '../sql/safety';
 import type { RowEstimate } from '../sql/safety';
-import { safetyLevelOf } from '../connect/savedConnections';
+import { SAFETY_LEVELS, isSafetyLevel, safetyLevelOf } from '../connect/savedConnections';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { useConnectionRecord } from '../connectionRecord';
 import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, runSummary, settleStatement } from '../sql/batch';
@@ -141,11 +141,11 @@ interface RunTarget {
 /** Row-limit options offered by the header toggle. */
 const LIMIT_OPTIONS = ['200', '1000', 'All'] as const;
 
-/** The line under the editor names the connection's safety level. */
-const SAFETY_LINE: Record<SafetyLevel, string> = {
-	off: 'Does not ask before writes',
-	risky: 'Asks before risky writes',
-	every: 'Asks before every write',
+/** The safety levels as the line under the editor offers them (the editor's own names). */
+const SAFETY_CHOICES: Record<SafetyLevel, string> = {
+	off: "Don't ask",
+	risky: 'Ask before risky writes',
+	every: 'Ask before every write',
 };
 
 /** How the export announcements name each format. */
@@ -206,6 +206,18 @@ const styles = {
 		gap: 8,
 		fontSize: 11,
 		color: 'var(--rr-text-secondary)',
+	} as CSSProperties,
+
+	// The safety level picker on the line under the editor.
+	safetySelect: {
+		height: 22,
+		padding: '0 4px',
+		borderRadius: 5,
+		border: '1px solid var(--rr-border)',
+		background: 'var(--rr-bg-input)',
+		color: 'var(--rr-text-secondary)',
+		font: 'inherit',
+		fontSize: 11,
 	} as CSSProperties,
 
 	// The Export button's menu.
@@ -321,6 +333,35 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// so each statement is checked at the level set when it is reached.
 	const safetyRef = useRef(safety);
 	safetyRef.current = safety;
+	// A level being saved from the line under the editor, shown until the
+	// stored record says the same (a dev tool's copy arrives a moment later).
+	const [pendingSafety, setPendingSafety] = useState<SafetyLevel | null>(null);
+	const savingSafety = pendingSafety !== null;
+	useEffect(() => {
+		if (pendingSafety !== null && pendingSafety === safety) setPendingSafety(null);
+	}, [pendingSafety, safety]);
+
+	/**
+	 * Change this connection's safety level in place. Only the id and the
+	 * level are sent: the record's owner sets that one field, so the stored
+	 * config (a direct connection's password included) is never re-typed,
+	 * rebuilt or sent again.
+	 *
+	 * @param value - The chosen level.
+	 */
+	const changeSafety = useCallback((value: string): void => {
+		const connId = endpoint.connId;
+		if (!connId || !isSafetyLevel(value) || value === safety) return;
+		const next = value;
+		setPendingSafety(next);
+		env.setConnectionSafety(connId, next).then(
+			() => announce(`Safety level for this connection: ${SAFETY_CHOICES[next]}`),
+			(error: unknown) => {
+				setPendingSafety(null);
+				announce(`The safety level was not changed. ${error instanceof Error ? error.message : String(error)}`);
+			},
+		);
+	}, [endpoint.connId, env, safety]);
 
 	// ── Editor + run state ───────────────────────────────────────────────────
 	const [sql, setSql] = useState(initialSql ?? '');
@@ -976,7 +1017,16 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 				{/* The pre-run truth line: what Run would send, in words. */}
 				<div style={styles.willRun}>
 					<span>{preview.text}</span>
-					<span title="Safety level for this connection. Change it in the connection's settings.">{SAFETY_LINE[safety]}</span>
+					<select
+						aria-label="Safety level for this connection"
+						title="How much this connection asks before a statement that changes something. A check on the statement text, not a database permission."
+						style={styles.safetySelect}
+						value={pendingSafety ?? safety}
+						disabled={connectionRecord === null || savingSafety}
+						onChange={(event) => changeSafety(event.target.value)}
+					>
+						{SAFETY_LEVELS.map((level) => <option key={level} value={level}>{SAFETY_CHOICES[level]}</option>)}
+					</select>
 				</div>
 
 				{/* All has a cost the toggle cannot show. */}

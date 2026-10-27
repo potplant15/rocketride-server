@@ -56,6 +56,7 @@ import type { JsonValue } from 'shared/explorer/devtool/reply';
 import type { IDataGridPersistence } from 'shell';
 import type { SqlOps } from './ops';
 import type { SqlApplyResult, SqlApplyStatement, SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SqlSession, SavedSqlConnection, SqlDialect, SqlGetSqlResult } from './connect';
+import type { SafetyLevel } from './connect/savedConnections';
 import { SQL_OP_TIMEOUT_MS, applyBatchTimeoutMs } from './sqlTimeouts';
 import type { IPrefsAccessor } from 'shared/explorer/history/types';
 import type { SqlHistoryApi } from './history/api';
@@ -92,6 +93,11 @@ export interface SqlEnv {
 	getEnvironmentKeys(): Promise<string[]>;
 	/** Insert or replace a saved connection (it is committed where the list is owned). */
 	saveConnection(conn: SavedSqlConnection): Promise<void>;
+	/**
+	 * Set one saved connection's safety level where the list is owned, sending
+	 * only the id and the level (the stored config is kept, never resent).
+	 */
+	setConnectionSafety(connId: string, safety: SafetyLevel): Promise<void>;
 	/** Delete a saved connection (a direct one's temp pipeline is stopped first, best effort). */
 	deleteConnection(conn: SavedSqlConnection): Promise<void>;
 	/**
@@ -273,6 +279,9 @@ export function createRemoteSqlEnv(caller: IFrameCaller<SqlOps>, ready: boolean,
 		getEnvironmentKeys: () => caller.callReply('sql.envKeys', {}, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.envKeys'] }).catch(() => []),
 		saveConnection: async (conn) => {
 			await caller.callReply('sql.saveConnection', { connection: conn, owner: owner() }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.saveConnection'] });
+		},
+		setConnectionSafety: async (connId, safety) => {
+			await caller.callReply('sql.setConnectionSafety', { connId, safety, owner: owner() }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.setConnectionSafety'] });
 		},
 		deleteConnection: async (conn) => {
 			await caller.callReply('sql.deleteConnection', { connId: conn.id, owner: owner() }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.deleteConnection'] });

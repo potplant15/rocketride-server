@@ -228,6 +228,8 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			results.history = await r.frame.caller.callReply('sql.history', { connId: 'c-pipe', owner: r.frame.owner() }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.history'] });
 			assert.deepEqual(results.history, [{ ...entry, pinned: true }]);
 			await r.env.saveConnection({ ...PIPELINE, id: 'c-new', name: 'New' });
+			await r.env.setConnectionSafety('c-new', 'every');
+			assert.equal(getSavedConnections().find((c) => c.id === 'c-new')?.safety, 'every');
 			await r.env.deleteConnection({ ...PIPELINE, id: 'c-new', name: 'New' });
 			// The direct document's release carries the key it opened, and the
 			// controller sees it.

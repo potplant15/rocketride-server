@@ -99,6 +99,7 @@ import {
 import { transactionsUnavailable } from './connect/session';
 import type { SavedConnectionsFs, SavedSqlConnection, SqlApplyResult, SqlApplyStatement, SqlDialect, SqlEndpoint, SqlSession } from './connect';
 import { isSafetyLevel } from './connect/savedConnections';
+import type { SafetyLevel } from './connect/savedConnections';
 import { gateApplyStatements } from './sql/gate';
 import type { ConnectionStatusSource } from './connectionStatus';
 import {
@@ -237,6 +238,17 @@ export interface SqlCore {
 	 * @throws ExplorerToolError `invalid` (not a usable record) or `unavailable` (not signed in, list unreadable).
 	 */
 	saveConnection(connection: SavedSqlConnection, stillAllowed?: () => void): Promise<void>;
+	/**
+	 * Set one saved connection's safety level on the record the list holds,
+	 * keeping the rest of it (the config, secrets included) as stored. A level
+	 * already set writes nothing.
+	 *
+	 * @param connId - The connection id.
+	 * @param safety - The level.
+	 * @param stillAllowed - As for {@link SqlCore.saveConnection}.
+	 * @throws ExplorerToolError `invalid` (an unknown level or connection) or `unavailable`.
+	 */
+	setConnectionSafety(connId: string, safety: SafetyLevel, stillAllowed?: () => void): Promise<void>;
 	/**
 	 * Delete a saved connection; a direct one's temp pipeline is stopped first, best effort.
 	 *
@@ -707,6 +719,16 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 			await listReady('saveConnection');
 			stillAllowed();
 			upsertSavedConnection(record);
+		},
+		async setConnectionSafety(connId, safety, stillAllowed = sameAccount('setConnectionSafety')) {
+			const invalid = (message: string): ExplorerToolError => new ExplorerToolError({ kind: 'invalid', tool: 'setConnectionSafety', message });
+			if (!isSafetyLevel(safety)) throw invalid("The safety level was not saved: it must be 'off', 'risky' or 'every'.");
+			await listReady('setConnectionSafety');
+			stillAllowed();
+			const record = getSavedConnection(connId);
+			if (!record) throw invalid(`There is no saved connection '${connId}'.`);
+			if (record.safety === safety) return;
+			upsertSavedConnection({ ...record, safety });
 		},
 		async deleteConnection(connId, stillAllowed = sameAccount('deleteConnection')) {
 			await listReady('deleteConnection');

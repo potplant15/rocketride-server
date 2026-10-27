@@ -561,6 +561,10 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 			// the list is still being read.
 			await core.saveConnection(connection, () => requireOwner(owner, 'saveConnection'));
 		},
+		'sql.setConnectionSafety': async ({ connId, safety, owner }) => {
+			requireOwner(owner, 'setConnectionSafety');
+			await core.setConnectionSafety(connId, safety, () => requireOwner(owner, 'setConnectionSafety'));
+		},
 		'sql.deleteConnection': async ({ connId, owner }) => {
 			requireOwner(owner, 'deleteConnection');
 			await core.deleteConnection(connId, () => requireOwner(owner, 'deleteConnection'));
