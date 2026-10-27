@@ -209,6 +209,46 @@ the browser says `No primary key — page order is not guaranteed by the
 database` above the grid rather than letting you find out by seeing a row
 twice.
 
+### Changing rows
+
+Rows are changed from the row drawer, and nothing is written until you
+apply. **Edit** opens a form with one field per column and a **NULL** box
+for each; key columns are shown but cannot be changed. **Delete** marks the
+row, and **Undo** takes a staged change back. **Insert row**, above the
+grid, opens the same form empty: a field left empty takes the column's
+default, and NULL is sent only when its box is ticked. A value is checked
+against the column's type when you stage it (a fraction for a whole-number
+column is refused, and a number is never rounded on the way), and it is
+always sent as a bound value, never written into the statement.
+
+Staged rows are marked in the grid: a tint, plus ✎ before an edited value
+(its tooltip says what it was) and **Deleted** on a deleted row, which is
+struck through. New rows are not shown in the grid. The bar above it counts
+every change, for example `3 pending changes to orders: 1 edited row, 1 new
+row, 1 deleted row. Nothing is saved yet.` **Discard** drops them all (it
+asks first when there are two or more), **Review SQL** shows the exact
+statements, and **Apply** asks first, then sends them.
+
+Each change is one statement that must change exactly one row, picked out by
+its full primary key. A change that touches no row (it was changed or deleted
+since you read it), or more than one, stops the apply. On PostgreSQL, and on
+a MySQL table whose storage engine keeps transactions (InnoDB), the changes
+run as one transaction: all are saved, or none, and the confirmation says so.
+On a MySQL table whose engine keeps none (MyISAM, for one) each change
+commits on its own, and the confirmation says that instead; the app reads
+the table's engine before it asks, and when it cannot, the confirmation
+hedges. See [Each statement commits on its own](#each-statement-commits-on-its-own)
+for what happens when something fails. After an apply, each statement is
+recorded in [Query history](#query-history), the changes that were saved
+leave the bar, and the page and its row count are read again.
+
+Rows cannot be changed in a table without a primary key, on ClickHouse (no
+unique row keys, and its updates run as background mutations), on a
+connection that cannot run statements, or while the connection (in the dev
+tool, the sidebar) cannot be reached. The buttons are off, and the drawer
+says why. A key larger than 2^53 that the browser received as a number may
+already have been rounded, so that row cannot be changed here.
+
 ## Writing and running queries
 
 A query document is a SQL editor over the results grid.
@@ -257,18 +297,21 @@ statement runs and commits on its own.` Transaction control you type would
 do nothing through `execute`, and a refusal is better than a statement that
 quietly does nothing.
 
-**Apply is the exception.** Staged row changes in the data browser, and a
-table designer plan on PostgreSQL (see [Changing a table](#changing-a-table)),
-run through the node's own transaction tools: `begin` opens a transaction
-that holds one connection, every statement runs on it, and `commit` saves
-them all at once. If a statement fails, if a row change touches a different
-number of rows than the one row it names, or if the database refuses the
-commit, the app sends `rollback` and nothing is saved. The statements are
-written by the app, one per change, with every value bound rather than
-written into the text. The whole list is checked before anything is sent:
-each entry must be exactly one statement, and transaction control inside it
-is refused. Nothing in an apply is ever sent twice, and the transaction
-never leaves the sidebar (as a dev tool) or the app's own engine connection.
+**Apply is the exception.** [Changing rows](#changing-rows) in the data
+browser, and a table designer plan on PostgreSQL (see
+[Changing a table](#changing-a-table)), run through the node's own
+transaction tools: `begin` opens a transaction that holds one connection,
+every statement runs on it, and `commit` saves them all at once. If a
+statement fails, if a row change touches a different number of rows than
+the one row it names, or if the database refuses the commit, the app sends
+`rollback` and nothing is saved. The statements are written by the app, one
+per change, with every value bound rather than written into the text. The
+whole list is checked before anything is sent: each entry must be exactly
+one statement, transaction control inside it is refused, and on MySQL one
+transaction holds only `INSERT`, `UPDATE`, `DELETE` and `REPLACE` (other
+statements can commit on their own there). Nothing in an apply is ever sent
+twice, and the transaction never leaves the sidebar (as a dev tool) or the
+app's own engine connection.
 
 Each statement of an apply may take up to 5 minutes, the time the node keeps
 an idle transaction open. A statement still running after that stops the
@@ -278,8 +321,16 @@ nothing is sent: ClickHouse opens no transactions, and a node older than the
 transaction tools has none. The app then asks again, saying that each change
 will commit on its own and that a failure leaves earlier changes saved, and
 sends the statements one by one only if you agree; the first failure stops
-the rest. A row change on MySQL rolls back only on a table whose engine has
-transactions (InnoDB, the default).
+the rest.
+
+An apply says what it cannot know. A failure counts as "nothing saved" only
+when the database or the node answered with a refusal. When an answer never
+arrives (a dropped connection, a wait that ran out), the result says the
+change, or the commit, may or may not have been saved, and asks you to check
+the data; a row change in that state leaves the bar rather than being sent
+again. When the rollback itself is not confirmed, the result adds that the
+database may hold locks on the table for up to 5 minutes, until the node
+rolls the transaction back.
 
 A statement is sent a second time in one case only. When the pipeline task
 is stopping or restarting, the engine refuses a statement with
@@ -731,13 +782,14 @@ foreign keys that reference any column you are dropping, renaming or
 retyping (`from schema snapshot HH:MM`), and carries the dialect's note on
 what happens to a plan that stops half-way:
 
-- **PostgreSQL** — Apply sends the whole plan as one transaction, so a
-  failure rolls back the whole plan and the plan stays as it was. The result
-  says `The plan runs as one transaction: a failure rolls back the whole
-  plan` only when the node confirms the plan ran as one. A node without the
-  transaction tools runs each statement on its own, and the result says that
-  instead. Every statement the designer writes (`ALTER TABLE`, `CREATE
-  TABLE`) can run inside a transaction on PostgreSQL.
+- **PostgreSQL** — Apply asks for one transaction, so a failure rolls back
+  the whole plan and the plan stays as it was. The result says `The plan
+  runs as one transaction: a failure rolls back the whole plan` only when
+  the node confirms the plan ran as one. A node without the transaction
+  tools gets nothing: the app asks again, saying each statement would commit
+  on its own, and runs the plan that way only if you agree (and says so up
+  front the next time). Every statement the designer writes (`ALTER TABLE`,
+  `CREATE TABLE`) can run inside a transaction on PostgreSQL.
 - **MySQL** — each DDL statement commits implicitly. A failure mid-plan
   leaves earlier statements applied. Nothing here can be rolled back.
 - **ClickHouse** — some `ALTER` forms run as asynchronous mutations and may
@@ -745,9 +797,12 @@ what happens to a plan that stops half-way:
 
 A plan that runs statement by statement and stops part-way reports what
 committed, which statement failed and what was not run, and the plan keeps
-the remaining statements. When the answer to a statement, or to the commit,
-never arrives, the result says the plan may or may not be applied, and the
-schema is read again.
+the remaining statements. When the answer to a statement never arrives, the
+result says it may have run and takes it out of the plan, so it is not run
+twice by accident; when the commit's answer never arrives, the result says
+the plan may or may not have been saved. Either way the schema is read
+again. Each statement may take up to 5 minutes; one still running after that
+stops the apply (on PostgreSQL, the plan is rolled back).
 
 **After a successful apply**, what the app can tell you depends on the node.
 When the node offers a `refresh_schema` tool, the app re-reads the schema
@@ -843,7 +898,11 @@ these differences:
   waits up to 60 seconds, re-reading it 135, and the engine check 15.
 - **Transactions only through Apply.** A statement you run commits on its
   own, and transaction control you type is refused. Only Apply (staged row
-  changes, and designer plans on PostgreSQL) runs as one transaction.
+  changes on PostgreSQL and on transactional MySQL tables, and designer
+  plans on PostgreSQL) runs as one transaction.
+- **Row editing needs a primary key**, and is not offered on ClickHouse. New
+  rows are listed in the pending-changes bar and in Review SQL, not in the
+  grid.
 - **No `EXPLAIN ANALYZE`.** Plan numbers are estimates, never measurements.
 - **No `DELIMITER`.** Buffers that change the terminator split wrongly.
 - **Declared foreign keys only.** Nothing is inferred from column names, and

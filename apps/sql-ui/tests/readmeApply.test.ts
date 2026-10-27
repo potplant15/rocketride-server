@@ -36,8 +36,31 @@ import path from 'node:path';
 import { APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS } from '../src/connect/tools';
 import { designApplyMode } from '../src/views/TableDesignView';
 import { rowApplyMode } from '../src/sql/applyMode';
+import { pendingCountText, pendingDetailText } from '../src/components/PendingChangesBar';
+import { coerceValue, rowEditGate } from '../src/sql/rowEdits';
 
 const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+
+describe('README claims: Changing rows', () => {
+	it('quotes the bar the way the bar says it', () => {
+		const counts = { edited: 1, inserted: 1, deleted: 1, total: 3 };
+		assert.ok(prose.includes(`\`${pendingCountText(3)} ${pendingDetailText('orders', counts)}\``));
+	});
+
+	it('states the checks the model makes, and where editing is off', () => {
+		assert.equal(coerceValue('INTEGER', '1.5').ok, false);
+		assert.match(prose, /a fraction for a whole-number column is refused/);
+		const def = { columns: [{ column: 'id', type: 'INT' }] };
+		assert.notEqual(rowEditGate({ dialect: 'postgres', def, table: 't', executeState: 'on', ready: true }), null, 'no primary key');
+		assert.notEqual(rowEditGate({ dialect: 'clickhouse', def: { ...def, primary_key: ['id'] }, table: 't', executeState: 'on', ready: true }), null, 'ClickHouse');
+		assert.match(prose, /Rows cannot be changed in a table without a primary key, on ClickHouse/);
+	});
+
+	it('says an unknown outcome is never sent again, and when locks may stay', () => {
+		assert.match(prose, /a row change in that state leaves the bar rather than being sent again/);
+		assert.match(prose, /the database may hold locks on the table for up to 5 minutes/);
+	});
+});
 
 describe('README claims: Apply', () => {
 	it('states the wait each statement of an apply gets, and that it is the node\'s idle-transaction time', () => {
