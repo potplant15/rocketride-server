@@ -547,7 +547,9 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 		assert.ok(persisted.includes(path.join('components', 'ResultViews.tsx')), persisted.join(', '));
 		for (const rel of persisted) {
 			const text = read(rel);
-			assert.equal((text.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length, (text.match(/tableId=/g) ?? []).length, `${rel}: every persisted grid`);
+			// Directly, or through the layout guard (graph/gridLayout.ts), which wraps the env's persistence and nothing else.
+			const taken = (text.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length + (/guardLayouts\(env\.gridPersistence,/.test(text) ? (text.match(/persistence=\{persistence\}/g) ?? []).length : 0);
+			assert.equal(taken, (text.match(/tableId=/g) ?? []).length, `${rel}: every persisted grid`);
 		}
 		assert.match(read('devtool/frame.ts'), /gridPersistence: SESSION_GRIDS,/);
 	});

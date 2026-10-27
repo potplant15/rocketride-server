@@ -44,6 +44,7 @@ import type { ReadQueryResult } from '../graph/types';
 import { describeValue } from '../graph/values';
 import { COPY_BLOCKED_NOTE } from '../graph/wording';
 import { useGraphEnv } from '../env';
+import { guardLayouts, layoutRulesFor } from '../graph/gridLayout';
 import { ExportMenu } from './ExportMenu';
 
 // =============================================================================
@@ -109,6 +110,9 @@ export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onR
 		})) as GridColumnDefinition[];
 	}, [result]);
 
+	// A result grid built in a hidden tab crushes its flexible columns and would save that: the saved layout is guarded.
+	const persistence = useMemo(() => guardLayouts(env.gridPersistence, layoutRulesFor(columns)), [env.gridPersistence, columns]);
+
 	return (
 		<Card noBodyPadding fill>
 			<CardDataGrid<Record<string, unknown>>
@@ -118,7 +122,7 @@ export const ResultTable: React.FC<IResultTableProps> = ({ result, tableKey, onR
 				columns={columns}
 				data={rows}
 				tableId={`graph-results-${tableKey}`}
-				persistence={env.gridPersistence}
+				persistence={persistence}
 				paginate={false}
 				height="100%"
 				emptyTitle="No rows"
