@@ -97,11 +97,30 @@ describe('the editor and results regions (live L2)', () => {
 		const pad = /padding: '(\d+)px \d+px (\d+)px'/.exec(body);
 		const gap = px(body, /gap: (\d+),/);
 		const askRow = 34;
-		const willRun = 13;
+		// The line under the editor: 13 px of text, and the safety level's
+		// button (the shell's small button, 26 px) held to the line by
+		// negative margins on its anchor, so it adds no height while its
+		// click target stays 26 px (live run at 28159f633: a bare 26 px
+		// button cost 13 px and clipped the tenth row).
+		const anchor = block('safetyAnchor');
+		const pull = px(anchor, /margin: '-(\d+)px 0'/);
+		const willRun = Math.max(13, 26 - 2 * pull);
+		assert.ok(26 >= 24, 'the button keeps a 24 px target');
+		assert.ok(willRun <= 14, `the line is ${willRun} px`);
 		const inner = 666 - Number(pad?.[1]) - Number(pad?.[2]);
 		const needed = askRow + editor + willRun + results + 3 * gap;
-		assert.ok(needed <= inner, `${needed} px needed, ${inner} px there`);
+		assert.ok(needed + 4 <= inner, `${needed} px needed, ${inner} px there (4 px to spare)`);
 		assert.doesNotMatch(block('willRun'), /paddingTop/);
+	});
+
+	it('the line under the editor never wraps: its text ellipsizes, the full text is in the title', () => {
+		const text = block('willRunText');
+		assert.match(text, /whiteSpace: 'nowrap'/);
+		assert.match(text, /textOverflow: 'ellipsis'/);
+		assert.match(text, /minWidth: 0/);
+		assert.match(query, /<span style=\{styles\.willRunText\} title=\{preview\.text\}>\{preview\.text\}<\/span>/);
+		assert.match(query, /<span ref=\{safetyAnchorRef\} style=\{styles\.safetyAnchor\}>/);
+		assert.match(query, /<GatedButton\s+variant="ghost"\s+small\s+ariaExpanded=\{safetyMenuOpen\}/);
 	});
 
 	it('the result notes ride the results header line, not a line under the grid', () => {

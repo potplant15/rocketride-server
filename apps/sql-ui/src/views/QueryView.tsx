@@ -184,7 +184,7 @@ const styles = {
 		display: 'flex',
 		flexDirection: 'column',
 		gap: 6,
-		padding: '10px 24px 10px',
+		padding: '8px 24px 8px',
 	} as CSSProperties,
 
 	// 13 lines of editor (Monaco's line is 20 px), never fewer than 10; it
@@ -205,7 +205,8 @@ const styles = {
 		flexDirection: 'column',
 	} as CSSProperties,
 
-	// The pre-run truth line under the editor.
+	// The pre-run truth line under the editor: one line of 11 px text, as
+	// tall as the text, so the editor keeps 13 lines and the results 10 rows.
 	willRun: {
 		display: 'flex',
 		alignItems: 'center',
@@ -213,6 +214,24 @@ const styles = {
 		gap: 12,
 		fontSize: 11,
 		color: 'var(--rr-text-secondary)',
+	} as CSSProperties,
+
+	// Never wraps onto a second line: a long preview ellipsizes, and the
+	// full text is the span's title.
+	willRunText: {
+		minWidth: 0,
+		overflow: 'hidden',
+		textOverflow: 'ellipsis',
+		whiteSpace: 'nowrap',
+	} as CSSProperties,
+
+	// The safety level's button keeps the shell's 26 px small size (a click
+	// target over 24 px) but counts 14 px in the line: it reaches into the
+	// gaps above and below instead of making the line taller.
+	safetyAnchor: {
+		display: 'inline-flex',
+		flexShrink: 0,
+		margin: '-6px 0',
 	} as CSSProperties,
 
 	// Result meta line in the grid card's action slot.
@@ -1132,8 +1151,8 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 
 				{/* The pre-run truth line: what Run would send, in words. */}
 				<div style={styles.willRun}>
-					<span>{preview.text}</span>
-					<span ref={safetyAnchorRef}>
+					<span style={styles.willRunText} title={preview.text}>{preview.text}</span>
+					<span ref={safetyAnchorRef} style={styles.safetyAnchor}>
 						<GatedButton
 							variant="ghost"
 							small
