@@ -272,8 +272,8 @@ and the page and its row count are read again.
 Rows cannot be changed in a table without a primary key, on ClickHouse (no
 unique row keys, and its updates run as background mutations), on a
 connection that cannot run statements, in a table whose primary key is a
-binary column (`binary`, `varbinary`, the blob types, `bytea`, `bit`, or
-`VARCHAR(n) BINARY`), or while the connection (in the dev
+binary column (`binary`, `varbinary`, the blob types, `bytea`, `bit`,
+`varbit`, or `VARCHAR(n) BINARY`), or while the connection (in the dev
 tool, the sidebar) cannot be reached. The buttons are off, and the drawer
 says why. A key beyond ±9,007,199,254,740,991 that the browser received as a
 number may already have been rounded, so that row cannot be changed here.
@@ -307,9 +307,10 @@ result says it may have run and takes it out of the plan, so it is not run
 twice by accident; when the commit's answer never arrives, the result says
 the plan may or may not have been saved. Either way the schema is read
 again. On PostgreSQL, each statement of the transaction may take up to 5 minutes; one
-still running after that stops the apply and the plan is rolled back. On MySQL
-and ClickHouse a statement waits like a Query-page statement, so a long
-`ALTER` is not cut off. The designer's Apply records its statements in
+still running after that stops the apply and the plan is rolled back. On
+MySQL, on ClickHouse, and on a PostgreSQL node without the transaction tools,
+each statement commits on its own and waits like a Query-page statement, so a
+long `ALTER` is not cut off. The designer's Apply records its statements in
 [Query history](#query-history), like the grid's.
 
 After a successful apply, the schema is re-read when the node can do that,

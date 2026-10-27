@@ -81,6 +81,15 @@ describe('README claims: Changing rows', () => {
 });
 
 describe('README claims: Apply', () => {
+	it('says which designer statements wait like a Query statement, and lists every binary key type', async () => {
+		const { isBinarySqlType } = await import('../src/sql/resultTypes');
+		// Statement by statement: MySQL, ClickHouse, and a PostgreSQL node without the transaction tools.
+		assert.match(prose, /On MySQL, on ClickHouse, and on a PostgreSQL node without the transaction tools, each statement commits on its own and waits like a Query-page statement, so a long `ALTER` is not cut off\./);
+		assert.equal(designApplyMode('postgres', true).atomic, false);
+		assert.match(prose, /binary column \(`binary`, `varbinary`, the blob types, `bytea`, `bit`, `varbit`, or `VARCHAR\(n\) BINARY`\)/);
+		for (const type of ['BINARY(16)', 'VARBINARY(8)', 'LONGBLOB', 'BYTEA', 'BIT(1)', 'VARBIT', 'VARCHAR(8) BINARY']) assert.equal(isBinarySqlType(type), true, type);
+	});
+
 	it('states the wait each statement of an apply gets, and that it is the node\'s idle-transaction time', () => {
 		assert.equal(APPLY_STATEMENT_WAIT_MS, 5 * 60_000);
 		assert.equal(APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS);
