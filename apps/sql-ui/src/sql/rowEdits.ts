@@ -43,10 +43,14 @@
 //   what catches a key that matched nothing, or more than one row.
 //
 //   TYPED VALUES. A form gives text; the reflected column type decides what
-//   is bound: a number (or exact text, for an integer beyond 2^53 or a long
-//   decimal), a boolean, or the text itself. Values are always bound as
-//   `$1..$n`, never written into the statement; only identifiers are, quoted
-//   for the dialect.
+//   is bound: a number when a JavaScript number holds it exactly, else the
+//   typed text (an integer beyond 2^53, a long decimal, any exponent form),
+//   which the database reads exactly; a boolean (1 or 0 for a MySQL
+//   TINYINT(1)); or the text itself. A fraction for a whole-number column is
+//   refused (the database would round it), and nothing non-finite is sent.
+//   Values are always bound as `$1..$n`, never written into the statement;
+//   only identifiers are, quoted for the dialect, and against the table as
+//   it is when the statements are built.
 //
 //   INSERTS omit empty fields, so the database's default applies; NULL is
 //   sent only when the form says NULL.
@@ -56,7 +60,7 @@
 // refused with the reason, as is an engine that did not report its type.
 // =============================================================================
 
-import type { SqlApplyStatement, SqlDialect, SqlSchemaTable } from '../connect';
+import type { SqlApplyResult, SqlApplyStatement, SqlDialect, SqlSchemaTable } from '../connect';
 import { quoteIdent } from './paging';
 import { rrTypeFromSqlType } from './resultTypes';
 
@@ -124,6 +128,12 @@ const DECIMAL_TEXT = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 /** The most significant digits a JavaScript number holds exactly. */
 const EXACT_DIGITS = 15;
 
+/** Whole type-name tokens of whole-number columns. */
+const INTEGER_TOKENS = /^(?:tinyint|smallint|mediumint|int|int2|int4|int8|integer|bigint|serial|serial2|serial4|serial8|smallserial|bigserial|year|u?int(?:8|16|32|64|128|256))$/i;
+
+/** MySQL's BOOLEAN, which it reports as TINYINT(1). */
+const MYSQL_BOOLEAN = /^\s*tinyint\s*\(\s*1\s*\)/i;
+
 /** Column types that hold 64 bits or more, whose keys travel as text. */
 const WIDE_INTEGER = /\b(?:bigint|int8|bigserial|serial8|u?int(?:64|128|256))\b/i;
 
@@ -132,20 +142,38 @@ const TRUE_TEXT = /^(?:true|t|yes|y|on|1)$/i;
 const FALSE_TEXT = /^(?:false|f|no|n|off|0)$/i;
 
 /**
- * A number from text: a JavaScript number when that is exact, else the text
- * itself (the database reads it exactly).
+ * Whether a column type holds whole numbers only.
+ *
+ * @param sqlType - The reflected type.
+ * @returns True for the integer types.
+ */
+function isWholeNumberType(sqlType: string): boolean {
+	return sqlType
+		.replace(/'[^']*'|"[^"]*"/g, ' ')
+		.split(/[^A-Za-z0-9]+/)
+		.some((token) => INTEGER_TOKENS.test(token));
+}
+
+/**
+ * A number from text: a JavaScript number when that holds it exactly, else
+ * the text itself (the database reads it exactly). An exponent form always
+ * stays text: `1e400` would become Infinity (sent as NULL), and `1e-400` 0.
  *
  * @param text - The trimmed text.
- * @returns The value, or undefined when the text is not a number.
+ * @param whole - The column holds whole numbers only.
+ * @returns The value, or the reason it is refused.
  */
-function numberFromText(text: string): number | string | undefined {
+function numberFromText(text: string, whole: boolean): CoercedValue {
 	if (INTEGER_TEXT.test(text)) {
 		const value = Number(text);
-		return Number.isSafeInteger(value) ? value : text;
+		return { ok: true, value: Number.isSafeInteger(value) ? value : text };
 	}
-	if (!DECIMAL_TEXT.test(text)) return undefined;
-	const digits = text.replace(/^[+-]/, '').replace(/[eE].*$/, '').replace('.', '').replace(/^0+/, '');
-	return digits.length <= EXACT_DIGITS ? Number(text) : text;
+	if (!DECIMAL_TEXT.test(text)) return { ok: false, reason: whole ? 'needs a whole number' : 'needs a number' };
+	if (whole) return { ok: false, reason: 'needs a whole number' };
+	if (/[eE]/.test(text)) return { ok: true, value: text };
+	const digits = text.replace(/^[+-]/, '').replace('.', '').replace(/^0+/, '');
+	const value = Number(text);
+	return { ok: true, value: digits.length <= EXACT_DIGITS && Number.isFinite(value) ? value : text };
 }
 
 /**
@@ -153,15 +181,27 @@ function numberFromText(text: string): number | string | undefined {
  *
  * @param sqlType - The column's reflected type.
  * @param raw - The value: text from a form, or a value the database returned; null is NULL.
+ * @param dialect - The connection's dialect (MySQL's TINYINT(1) takes true and false).
  * @returns The value to bind, or the reason it cannot be.
  */
-export function coerceValue(sqlType: string, raw: unknown): CoercedValue {
+export function coerceValue(sqlType: string, raw: unknown, dialect: SqlDialect = 'unknown'): CoercedValue {
 	if (raw === null) return { ok: true, value: null };
+	if (dialect === 'mysql' && MYSQL_BOOLEAN.test(sqlType)) {
+		const text = typeof raw === 'boolean' ? String(raw) : typeof raw === 'number' || typeof raw === 'string' ? String(raw).trim() : '';
+		if (text === '1' || text === '0') return { ok: true, value: Number(text) };
+		if (TRUE_TEXT.test(text)) return { ok: true, value: 1 };
+		if (FALSE_TEXT.test(text)) return { ok: true, value: 0 };
+		return { ok: false, reason: 'needs true or false (1 or 0)' };
+	}
 	const kind = rrTypeFromSqlType(sqlType);
 	if (kind === 'number') {
-		if (typeof raw === 'number' && Number.isFinite(raw)) return { ok: true, value: raw };
-		const value = typeof raw === 'string' ? numberFromText(raw.trim()) : undefined;
-		return value === undefined ? { ok: false, reason: 'needs a number' } : { ok: true, value };
+		const whole = isWholeNumberType(sqlType);
+		if (typeof raw === 'number') {
+			if (!Number.isFinite(raw)) return { ok: false, reason: 'needs a finite number' };
+			if (whole && !Number.isInteger(raw)) return { ok: false, reason: 'needs a whole number' };
+			return { ok: true, value: raw };
+		}
+		return typeof raw === 'string' ? numberFromText(raw.trim(), whole) : { ok: false, reason: whole ? 'needs a whole number' : 'needs a number' };
 	}
 	if (kind === 'boolean') {
 		if (typeof raw === 'boolean') return { ok: true, value: raw };
@@ -170,6 +210,7 @@ export function coerceValue(sqlType: string, raw: unknown): CoercedValue {
 		if (FALSE_TEXT.test(text)) return { ok: true, value: false };
 		return { ok: false, reason: 'needs true or false' };
 	}
+	if (typeof raw === 'number' && !Number.isFinite(raw)) return { ok: false, reason: 'needs a finite number' };
 	if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') return { ok: true, value: raw };
 	// A JSON value a driver handed back as an object: sent as its text.
 	return { ok: true, value: JSON.stringify(raw) };
@@ -300,7 +341,7 @@ function typedFields(target: RowEditTarget, fields: RowValues, forInsert: boolea
 	for (const [column, raw] of Object.entries(fields)) {
 		const type = typeOf(target, column);
 		if (raw === undefined || (forInsert && raw === '')) continue;
-		const typed = coerceValue(type, raw);
+		const typed = coerceValue(type, raw, target.dialect);
 		if (!typed.ok) throw new RowEditError(`${column} ${typed.reason}.`);
 		out[column] = typed.value;
 	}
@@ -477,6 +518,24 @@ export function dropApplied(edits: RowEdits, committed: number): RowEdits {
 }
 
 /**
+ * How many of the changes an apply sent are settled: saved, or possibly
+ * saved, and so not to be staged again without the user seeing them. All
+ * after success; none after a rolled-back transaction; per statement, the
+ * committed ones, plus the failed one when its outcome is unknown (it is
+ * dropped, and the result says to check the data).
+ *
+ * @param result - The apply's reply.
+ * @param total - How many changes it sent.
+ * @returns How many to drop from the front ({@link dropApplied}).
+ */
+export function settledCount(result: SqlApplyResult, total: number): number {
+	const failure = result.failure;
+	if (failure === null) return total;
+	if (result.transactional) return 0;
+	return Math.min(total, failure.committed + (failure.unknown ? 1 : 0));
+}
+
+/**
  * How many rows each kind of change touches.
  *
  * @param edits - The model.
@@ -504,6 +563,27 @@ export function buildRowStatements(edits: RowEdits, target: RowEditTarget): SqlA
 	const pk = keyColumns(target);
 	const q = (name: string): string => quoteIdent(target.dialect, name);
 	const table = q(target.table);
+	const restage = 'Discard them and stage them again.';
+	// The table may have changed since the edits were staged (a schema
+	// refresh): build nothing that would aim at another row, or drop a value.
+	const sameKey = (keys: RowValues): boolean => {
+		const names = Object.keys(keys);
+		return names.length === pk.length && pk.every((column) => names.includes(column));
+	};
+	const known = (columns: string[]): void => {
+		for (const column of columns) {
+			if (!target.def.columns.some((c) => c.column === column)) throw new RowEditError(`${target.table} no longer has a column ${column}, so these changes cannot be applied. ${restage}`);
+		}
+	};
+	for (const edit of edits.entries) {
+		if (edit.kind !== 'insert' && !sameKey(edit.pk)) throw new RowEditError(`The table's key changed since these changes were staged, so they cannot be applied. ${restage}`);
+		if (edit.kind === 'update') {
+			if (Object.keys(edit.changes).length === 0) throw new RowEditError('A staged edit has no change left to apply.');
+			known(Object.keys(edit.changes));
+			if (Object.keys(edit.changes).some((column) => pk.includes(column))) throw new RowEditError(`The table's key changed since these changes were staged, so they cannot be applied. ${restage}`);
+		}
+		if (edit.kind === 'insert') known(Object.keys(edit.values));
+	}
 	return edits.entries.map((edit) => {
 		const params: unknown[] = [];
 		const bind = (value: unknown): string => {

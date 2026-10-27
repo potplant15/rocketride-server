@@ -38,6 +38,7 @@ import {
 	coerceValue,
 	describeRowEdit,
 	dropApplied,
+	settledCount,
 	emptyRowEdits,
 	pendingOf,
 	rowEditCounts,
@@ -240,7 +241,6 @@ describe('values are typed by the reflected column type', () => {
 		assert.deepEqual(coerceValue('NUMERIC(10,2)', '96.50'), { ok: true, value: 96.5 });
 		assert.deepEqual(coerceValue('BIGINT', '9007199254740993'), { ok: true, value: '9007199254740993' });
 		assert.deepEqual(coerceValue('NUMERIC(30,10)', '12345678901234567890.0123456789'), { ok: true, value: '12345678901234567890.0123456789' });
-		assert.deepEqual(coerceValue('DOUBLE', '-1.5e3'), { ok: true, value: -1500 });
 		assert.deepEqual(coerceValue('INTEGER', 7), { ok: true, value: 7 });
 	});
 
@@ -248,8 +248,10 @@ describe('values are typed by the reflected column type', () => {
 		for (const raw of ['', 'abc', '1,000', '12abc', true]) {
 			const result = coerceValue('INTEGER', raw);
 			assert.equal(result.ok, false, String(raw));
-			assert.match(result.ok ? '' : result.reason, /needs a number/);
+			assert.match(result.ok ? '' : result.reason, /needs a (?:whole )?number/);
 		}
+		const decimal = coerceValue('NUMERIC(10,2)', 'abc');
+		assert.match(decimal.ok ? '' : decimal.reason, /^needs a number$/);
 	});
 
 	it('booleans: true/false in the usual spellings, as real booleans', () => {
@@ -270,7 +272,7 @@ describe('values are typed by the reflected column type', () => {
 	it('staging coerces: a typed number goes out as a number, and a bad value is refused with its reason', () => {
 		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { quantity: '3', paid: 'true' });
 		assert.deepEqual(buildRowStatements(edits, pg())[0]!.params, [3, true, 5]);
-		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { quantity: 'three' }), /quantity needs a number/);
+		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { quantity: 'three' }), /quantity needs a whole number/);
 		refuses(() => stageInsert(emptyRowEdits(), pg(), { paid: 'maybe' }), /paid needs true or false/);
 		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { nope: 1 }), /orders has no column nope/);
 	});
@@ -361,5 +363,81 @@ describe('the pending model: keyed by primary key, in staging order', () => {
 		const lines = pg(LINES, 'order_lines');
 		assert.equal(describeRowEdit(stageDelete(emptyRowEdits(), lines, { order_id: 7, line: 2 }).entries[0]!, lines), 'Delete row (7, 2)');
 		assert.equal(describeRowEdit(stageUpdate(emptyRowEdits(), target, ROW, { status: null }).entries[0]!, target), 'Edit row 5: status pending → NULL');
+	});
+});
+
+// =============================================================================
+// REVIEW FIXES
+// =============================================================================
+
+describe('I-5: a number is sent as typed, or refused; never changed on the way', () => {
+	it('an exponent, or a value a JavaScript number cannot hold, keeps the typed text', () => {
+		assert.deepEqual(coerceValue('NUMERIC', '1e400'), { ok: true, value: '1e400' });
+		assert.deepEqual(coerceValue('NUMERIC', '1e-400'), { ok: true, value: '1e-400' });
+		assert.deepEqual(coerceValue('DOUBLE', '-1.5e3'), { ok: true, value: '-1.5e3' });
+		assert.deepEqual(coerceValue('NUMERIC(10,2)', '96.50'), { ok: true, value: 96.5 });
+	});
+
+	it('a whole-number column refuses a fraction (the database would round it), with the reason', () => {
+		for (const raw of ['1.5', '1e3', '-0.25', 2.5]) {
+			const result = coerceValue('INTEGER', raw);
+			assert.equal(result.ok, false, String(raw));
+			assert.match(result.ok ? '' : result.reason, /needs a whole number/);
+		}
+		assert.deepEqual(coerceValue('BIGINT UNSIGNED', '18446744073709551615'), { ok: true, value: '18446744073709551615' });
+		assert.deepEqual(coerceValue('SMALLINT', '-7'), { ok: true, value: -7 });
+	});
+
+	it('Infinity and NaN never reach the JSON (they would arrive as NULL)', () => {
+		for (const raw of [Infinity, -Infinity, Number.NaN]) {
+			const result = coerceValue('DOUBLE', raw);
+			assert.equal(result.ok, false, String(raw));
+		}
+		const edits = stageInsert(emptyRowEdits(), pg(), { total: '1e400' });
+		assert.deepEqual(JSON.parse(JSON.stringify(buildRowStatements(edits, pg())[0]!.params)), ['1e400']);
+	});
+});
+
+describe('M-6: a MySQL BOOLEAN (TINYINT(1)) column takes true and false', () => {
+	it('true/false spellings become 1/0 on MySQL; a number still works; other TINYINTs stay numbers', () => {
+		assert.deepEqual(coerceValue('TINYINT(1)', 'true', 'mysql'), { ok: true, value: 1 });
+		assert.deepEqual(coerceValue('TINYINT(1)', 'off', 'mysql'), { ok: true, value: 0 });
+		assert.deepEqual(coerceValue('TINYINT(1)', '1', 'mysql'), { ok: true, value: 1 });
+		assert.deepEqual(coerceValue('TINYINT(1)', false, 'mysql'), { ok: true, value: 0 });
+		assert.equal(coerceValue('TINYINT(4)', 'true', 'mysql').ok, false);
+	});
+});
+
+describe('M-3: the statements are built against the table as it is now', () => {
+	it('a key that changed since staging refuses the build, with the reason', () => {
+		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: 'paid' });
+		const rekeyed: RowEditTarget = { ...pg(), def: { ...ORDERS, primary_key: ['order_id', 'customer_id'] } };
+		refuses(() => buildRowStatements(edits, rekeyed), /key changed since these changes were staged/);
+	});
+
+	it('a column that is gone refuses the build, so no value is dropped without a word', () => {
+		const edits = stageInsert(stageUpdate(emptyRowEdits(), pg(), ROW, { status: 'paid' }), pg(), { quantity: '2' });
+		const fewer: RowEditTarget = { ...pg(), def: { ...ORDERS, columns: ORDERS.columns.filter((c) => c.column !== 'quantity') } };
+		refuses(() => buildRowStatements(edits, fewer), /no longer has a column quantity/);
+	});
+
+	it('an update never builds an empty SET', () => {
+		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: 'paid' });
+		const hollow = { ...edits, entries: edits.entries.map((edit) => (edit.kind === 'update' ? { ...edit, changes: {} } : edit)) };
+		refuses(() => buildRowStatements(hollow, pg()), /no change left/);
+	});
+});
+
+describe('I-1: what an apply settled, so nothing that may have run is staged again silently', () => {
+	const base = { index: 1, stage: 'statement' as const, message: 'x', rollbackConfirmed: true };
+
+	it('all of them after success; none after a rolled-back transaction', () => {
+		assert.equal(settledCount({ transactional: true, results: [], failure: null }, 3), 3);
+		assert.equal(settledCount({ transactional: true, results: [], failure: { ...base, committed: 0, unknown: false } }, 3), 0);
+	});
+
+	it('per statement: the committed ones, and the failed one too when its outcome is unknown', () => {
+		assert.equal(settledCount({ transactional: false, results: [], failure: { ...base, committed: 1, unknown: false } }, 3), 1);
+		assert.equal(settledCount({ transactional: false, results: [], failure: { ...base, committed: 1, unknown: true } }, 3), 2);
 	});
 });
