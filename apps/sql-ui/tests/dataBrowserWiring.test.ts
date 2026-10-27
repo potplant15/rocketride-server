@@ -131,6 +131,15 @@ describe('Data page wiring in ConnectionView', () => {
 });
 
 describe('RecordDrawer', () => {
+	// Live bug 3: the shell's footer row is right-aligned and does not wrap,
+	// so Prev, Next, Edit, Delete, Copy row as JSON and Close (about 510 px)
+	// spilled out of the 460 px drawer on the left. One wrapping container
+	// takes the row instead.
+	it('wraps its footer verbs inside the drawer rather than past its edge (live bug 3)', () => {
+		assert.match(drawer, /footer=\{\s*<div style=\{styles\.footer\}>\s*\{nav\}/);
+		assert.match(drawer, /footer: \{[\s\S]*?flex: '1 1 auto',[\s\S]*?minWidth: 0,[\s\S]*?flexWrap: 'wrap',[\s\S]*?justifyContent: 'flex-end',/);
+	});
+
 	it('never derives its fields from the keys of a row the grid has seen', () => {
 		assert.ok(!/Object\.(keys|entries)\(/.test(drawer), 'the drawer lists a row\'s own keys');
 		// The one place that lists a row's keys is the fallback for a table the

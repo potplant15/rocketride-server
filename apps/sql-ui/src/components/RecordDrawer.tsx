@@ -205,6 +205,17 @@ const styles = {
 		color: 'var(--rr-text-secondary)',
 		marginBottom: 10,
 	} as CSSProperties,
+
+	// The footer's verbs, wrapped onto a second line inside the drawer: the
+	// shell's footer row does not wrap, and six verbs are wider than 460 px.
+	footer: {
+		flex: '1 1 auto',
+		minWidth: 0,
+		display: 'flex',
+		flexWrap: 'wrap',
+		justifyContent: 'flex-end',
+		gap: 8,
+	} as CSSProperties,
 };
 
 // =============================================================================
@@ -360,11 +371,11 @@ const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, cl
 			modeless
 			width={460}
 			footer={
-				<>
+				<div style={styles.footer}>
 					{nav}
 					<Button variant="secondary" onClick={() => copy(recordJson(def, row), 'row as JSON')}>Copy row as JSON</Button>
 					<Button variant="ghost" onClick={onClose}>{closeLabel}</Button>
-				</>
+				</div>
 			}
 		>
 			{status && <div style={styles.status}>{status}</div>}
