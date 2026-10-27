@@ -272,7 +272,7 @@ describe('full app identity: the README says what the code does (DA-R1 I1)', () 
 		assert.doesNotMatch(prose, /one account's statements never reach another's file/);
 		assert.match(prose, /after another account signs in without a reload the app shows that account no history, records none of its statements, and saves nothing to the workspace preferences \(no history, saved query, grid layout or drawer width\) until the page is reloaded\./);
 		assert.match(prose, new RegExp(`The History drawer says \`${ANOTHER_ACCOUNT_HISTORY.replace(/[.:]/g, '\\$&')}\``));
-		assert.match(prose, /A setting the shell itself saves in that time, such as a theme change, still writes the preferences it holds, the first account's history among them, into the signed-in account's file/);
+		assert.match(prose, /A setting the shell itself saves in that time, such as switching to another app or changing the theme, still writes the preferences it holds, the first account's history among them, into the signed-in account's file/);
 		assert.match(prose, /As a dev tool, each account has its own section of the file, so one account's saved queries are never shown to or written for another\./);
 	});
 });

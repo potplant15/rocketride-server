@@ -288,7 +288,7 @@ describe('keys too large: the README says what the drawer does', () => {
 		const fs = await import('node:fs');
 		const path = await import('node:path');
 		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
-		assert.match(prose, /A key that reached the browser as a number above 9,007,199,254,740,992 was already rounded on the way/);
+		assert.match(prose, /A key that reached the browser as a number beyond ±9,007,199,254,740,991 was already rounded on the way/);
 		assert.ok(prose.includes(`the link is off and says \`${KEY_TOO_LARGE}\``));
 		assert.equal((2 ** 53).toLocaleString('en-US'), '9,007,199,254,740,992');
 	});
