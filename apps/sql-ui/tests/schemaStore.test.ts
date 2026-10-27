@@ -239,7 +239,10 @@ describe('executeStateFromFailure', () => {
 		assert.equal(executeStateFromFailure(EXECUTE_OFF_MESSAGE, 'on'), 'off');
 	});
 
-	it('leaves every other failure as it was', () => {
+	it('leaves every other failure as it was, including one that only mentions allow_execute (DA-R1 M1)', () => {
+		assert.equal(executeStateFromFailure('SQL execution failed: invalid input syntax for type integer: "allow_execute"', 'on'), 'on');
+		assert.equal(executeStateFromFailure('SQL execution failed: column "allow_execute" does not exist', 'on'), 'on');
+		assert.equal(executeStateFromFailure('SQL execution failed: column "allow_execute" does not exist', 'unknown'), 'unknown');
 		assert.equal(executeStateFromFailure('syntax error at or near "SELEC"', 'unknown'), 'unknown');
 		assert.equal(executeStateFromFailure('connection refused', 'on'), 'on');
 		assert.equal(executeStateFromFailure('', 'off'), 'off');
