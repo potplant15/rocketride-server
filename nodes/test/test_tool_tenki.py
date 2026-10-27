@@ -1017,6 +1017,9 @@ def test_a_pause_after_one_whose_resume_was_given_up_gets_a_budget_of_its_own(mo
     session.state, session.resume_refusals = 'RUNNING', 0  # resumed from outside the node
     assert inst.list_files({})['entries'] == []
     session.state, session.resume_refusals = 'PAUSED', 2
+    # The real budget: in 0.1 s a busy CI runner ran out of time for two refusals. A stale give-up mark still fails here,
+    # since it leaves a budget of 0.
+    monkeypatch.setattr(mod, '_RESUME_RETRY_SECS', 120)
     assert inst.list_files({})['session'] == 'resumed'
 
 
@@ -1432,7 +1435,8 @@ def test_a_finite_command_just_past_the_limit_is_cut_not_reported_killed(monkeyp
 
 def test_a_flood_out_of_the_kills_reach_is_cut_and_logged_not_reported_killed(monkeypatch, logs, small_limit):
     monkeypatch.setattr(inst_mod, '_KILL_SETTLE_SECS', 0.05)
-    session = _Session(script=lambda argv: {'flood': (_CHUNK, 256 * 1024), 'escapes': True})
+    # About 0.5 s of flood after the cut, so a kill that a busy runner slows still lands well before it ends.
+    session = _Session(script=lambda argv: {'flood': (_CHUNK, 1024 * 1024), 'escapes': True})
     inst, _ = _instance(monkeypatch, session)
     result = inst.run_command({'command': 'sudo make'})
     assert 'could not confirm' in result['stderr'] and len(result['stdout']) <= 64 * 1024
