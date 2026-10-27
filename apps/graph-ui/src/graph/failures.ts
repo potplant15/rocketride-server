@@ -25,9 +25,10 @@
 // =============================================================================
 //
 // The shared tool session turns every failure into one error with a `kind`; this
-// module decides what the user reads. The banner leads with the first line of the
-// node's message (the headline) and shows the rest under "Database said", exactly
-// as SQL Explorer does, and adds ONE hint where the app knows what to do next.
+// module decides what the user reads. The banner (components/GraphFailureBanner)
+// leads with the first line of the node's message (the headline), shows the rest
+// as the database's own text in a block that is always visible, and adds ONE hint
+// where the app knows what to do next.
 //
 //   Refused: ...                 a safety rule or the database refused the
 //                                statement (graph_errors.py). Only the WRITE
@@ -37,7 +38,7 @@
 //                                The others (the first-row budget, AGE's resource
 //                                rules, USE, SHOW, LOAD CSV, a procedure off the
 //                                allowlist, a missing privilege) get no hint: the
-//                                node's second line under "Database said" is the
+//                                node's second line, shown in the banner, is the
 //                                remedy, and the write console is not.
 //   Not supported on Apache AGE  an AGE limit the node explains; its own text is
 //                                the hint.
@@ -69,22 +70,19 @@ export interface IFailureInput {
 
 /**
  * A failure as the banner shows it. It extends the shared notice (`headline`, the
- * verbatim "Database said" text, and whether the node withheld its text) with
+ * database's own text, and whether the node withheld it) with
  * what only Graph Explorer knows: a variant, one hint, and whether to drop it.
  */
 export interface IFailureNotice extends ISharedFailureNotice {
 	/** `error` for a failure, `warning` for one that is not a bug, `info` for a notice. */
 	variant: 'error' | 'warning' | 'info';
-	/** The node's text under "Database said"; the same text as `verbatim`. */
+	/** The node's text after the headline; the same text as `verbatim`, shown in the banner. */
 	detail: string;
 	/** One sentence on what to do next, or null. */
 	hint: string | null;
 	/** True when the result of this call must not be shown at all. */
 	ignore: boolean;
 }
-
-/** The label above the node's own text. */
-export const DATABASE_SAID_LABEL = 'Database said';
 
 /** The legacy refusal text of a node that has `execute` off (a plain error, no code). */
 const LEGACY_EXECUTE_OFF = /execute tool is disabled for this node/i;
@@ -206,7 +204,7 @@ export function describeFailureOf(message: string, error: unknown, canWrite: boo
 // before anything reached the database means that.
 
 /** Said under a write-console failure that can have come after the statement ran. */
-export const WRITE_MAY_HAVE_APPLIED = 'The write may have been applied: this error can come after the database ran the statement, and nothing is rolled back. Check the data before running it again. Graphs drawn from this connection are marked out of date.';
+export const WRITE_MAY_HAVE_APPLIED = 'The write may have been applied: this error can come after the database ran the statement, and nothing is rolled back. Check the data before running it again.';
 
 /**
  * The kind of a failure: the thrown error's own `kind`, else the one the session's fixed wording stands for.

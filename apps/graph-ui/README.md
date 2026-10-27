@@ -159,7 +159,26 @@ result tabs.
 - **The editor** highlights Cypher and keeps a draft per connection (text only).
   It is the platform's shared code editor, which comes with the app (nothing is
   fetched from a CDN). If it has not loaded after ten seconds, a plain text box
-  is used, with the same run keys, drafts and history, and a notice says so.
+  is used, with the same run keys, drafts and history, and a notice says so; it
+  has no suggestions and no error marks.
+  - **Suggestions** come from the schema the connection last loaded. After `(x:`
+    it lists the labels, after `[x:` or `[:` the relationship types, and after
+    `x.` the property keys of `x`'s label when `x` is bound in a pattern of the
+    same statement, such as `(x:Person)` (or of the relationship type for
+    `[x:KNOWS]`); if it is not, every property key the schema lists. At the start
+    of a statement it offers the clause words and a few starter queries. It
+    suggests nothing inside a string, a comment or a quoted name. Property keys
+    are sampled, so the list can miss a key, and each suggestion says
+    "sampled". Names that need quotes are inserted quoted, and Apache AGE is
+    never offered a name it cannot take quoted. Until a schema has loaded there
+    are no label, type or property suggestions.
+  - **A failed statement is marked.** When the database's text gives a line and
+    column, that place in the statement that failed is underlined until you edit
+    the text. Neo4j gives one; Apache AGE gives one for a syntax error; FalkorDB
+    gives none, so nothing is underlined for it.
+  - **A statement the read workbench would refuse is marked as you type**, from
+    the same text check Run uses before it sends anything (see Browsing is
+    read-only). It is a warning with the reason, not a database check.
 - **Browsing is read-only.** A statement the text check takes for a write is
   refused before anything is sent: one that uses `CREATE`, `INSERT`, `MERGE`,
   `SET`, `DELETE`, `DETACH`, `REMOVE`, `DROP`, `FOREACH` or `LOAD CSV` as a
@@ -201,6 +220,64 @@ may have been rounded.
 
 A result that hit a limit says which one: the row limit, the node's element
 budget or its value budget.
+
+**Export** on the Table and Raw cards offers **Download CSV** and **Download
+JSON** (in VS Code, which does not allow downloads from a tool panel, **Copy as
+CSV** and **Copy as JSON**, which put the text on the clipboard). They hold the
+rows the query returned under the limit that was applied, and the menu says how
+many and says when the limit cut the result short; they are not the whole
+result. They are built from the result itself, not from the table on screen, so
+a search or a column filter in the table does not change them. Where a download is not possible and the text is over 5 million characters, nothing is copied and the menu says so; lower the row limit.
+- **JSON** is an array of objects keyed by the Cypher column names. A name that
+  repeats gets ` (2)`, ` (3)`, so both values are kept; a column with no name
+  is `(column 2)`. Graph values and integers beyond 2^53 keep the exact form the
+  node sent.
+- **CSV** has a header row, and a field with a comma, a quote or a line break is
+  quoted. A null is an empty field and an empty string is `""`. Lists, maps and
+  graph values are written as JSON text. A spreadsheet runs a cell that starts
+  with a formula character, so in CSV text that starts with `=`, `+`, `-` or `@`
+  (or a tab or a carriage return) gets a leading `'`. Numbers keep their sign.
+
+
+The Table remembers sort and which columns are shown, but not column widths: every result column fills the space, because a grid built while its tab was hidden would otherwise save crushed widths and restore them later.
+
+### Errors
+
+A statement that fails shows its banner above the results: the headline, which
+statement it was (and its line and column when the database's text gave them),
+what ran before it, and what was not run after it. The database's own text is
+in the banner itself, six lines at a time with the rest scrolling, not behind a
+button. **Copy error** copies the headline, where it was and that text. When a
+batch stopped part way and the workbench offers it, **Run from statement N** runs
+the batch again from the statement that failed. A hint, where the app knows what
+to do next, sits under the text. In the write console the banner also says the
+write may have been applied.
+
+## Overview
+
+A connection's Overview is drawn from the schema it last loaded. Opening it
+sends nothing. It holds:
+
+- **Counts**: nodes, relationships, labels, relationship types and property
+  keys. A count the engine estimated reads "about N" and one it did not report
+  reads "not reported" (Apache AGE may report none). A total is shown only
+  when every label, or every type, has a count, and the node total says it is
+  added up per label, so a node with two labels is counted twice.
+- **The schema graph**: a circle for each label, in the label's colour, and an
+  arrow for each pattern the schema observed, such as `Person` to `Company`
+  through `WORKS_AT`. The patterns come from a sample of the data, so it shows
+  what was seen, not every pattern the data allows; a dashed arrow is one the
+  node inferred without seeing it. It is drawn for up to 30 labels; above that
+  the cards below list them.
+- **Relationship types**: each type with its patterns, count and sampled
+  properties, and **Preview**.
+- **Size and chips**: a Size line and the Supported, Writes allowed or Read-only chips, worded exactly as on the connection cards and in the connection details, plus a line on whether counts are exact and that property keys are sampled. A listing the node cut short says "at least"; a schema that could not be read says so instead of showing zeros.
+- **Label cards**: the label's colour and count, its sampled properties with
+  their types, **Preview** and **New query**.
+
+An empty graph is reported only when the read succeeded and found no labels and
+no relationship types. A failed read, or an old node that cannot say, is not
+called empty.
 
 ## The graph
 
