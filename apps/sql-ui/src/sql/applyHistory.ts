@@ -29,7 +29,8 @@
 // (sql/preview.ts), and an outcome that says what happened to it:
 //
 //   saved                       `affected`, with the rows it changed;
-//   ran, then rolled back       `error`, "Rolled back: …";
+//   ran, then rolled back       `error`, "Rolled back: …" (`abandoned`, "may be
+//                               saved", where the table's engine was not known);
 //   failed                      `error`, the database's words;
 //   not known (a lost answer)   `abandoned`.
 //
@@ -39,6 +40,7 @@
 
 import type { SqlApplyResult, SqlApplyStatement, SqlDialect } from '../connect';
 import type { HistoryEntry, HistoryKind } from '../history/types';
+import type { ApplyWording } from './applyMode';
 import { classifyStatement } from './classify';
 import { previewSql } from './preview';
 
@@ -51,10 +53,12 @@ import { previewSql } from './preview';
  * @param facts.dialect - The connection's dialect.
  * @param facts.at - When the apply started (Unix ms).
  * @param facts.ms - The apply's round trip (each entry carries it).
+ * @param facts.wording - What the confirmation promised (`hedged`: a rollback may have undone nothing).
  * @returns One entry per statement that ran, in order.
  */
-export function applyHistoryEntries(statements: readonly SqlApplyStatement[], result: SqlApplyResult, facts: { dialect: SqlDialect; at: number; ms: number }): HistoryEntry[] {
+export function applyHistoryEntries(statements: readonly SqlApplyStatement[], result: SqlApplyResult, facts: { dialect: SqlDialect; at: number; ms: number; wording?: ApplyWording }): HistoryEntry[] {
 	const { dialect, at, ms } = facts;
+	const hedged = facts.wording === 'hedged';
 	const failure = result.failure;
 	const stamp = `${at.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 	const entry = (index: number, outcome: Pick<HistoryEntry, 'outcome'> & { affected?: number; error?: string }): HistoryEntry => {
@@ -75,6 +79,15 @@ export function applyHistoryEntries(statements: readonly SqlApplyStatement[], re
 
 	const total = statements.length;
 	const entries: HistoryEntry[] = [];
+	if (result.transactional && hedged) {
+		// A table whose engine may keep no transactions: what ran may be saved.
+		const which = failure.stage === 'commit' ? 'The commit failed' : `Change ${failure.index + 1} of ${total} failed`;
+		const maybe = `${which}. If the table's storage engine keeps no transactions, this change may be saved; check the data.`;
+		const ran = failure.stage === 'commit' ? total : failure.index;
+		for (let index = 0; index < ran; index++) entries.push(entry(index, { outcome: 'abandoned', error: maybe }));
+		if (failure.stage !== 'commit') entries.push(entry(failure.index, { outcome: 'error', error: failure.message }));
+		return entries;
+	}
 	if (result.transactional) {
 		if (failure.stage === 'commit') {
 			const error = failure.unknown

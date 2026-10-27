@@ -42,10 +42,9 @@ import type { CSSProperties } from 'react';
 import { Banner, Button, Card, ConfirmDialog, ContentHeader, EmptyState, InputField, Section, StatusBadge, TabControl, TabPanel } from 'shell';
 import type { ViewMenu } from 'shell';
 import { commonStyles } from 'shell';
-import { ExplorerToolError } from 'shared/explorer/errors';
 import { isTransactionsUnavailable } from '../connect';
 import type { SqlEndpoint, SqlSchemaColumn, SqlSchemaResponse, SqlDialect } from '../connect';
-import { knownNoTransactions, noteNoTransactions, perStatementConfirmText } from '../sql/applyMode';
+import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, thrownApplyMayHaveRun } from '../sql/applyMode';
 import { buildRelationGraph, inboundReferences } from '../schema/relations';
 import { refreshSchema, useSchema } from '../schema/schemaStore';
 import { useSqlEnv } from '../sqlEnv';
@@ -686,6 +685,8 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 	 * Stage the add-column form (alter mode) or append to the draft (create).
 	 */
 	const addColumn = useCallback((): void => {
+		// Nothing changes the plan while it is being applied (review P4 R2-I4).
+		if (applying) return;
 		if (!draft.name.trim() || !draft.type.trim()) return;
 		const spec = { ...draft, name: draft.name.trim(), type: draft.type.trim() };
 		if (createMode) {
@@ -694,7 +695,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 			setOps((prev) => [...prev, { kind: 'addColumn', spec }]);
 		}
 		setDraft(blankSpec());
-	}, [draft, createMode]);
+	}, [draft, createMode, applying]);
 
 	/**
 	 * Open the column editor for one row (alter mode, not dropped rows).
@@ -702,16 +703,18 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 	 * @param col - The row the user activated.
 	 */
 	const selectColumn = useCallback((col: EffectiveColumn): void => {
+		if (applying) return;
 		if (createMode || col.pending === 'dropped') return;
 		setSelected(col.name);
 		setEditName(col.name);
 		setEditType(col.type);
-	}, [createMode]);
+	}, [createMode, applying]);
 
 	/**
 	 * Stage rename/retype for the selected column (alter mode).
 	 */
 	const applyEdit = useCallback((): void => {
+		if (applying) return;
 		if (!selected) return;
 		const next: AlterOp[] = [];
 		// Ops execute sequentially against the mutated table — address the
@@ -726,7 +729,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 		}
 		if (next.length > 0) setOps((prev) => [...prev, ...next]);
 		setSelected(null);
-	}, [selected, editName, editType, columns]);
+	}, [selected, editName, editType, columns, applying]);
 
 	/**
 	 * Send the plan in one call (one transaction on PostgreSQL), then ask the
@@ -743,6 +746,8 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 	const apply = useCallback(async (atomic: boolean): Promise<void> => {
 		if (!env.ready || statements.length === 0) return;
 		const total = statements.length;
+		// The plan this apply sends: what it settled is dropped from THIS list.
+		const sent = ops;
 		const tableName = createMode ? createName.trim() : table;
 		setApplying(true);
 		setApplyOutcome(null);
@@ -769,7 +774,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 				// Refused before anything was sent (the list, the connection,
 				// `begin`), unless the answer itself never arrived.
 				const message = err instanceof Error ? err.message : String(err);
-				const unknown = err instanceof ExplorerToolError && err.kind === 'timeout';
+				const unknown = thrownApplyMayHaveRun(err);
 				failure = { stage: 'apply', failedAt: 0, committed: 0, total, remaining: createMode ? null : total, message, transactional: false, unknown, rollbackConfirmed: true, table: tableName };
 			}
 			if (failure === null) {
@@ -785,7 +790,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 				// leave it, so it matches what is left to run; then re-reflect
 				// what may have changed.
 				const stopped = failure;
-				setOps((prev) => planAfterFailure(prev, stopped));
+				setOps((prev) => [...planAfterFailure(sent, stopped), ...prev.slice(sent.length)]);
 				if (stopped.committed > 0 || stopped.unknown) {
 					setFkNames(null);
 					await refreshSchema(env.getSession(endpoint), { fresh: true }).catch(() => undefined);
@@ -796,7 +801,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 			setApplying(false);
 			setConfirmOpen(false);
 		}
-	}, [env, statements, endpoint, createMode, createName, table]);
+	}, [env, statements, endpoint, createMode, createName, table, ops]);
 
 	// ── Outcome banner (composed against the post-refresh snapshot) ──────────
 
@@ -967,7 +972,9 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 															<Button
 																variant="danger"
 																small
+																disabled={applying}
 																onClick={() => {
+																	if (applying) return;
 																	if (createMode) {
 																		// Drafts map 1:1 to rows — drop by index so
 																		// duplicate names cannot remove each other.
@@ -1002,7 +1009,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 												<span style={styles.fieldLabel}>Datatype</span>
 												<InputField value={editType} onChange={(e) => setEditType(e.target.value)} />
 											</div>
-											<Button variant="primary" small onClick={applyEdit}>Stage Change</Button>
+											<Button variant="primary" small onClick={applyEdit} disabled={applying}>Stage Change</Button>
 											{' '}
 											<Button variant="ghost" small onClick={() => setSelected(null)}>Cancel</Button>
 										</Card>
@@ -1036,7 +1043,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 													Primary key
 												</label>
 											)}
-											<Button variant="primary" small onClick={addColumn} disabled={!draft.name.trim() || !draft.type.trim()}>
+											<Button variant="primary" small onClick={addColumn} disabled={applying || !draft.name.trim() || !draft.type.trim()}>
 												{createMode ? 'Add to Table' : 'Stage Add Column'}
 											</Button>
 										</Card>
@@ -1073,7 +1080,7 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 																	{dropped ? (
 																		<StatusBadge variant="error">dropped</StatusBadge>
 																	) : (
-																		<Button variant="danger" small onClick={() => setOps((prev) => [...prev, { kind: 'dropForeignKey', name: fk.name }])}>Drop</Button>
+																		<Button variant="danger" small disabled={applying} onClick={() => { if (!applying) setOps((prev) => [...prev, { kind: 'dropForeignKey', name: fk.name }]); }}>Drop</Button>
 																	)}
 																</td>
 															</tr>
@@ -1141,8 +1148,9 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 												<Button
 													variant="primary"
 													small
-													disabled={!fkDraft.name.trim() || !fkDraft.column || !fkDraft.refTable || !fkDraft.refColumn}
+													disabled={applying || !fkDraft.name.trim() || !fkDraft.column || !fkDraft.refTable || !fkDraft.refColumn}
 													onClick={() => {
+														if (applying) return;
 														setOps((prev) => [...prev, {
 															kind: 'addForeignKey',
 															name: fkDraft.name.trim(),

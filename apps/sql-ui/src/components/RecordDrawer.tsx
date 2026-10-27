@@ -88,6 +88,8 @@ export interface RecordDrawerProps {
 export interface RecordEditingProps {
 	/** Why rows cannot be changed now, or null (sql/rowEdits.ts rowEditGate). */
 	disabledReason: string | null;
+	/** An apply is running: nothing is staged or undone until it ends. */
+	busy: boolean;
 	/** The form's fields for a row, with any staged edit showing through. */
 	formFor: (row: Record<string, unknown>) => readonly FormField[];
 	/** The row's staged change in one line, or null when nothing is staged. */
@@ -215,6 +217,8 @@ export interface RowEditFormProps {
 	submitLabel: string;
 	/** Why the last submit was refused (a value the column cannot take), or null. */
 	error: string | null;
+	/** An apply is running: submitting waits for it. */
+	busy?: boolean;
 	/** Submit: the fields as the user left them. */
 	onSubmit: (fields: FormField[]) => void;
 	/** Cancel: nothing is staged. */
@@ -228,7 +232,7 @@ export interface RowEditFormProps {
  * @param props - {@link RowEditFormProps}.
  * @returns The drawer.
  */
-export const RowEditForm: React.FC<RowEditFormProps> = ({ title, subtitle, fields, lockKeys, submitLabel, error, onSubmit, onCancel }) => {
+export const RowEditForm: React.FC<RowEditFormProps> = ({ title, subtitle, fields, lockKeys, submitLabel, error, busy = false, onSubmit, onCancel }) => {
 	const [values, setValues] = useState<FormField[]>(() => fields.map((field) => ({ ...field })));
 	const set = (index: number, patch: Partial<FormField>): void => {
 		setValues((current) => current.map((field, i) => (i === index ? { ...field, ...patch } : field)));
@@ -243,7 +247,7 @@ export const RowEditForm: React.FC<RowEditFormProps> = ({ title, subtitle, field
 			width={460}
 			footer={
 				<>
-					<Button variant="primary" onClick={() => onSubmit(values)}>{submitLabel}</Button>
+					<Button variant="primary" disabled={busy} onClick={() => onSubmit(values)}>{submitLabel}</Button>
 					<Button variant="ghost" onClick={onCancel}>Cancel</Button>
 				</>
 			}
@@ -478,6 +482,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 				lockKeys
 				submitLabel="Stage changes"
 				error={editError}
+				busy={editing.busy}
 				onSubmit={(after) => {
 					const refused = editing.stage(row, form, after);
 					setEditError(refused);
@@ -513,7 +518,7 @@ export const RecordDrawer: React.FC<RecordDrawerProps> = ({ dialect, graph, tabl
 					<>
 						<Button variant="ghost" disabled={index <= 0} onClick={() => onIndexChange(index - 1)}>Prev</Button>
 						<Button variant="ghost" disabled={index >= rows.length - 1} onClick={() => onIndexChange(index + 1)}>Next</Button>
-						{editing && staged !== null && <Button variant="secondary" onClick={() => { editing.undo(row); setEditError(null); }}>Undo</Button>}
+						{editing && staged !== null && <Button variant="secondary" disabled={editing.busy} onClick={() => { editing.undo(row); setEditError(null); }}>Undo</Button>}
 						{editing && !deleted && (
 							<>
 								<Button variant="secondary" disabled={off !== null} {...(off !== null ? { title: off } : {})} onClick={() => { setEditError(null); setForm(editing.formFor(row)); }}>Edit</Button>

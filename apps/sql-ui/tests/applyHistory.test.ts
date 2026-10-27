@@ -80,4 +80,12 @@ describe('an apply in history', () => {
 		const lost: SqlApplyResult = { ...failed, failure: { ...failed.failure!, unknown: true } };
 		assert.deepEqual(brief(applyHistoryEntries(STATEMENTS, lost, facts)).map((e) => e.outcome), ['affected', 'abandoned']);
 	});
+
+	it('R2-M1: hedged (a MySQL table whose engine was not known): a failed apply never says "nothing was saved"', () => {
+		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 1 }], failure: { index: 1, stage: 'statement', message: 'denied', committed: 0, unknown: false, rollbackConfirmed: true } };
+		const entries = brief(applyHistoryEntries(STATEMENTS, result, { ...facts, wording: 'hedged' }));
+		assert.deepEqual(entries.map((e) => e.outcome), ['abandoned', 'error']);
+		assert.equal(entries[0]!.error, 'Change 2 of 3 failed. If the table\'s storage engine keeps no transactions, this change may be saved; check the data.');
+		assert.doesNotMatch(JSON.stringify(entries), /nothing was saved/);
+	});
 });

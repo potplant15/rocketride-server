@@ -120,8 +120,9 @@ describe('the bar, Review SQL, the confirmation, then one applyBatch', () => {
 	it('after the reply: each statement in history, then only what was settled leaves the staged changes, then the page is read again', () => {
 		const history = at(VIEW, /for \(const entry of applyHistoryEntries\(ask\.statements, result, /);
 		const record = at(VIEW, /env\.history\.record\(endpoint, entry\)/);
-		const drop = at(VIEW, /setEdits\(\(current\) => dropApplied\(current, settled\)\)/);
-		const epoch = at(VIEW, /setWriteEpoch\(\(n\) => n \+ 1\)/);
+		const drop = at(VIEW, /setEdits\(\(current\) => dropKeys\(current, ask\.keys\.slice\(0, settled\)\)\)/);
+		// The page is read again after the reply is settled (the earlier bump is the may-have-run path).
+		const epoch = VIEW.indexOf('setWriteEpoch((n) => n + 1)', drop);
 		assert.ok(history < record && record < drop && drop < epoch);
 		assert.match(VIEW, /const settled = settledCount\(result, total\);/);
 		// The write epoch does what a countEpoch bump does: totals forgotten, the page refetched.

@@ -176,6 +176,8 @@ export interface PendingChangesBarProps {
 	counts: PendingCounts;
 	/** An apply is running: every action waits for it. */
 	busy?: boolean;
+	/** The Apply button's words while busy (default "Applying..."). */
+	busyLabel?: string;
 	/** Why Apply cannot run now (statements are off, the engine is not reachable), or null. */
 	applyDisabledReason?: string | null;
 	/** Discard was chosen (the parent asks first when {@link discardNeedsConfirm}). */
@@ -192,7 +194,7 @@ export interface PendingChangesBarProps {
  * @param props - {@link PendingChangesBarProps}.
  * @returns The bar, or null.
  */
-export const PendingChangesBar: React.FC<PendingChangesBarProps> = ({ table, counts, busy = false, applyDisabledReason = null, onDiscard, onReview, onApply }) => {
+export const PendingChangesBar: React.FC<PendingChangesBarProps> = ({ table, counts, busy = false, busyLabel = 'Applying...', applyDisabledReason = null, onDiscard, onReview, onApply }) => {
 	if (counts.total === 0) return null;
 	return (
 		<div role="region" aria-label="Pending changes" style={styles.bar}>
@@ -210,7 +212,7 @@ export const PendingChangesBar: React.FC<PendingChangesBarProps> = ({ table, cou
 					disabled={busy || applyDisabledReason !== null}
 					{...(applyDisabledReason !== null ? { title: applyDisabledReason } : {})}
 				>
-					{busy ? 'Applying...' : applyButtonLabel(counts.total)}
+					{busy ? busyLabel : applyButtonLabel(counts.total)}
 				</Button>
 			</span>
 		</div>

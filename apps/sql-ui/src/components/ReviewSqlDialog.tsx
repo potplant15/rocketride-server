@@ -45,7 +45,7 @@
 
 import React from 'react';
 import type { CSSProperties } from 'react';
-import { Button, ConfirmDialog, Modal } from 'shell';
+import { Banner, Button, ConfirmDialog, Modal } from 'shell';
 import type { SqlApplyResult, SqlApplyStatement, SqlDialect } from '../connect';
 import { EACH_COMMITS_TEXT } from '../sql/applyMode';
 import { previewSql } from '../sql/preview';
@@ -98,6 +98,22 @@ export function reviewSummaryText(statements: readonly SqlApplyStatement[]): str
 	return `${head} · ${count(rows, 'row', 'rows')}`;
 }
 
+/** Why Apply waits after an apply whose answer never came, until Review SQL is opened (review P4 R2-I1). */
+export const MAY_HAVE_RUN_REASON = 'The last Apply may have run. Open Review SQL and check the data before applying again.';
+
+/**
+ * What Review SQL and the confirmation say after an apply whose answer never
+ * came: its changes may already be saved, and applying them again could
+ * insert new rows twice.
+ *
+ * @param inserted - How many of the staged changes are new rows.
+ * @returns The warning.
+ */
+export function mayHaveRunWarning(inserted: number): string {
+	const twice = inserted > 0 ? ' A new row that was saved would be inserted a second time.' : '';
+	return `The last Apply may have run: its answer did not arrive. Some of these changes may already be saved, so check the data before you apply again.${twice}`;
+}
+
 /**
  * Review SQL's note on changed columns matched by key only (their old values
  * may not come back exactly, so a change by someone else is not detected).
@@ -127,13 +143,16 @@ export function rowStatementLabels(edits: RowEdits): string[] {
 const BEGIN_LINE = "BEGIN; -- through the node's begin tool";
 
 /**
- * The line that closes a transactional apply in the review.
+ * The line that closes a transactional apply in the review. "All or none"
+ * only where the transaction is known to hold (not `hedged`: the table's
+ * engine may keep none).
  *
  * @param total - How many statements it holds.
- * @returns `COMMIT; -- all 3, or none`.
+ * @param wording - What the apply may promise.
+ * @returns `COMMIT; -- all 3, or none`, or a bare `COMMIT;`.
  */
-function commitLine(total: number): string {
-	return total === 1 ? 'COMMIT;' : `COMMIT; -- all ${total}, or none`;
+function commitLine(total: number, wording: ApplyWording): string {
+	return total === 1 || wording !== 'transaction' ? 'COMMIT;' : `COMMIT; -- all ${total}, or none`;
 }
 
 /**
@@ -147,7 +166,7 @@ function commitLine(total: number): string {
  */
 export function reviewScript(statements: readonly SqlApplyStatement[], dialect: SqlDialect, wording: ApplyWording): string {
 	const body = statements.map((statement) => `${previewSql(statement, dialect)};`);
-	return (wording !== 'each' ? [BEGIN_LINE, ...body, commitLine(statements.length)] : body).join('\n');
+	return (wording !== 'each' ? [BEGIN_LINE, ...body, commitLine(statements.length, wording)] : body).join('\n');
 }
 
 /**
@@ -399,6 +418,8 @@ export interface ReviewSqlDialogProps {
 	applyDisabledReason?: string | null;
 	/** Changed columns matched by key only (sql/rowEdits.ts uncheckedColumns). */
 	uncheckedColumns?: readonly string[];
+	/** A warning shown first (the last apply may have run: mayHaveRunWarning), or null. */
+	warning?: string | null;
 	/** Back to editing (also the ✕ and Escape). */
 	onClose: () => void;
 	/** Apply was chosen (the parent confirms first). */
@@ -419,7 +440,7 @@ export interface ReviewSqlDialogProps {
  * @returns The dialog.
  */
 export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
-	const { table, connectionName, dialect, statements, labels = [], wording, busy = false, applyDisabledReason = null, uncheckedColumns = [], onClose, onApply, onDiscardAll, onCopySql, onOpenInQuery } = props;
+	const { table, connectionName, dialect, statements, labels = [], wording, busy = false, applyDisabledReason = null, uncheckedColumns = [], warning = null, onClose, onApply, onDiscardAll, onCopySql, onOpenInQuery } = props;
 	const unchecked = conflictCheckNote(uncheckedColumns);
 	const script = reviewScript(statements, dialect, wording);
 	const framed = wording !== 'each';
@@ -444,6 +465,7 @@ export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
 	return (
 		<Modal title="Review SQL" onClose={onClose} footer={footer} width={720}>
 			<div style={styles.subtitle}>{pendingCountText(statements.length)} to {table} · {connectionName}</div>
+			{warning && <div style={styles.intro} role="alert"><Banner variant="warning">{warning}</Banner></div>}
 			<div style={styles.intro}>{reviewIntroText(wording)}</div>
 			<div style={styles.sectionHead}>
 				<span>Statements</span>
@@ -463,7 +485,7 @@ export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
 				))}
 				{framed && (
 					<div style={{ ...styles.line, ...styles.frame }}>
-						<span style={styles.statement}>{commitLine(statements.length)}</span>
+						<span style={styles.statement}>{commitLine(statements.length, wording)}</span>
 					</div>
 				)}
 			</div>
@@ -481,6 +503,8 @@ export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
 export interface ApplyConfirmDialogProps extends ApplyConfirmFacts {
 	/** One line per change (sql/rowEdits.ts describeRowEdit). */
 	lines: string[];
+	/** A warning shown first (the last apply may have run), or null. */
+	warning?: string | null;
 	/** An apply is running. */
 	busy?: boolean;
 	/** Apply. */
@@ -496,13 +520,14 @@ export interface ApplyConfirmDialogProps extends ApplyConfirmFacts {
  * @param props - {@link ApplyConfirmDialogProps}.
  * @returns The dialog.
  */
-export const ApplyConfirmDialog: React.FC<ApplyConfirmDialogProps> = ({ lines, busy = false, onConfirm, onCancel, ...facts }) => {
+export const ApplyConfirmDialog: React.FC<ApplyConfirmDialogProps> = ({ lines, busy = false, warning = null, onConfirm, onCancel, ...facts }) => {
 	const { lead, note } = applyConfirmParts(facts);
 	return (
 		<ConfirmDialog
 			title={applyConfirmTitle(facts.total)}
 			message={
 				<>
+					{warning && <div style={styles.confirmNote} role="alert"><strong>{warning}</strong></div>}
 					<div>{lead}</div>
 					<ul style={styles.confirmList}>
 						{lines.map((line, i) => <li key={i}>{line} · 1 row</li>)}

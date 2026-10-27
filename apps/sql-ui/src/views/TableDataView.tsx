@@ -69,9 +69,9 @@ import type { SortChip } from '../components/FilterChips';
 import { RecordDrawer, RowEditForm } from '../components/RecordDrawer';
 import type { RecordEditingProps } from '../components/RecordDrawer';
 import { PendingChangesBar, discardConfirmText, discardNeedsConfirm, pendingCountText } from '../components/PendingChangesBar';
-import { ApplyConfirmDialog, ReviewSqlDialog, applyResultText, rowStatementLabels } from '../components/ReviewSqlDialog';
+import { ApplyConfirmDialog, MAY_HAVE_RUN_REASON, ReviewSqlDialog, applyResultText, mayHaveRunWarning, rowStatementLabels } from '../components/ReviewSqlDialog';
 import type { ApplyResultText } from '../components/ReviewSqlDialog';
-import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, readTableEngine, rowApplyMode } from '../sql/applyMode';
+import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, readTableEngine, rowApplyMode, thrownApplyMayHaveRun } from '../sql/applyMode';
 import type { RowApplyMode } from '../sql/applyMode';
 import { applyHistoryEntries } from '../sql/applyHistory';
 import {
@@ -79,7 +79,7 @@ import {
 	buildRowStatements,
 	changesFromForm,
 	describeRowEdit,
-	dropApplied,
+	dropKeys,
 	editFormFields,
 	emptyRowEdits,
 	pendingCell,
@@ -132,6 +132,8 @@ type CountNote = { kind: 'estimate'; rows: number } | { kind: 'more'; estimate: 
 interface ApplyAsk {
 	/** The statements, built when Apply was chosen. */
 	statements: SqlApplyStatement[];
+	/** The staged change each statement came from (its key), in the same order. */
+	keys: string[];
 	/** What the confirmation may promise, and what Apply asks for. */
 	mode: RowApplyMode;
 	/** One line per change, for the confirmation. */
@@ -387,6 +389,12 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 	const [applying, setApplying] = useState(false);
 	const [applyOutcome, setApplyOutcome] = useState<ApplyResultText | null>(null);
 	const [editProblem, setEditProblem] = useState<string | null>(null);
+	// The last apply may have run (its answer never came, review P4 R2-I1):
+	// Apply waits until Review SQL was opened again ('blocked' -> 'reviewed'),
+	// and both the review and the confirmation say rows may already be saved.
+	const [uncertain, setUncertain] = useState<'blocked' | 'reviewed' | null>(null);
+	// The engine (in the dev tool, the sidebar) went away during the apply (R2-M3).
+	const [lostDuringApply, setLostDuringApply] = useState(false);
 	// A MySQL table's storage engine, read once (undefined: not read yet).
 	const engineRef = useRef<string | null | undefined>(undefined);
 
@@ -418,6 +426,17 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			// Not rendered yet: the first render formats with these refs.
 		}
 	}, [edits, editTarget]);
+
+	// The engine (in the dev tool, the sidebar) went away while an apply was
+	// out: its outcome is unknown from now on, said at once rather than after
+	// the call's whole timeout. A reply that still arrives replaces this.
+	useEffect(() => {
+		if (!applying || env.ready) return;
+		setLostDuringApply(true);
+		setUncertain('blocked');
+		setApplyOutcome({ variant: 'warning', title: 'Lost the connection while applying.', detail: 'The outcome is unknown until it is back; check the data then. The changes stay staged.', message: null });
+		announce('Lost the connection while applying. The outcome is unknown.');
+	}, [applying, env.ready]);
 
 	// Grid columns straight from the reflected schema.
 	const columns = useMemo<GridColumnDefinition[]>(() => {
@@ -630,6 +649,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 	 * @returns The reason it was refused, or null.
 	 */
 	const stage = (change: () => RowEdits): string | null => {
+		if (applying) return 'An apply is running.';
 		try {
 			const next = change();
 			setEdits(next);
@@ -649,6 +669,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 
 	const editing: RecordEditingProps | null = editTarget ? {
 		disabledReason: applying ? 'An apply is running.' : editGate,
+		busy: applying,
 		formFor: (row) => editFormFields(editTarget, row, pendingOfRow(row)),
 		stagedLine: (row) => {
 			const edit = pendingOfRow(row);
@@ -659,7 +680,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 		remove: (row) => stage(() => stageDelete(edits, editTarget, row)),
 		undo: (row) => {
 			const key = keyOrNull(editTarget, row);
-			if (key !== null) setEdits(unstage(edits, key));
+			if (key !== null && !applying) setEdits(unstage(edits, key));
 		},
 	} : null;
 
@@ -693,14 +714,17 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 
 	const openReview = async (): Promise<void> => {
 		const statements = statementsNow();
-		if (statements) setReview({ statements, mode: await applyMode() });
+		if (!statements) return;
+		// Reviewing again is what lets Apply run after an apply that may have run.
+		if (uncertain === 'blocked') setUncertain('reviewed');
+		setReview({ statements, mode: await applyMode() });
 	};
 
 	const askApply = async (): Promise<void> => {
 		const statements = statementsNow();
 		if (!statements || !editTarget) return;
 		const mode = await applyMode();
-		setApplyAsk({ statements, mode, lines: edits.entries.map((edit) => describeRowEdit(edit, editTarget)), deletes: counts.deleted });
+		setApplyAsk({ statements, keys: edits.entries.map((edit) => edit.key), mode, lines: edits.entries.map((edit) => describeRowEdit(edit, editTarget)), deletes: counts.deleted });
 	};
 
 	/**
@@ -726,19 +750,33 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 					return;
 				}
 				const message = error instanceof Error ? error.message : String(error);
+				if (thrownApplyMayHaveRun(error)) {
+					// No reply, and it may still have run (a lost connection, a
+					// timeout): the table is read again, the changes stay staged,
+					// and Apply waits for Review SQL, which says rows may be saved.
+					setUncertain('blocked');
+					setApplyOutcome({ variant: 'warning', title: 'The last Apply may have run.', detail: 'Its answer did not arrive, so these changes may or may not have been saved; check the data. They stay staged: open Review SQL before you apply again.', message });
+					announce('The last Apply may have run. Check the data.');
+					setOpenRow(null);
+					setWriteEpoch((n) => n + 1);
+					return;
+				}
 				setApplyOutcome({ variant: 'error', title: 'Nothing was applied.', detail: 'Your edits are still staged.', message });
 				announce(`Apply failed: ${message}`);
 				return;
 			}
 			const total = ask.statements.length;
-			for (const entry of applyHistoryEntries(ask.statements, result, { dialect, at: startedAt, ms: Date.now() - startedAt })) env.history.record(endpoint, entry);
-			// Only what was settled leaves the staged changes (a rolled-back
-			// transaction leaves them all; a change that may have run never stays).
+			for (const entry of applyHistoryEntries(ask.statements, result, { dialect, at: startedAt, ms: Date.now() - startedAt, wording: ask.mode.wording })) env.history.record(endpoint, entry);
+			// Only what was settled leaves the staged changes, by the keys that
+			// were sent (a rolled-back transaction leaves them all; a change that
+			// may have run never stays).
 			const settled = settledCount(result, total);
-			setEdits((current) => dropApplied(current, settled));
+			setEdits((current) => dropKeys(current, ask.keys.slice(0, settled)));
 			const outcome = applyResultText(result, { total, table, at: Date.now(), wording: ask.mode.wording });
 			setApplyOutcome(outcome);
 			announce(outcome.title);
+			// A lost commit answer leaves every change staged and maybe saved.
+			setUncertain(result.failure?.unknown && result.transactional ? 'blocked' : null);
 			if (result.failure === null || settled > 0 || result.failure.unknown) {
 				// The table changed (or may have): the open row is stale, and the
 				// page and its total are read again.
@@ -747,6 +785,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			}
 		} finally {
 			setApplying(false);
+			setLostDuringApply(false);
 			setApplyAsk(null);
 			setReview(null);
 		}
@@ -885,7 +924,8 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 					table={table}
 					counts={counts}
 					busy={applying}
-					applyDisabledReason={editGate}
+					busyLabel={lostDuringApply ? 'Outcome unknown' : 'Applying...'}
+					applyDisabledReason={editGate ?? (uncertain === 'blocked' ? MAY_HAVE_RUN_REASON : null)}
 					onDiscard={askDiscard}
 					onReview={() => { void openReview(); }}
 					onApply={() => { void askApply(); }}
@@ -931,6 +971,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 					lockKeys={false}
 					submitLabel="Stage new row"
 					error={newRow.error}
+					busy={applying}
 					onSubmit={(after) => {
 						const refused = stage(() => stageInsert(edits, editTarget, valuesFromForm(after)));
 						setNewRow(refused === null ? null : { fields: after, error: refused });
@@ -950,6 +991,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 					busy={applying}
 					applyDisabledReason={editGate}
 					uncheckedColumns={editTarget ? uncheckedColumns(edits, editTarget) : []}
+					warning={uncertain ? mayHaveRunWarning(counts.inserted) : null}
 					onClose={() => setReview(null)}
 					onApply={() => { void askApply(); }}
 					onDiscardAll={askDiscard}
@@ -965,6 +1007,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 					wording={applyAsk.mode.wording}
 					deletes={applyAsk.deletes}
 					lines={applyAsk.lines}
+					warning={uncertain ? mayHaveRunWarning(counts.inserted) : null}
 					busy={applying}
 					onConfirm={() => { void runApply(applyAsk, applyAsk.mode.atomic); }}
 					onCancel={() => setApplyAsk(null)}

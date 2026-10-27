@@ -187,6 +187,7 @@ describe('TableDesignView applies through applyBatch', () => {
 		assert.match(VIEW, /const mode = designApplyMode\(snapshot\.dialect, knownNoTransactions\(endpoint\.key\)\)/);
 		assert.doesNotMatch(VIEW, /for \(const sql of statements\)/);
 		assert.doesNotMatch(VIEW, /prev\.slice\(done\)/);
-		assert.match(VIEW, /setOps\(\(prev\) => planAfterFailure\(prev, \w+\)\)/);
+		// Settled from the plan that was sent (review P4 R2-I4), keeping anything after it.
+		assert.match(VIEW, /setOps\(\(prev\) => \[\.\.\.planAfterFailure\(sent, \w+\), \.\.\.prev\.slice\(sent\.length\)\]\)/);
 	});
 });

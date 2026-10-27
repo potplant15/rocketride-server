@@ -43,6 +43,7 @@
 // engine except readTableEngine, through the caller's session.
 // =============================================================================
 
+import { ExplorerToolError } from 'shared/explorer/errors';
 import type { SqlDialect, SqlSession } from '../connect';
 
 // =============================================================================
@@ -100,6 +101,23 @@ export function rowApplyMode(dialect: SqlDialect, facts: { engine?: string | nul
 		return { atomic: true, wording: keeps ? 'transaction' : 'hedged' };
 	}
 	return { atomic: false, wording: 'each' };
+}
+
+/**
+ * Whether an apply that THREW (no reply came back) may still have run. Only
+ * a refusal that sends nothing is known: the list refused (`invalid`), no
+ * connection (`unavailable`), another account (`stale`), no transactions
+ * (`upgrade`), or `begin` refused by the node (`raised`; a failure after
+ * statements are sent is a reply, never a throw). Anything else, the frame's
+ * own lost connection ("It may still have run") and every timeout included,
+ * may have run (review P4 R2-I1).
+ *
+ * @param error - What the apply threw.
+ * @returns True when the outcome is unknown.
+ */
+export function thrownApplyMayHaveRun(error: unknown): boolean {
+	if (!(error instanceof ExplorerToolError)) return true;
+	return !(error.kind === 'invalid' || error.kind === 'unavailable' || error.kind === 'stale' || error.kind === 'upgrade' || error.kind === 'raised');
 }
 
 /** What an apply without a transaction means, in the words every confirmation uses. */

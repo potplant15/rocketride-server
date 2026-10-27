@@ -581,17 +581,20 @@ export function unstage(edits: RowEdits, key: string): RowEdits {
 }
 
 /**
- * Drop the changes an apply saved before it stopped: the first `committed`
- * ones, since {@link buildRowStatements} sends one statement per change in
- * staging order. After a transaction that rolled back, `committed` is 0 and
+ * Drop the changes an apply settled, by their keys: the keys of the first
+ * {@link settledCount} statements it SENT (one per change, in order). Not by
+ * position in the current list, which may have changed while the apply ran
+ * (review P4 R2-I4). After a rolled-back transaction nothing is settled, and
  * every change stays staged.
  *
- * @param edits - The model the apply was built from.
- * @param committed - How many statements are saved (SqlApplyFailure.committed).
+ * @param edits - The staged changes now.
+ * @param keys - The keys of the settled changes.
  * @returns The changes still to apply.
  */
-export function dropApplied(edits: RowEdits, committed: number): RowEdits {
-	return committed <= 0 ? edits : { ...edits, entries: edits.entries.slice(committed) };
+export function dropKeys(edits: RowEdits, keys: readonly string[]): RowEdits {
+	if (keys.length === 0) return edits;
+	const settled = new Set(keys);
+	return { ...edits, entries: edits.entries.filter((edit) => !settled.has(edit.key)) };
 }
 
 /**
@@ -603,7 +606,7 @@ export function dropApplied(edits: RowEdits, committed: number): RowEdits {
  *
  * @param result - The apply's reply.
  * @param total - How many changes it sent.
- * @returns How many to drop from the front ({@link dropApplied}).
+ * @returns How many of the sent changes are settled ({@link dropKeys} drops their keys).
  */
 export function settledCount(result: SqlApplyResult, total: number): number {
 	const failure = result.failure;

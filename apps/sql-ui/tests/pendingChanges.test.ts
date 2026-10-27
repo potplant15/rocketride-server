@@ -94,7 +94,8 @@ describe('Review SQL: BEGIN / COMMIT framing only when the apply is one transact
 	});
 
 	it('hedged (a MySQL table whose engine could not be read): BEGIN / COMMIT are sent, and the words say the engine may ignore them', () => {
-		assert.match(reviewScript(STATEMENTS, 'mysql', 'hedged'), /^BEGIN;[\s\S]*COMMIT; -- all 3, or none$/);
+		// R2-M1: no "all 3, or none" where the engine may keep no transactions.
+		assert.match(reviewScript(STATEMENTS, 'mysql', 'hedged'), /^BEGIN;[\s\S]*\nCOMMIT;$/);
 		assert.equal(reviewIntroText('hedged'), 'These statements run in one transaction if the table\'s storage engine keeps transactions (InnoDB does; MyISAM does not, and there each commits on its own).');
 	});
 
