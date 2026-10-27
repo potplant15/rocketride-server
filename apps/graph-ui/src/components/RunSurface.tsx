@@ -71,7 +71,6 @@ import type { ReadQueryResult } from '../graph/types';
 import { STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, truncationText } from '../graph/wording';
 import { GraphFailureBanner } from './GraphFailureBanner';
 import { GraphView } from './GraphView';
-import InspectorPanel from './InspectorPanel';
 import QueryEditor from './QueryEditor';
 import type { IQueryEditorHandle } from './QueryEditor';
 import { RawView, ResultTable } from './ResultViews';
@@ -447,7 +446,6 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 				{summary && summary.danglingRelationships > 0 && <Banner variant="info">{`${summary.danglingRelationships} relationship${summary.danglingRelationships === 1 ? '' : 's'} in this result ${summary.danglingRelationships === 1 ? 'has' : 'have'} an end node that was not returned, so ${summary.danglingRelationships === 1 ? 'it is' : 'they are'} not drawn. Return the nodes too, or expand a node.`}</Banner>}
 			</div>
 
-			<InspectorPanel state={graphState} session={graphSession} captions={captions} announce={announce} />
 			{rowView && <RowInspector open title={`Row ${(openRow ?? 0) + 1} of ${result?.rows.length ?? 0}`} subtitle={displayed ? `statement ${displayed.index + 1}${displayed.ms !== undefined ? ` · ${clock(Date.now() - displayed.ms)}` : ''}` : ''} fields={rowView.fields} json={rowView.json} note={rowView.note} nullText="null" announce={announce} onClose={() => setOpenRow(null)} />}
 
 			{confirm && (

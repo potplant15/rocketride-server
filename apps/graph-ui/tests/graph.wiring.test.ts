@@ -47,7 +47,7 @@ test('the graph session is built from the connection key and refs, not from obje
 });
 
 test('every open drawer and dialog goes through the shell: no graph-ui code handles Escape or swallows key events above them', () => {
-	for (const file of ['components/InspectorPanel.tsx', 'components/HistoryPanel.tsx', 'components/RunSurface.tsx', 'views/ConnectionsView.tsx', 'components/ConnectionDrawer.tsx', 'views/WorkbenchView.tsx', 'views/WriteConsoleView.tsx', 'components/ConnectionDetails.tsx', 'components/ConnectionDetailsPanel.tsx']) {
+	for (const file of ['components/GraphView.tsx', 'components/InspectorPanel.tsx', 'components/CanvasMenu.tsx', 'components/CanvasSearch.tsx', 'components/GraphStatusLine.tsx', 'components/KeysPanel.tsx', 'components/LegendPanel.tsx', 'components/StyleEditor.tsx', 'components/HistoryPanel.tsx', 'components/RunSurface.tsx', 'views/ConnectionsView.tsx', 'components/ConnectionDrawer.tsx', 'views/WorkbenchView.tsx', 'views/WriteConsoleView.tsx', 'components/ConnectionDetails.tsx', 'components/ConnectionDetailsPanel.tsx']) {
 		const text = code(read(...file.split('/')));
 		assert.doesNotMatch(text, /stopPropagation/, `${file} stops event propagation`);
 		assert.doesNotMatch(text, /addEventListener\(\s*['"]key/, `${file} registers its own key listener`);
@@ -61,12 +61,30 @@ test('opening a workbench from the connection drawer closes the drawer first, so
 	assert.ok(onOpen.indexOf('setDrawerKey(null)') < onOpen.indexOf('open(endpoint)'));
 });
 
-test('the inspector closes through the session, and its panel is rendered from the same state the session publishes', () => {
+test('the inspector is an inline aside that closes through the session, and its panel is rendered from the same state the session publishes', () => {
 	const inspector = code(read('components', 'InspectorPanel.tsx'));
-	assert.match(inspector, /onClose=\{\(\) => session\.inspect\(null\)\}/);
+	assert.match(inspector, /<aside aria-label="Inspector"/);
+	assert.match(inspector, /session\.inspect\(null\)/);
 	assert.match(inspector, /const target: IInspectTarget \| null = state\.inspect/);
 	const surface = code(read('components', 'RunSurface.tsx'));
 	assert.match(surface, /useSyncExternalStore\(graphSession\.subscribe, graphSession\.getState, graphSession\.getState\)/);
+	assert.doesNotMatch(surface, /InspectorPanel/, 'the inspector is mounted by the graph view, beside the canvas');
+	assert.match(code(read('components', 'GraphView.tsx')), /<InspectorPanel /);
+});
+
+// Nothing in a document may be a modal: rocket-ui keeps every document mounted, and a modal or drawer left open in a
+// hidden one traps Tab, locks scroll and takes Escape for the whole window. The view's panels are inline, its menus are
+// drawn inside the canvas, and keys are React handlers on its own elements, so none of them registers a listener.
+test('the graph view, the inspector, the menus and the keys help import no Modal or DetailPanel and register no listener of their own', () => {
+	for (const file of ['GraphView', 'InspectorPanel', 'CanvasMenu', 'KeysPanel', 'CanvasSearch', 'GraphStatusLine', 'LegendPanel', 'StyleEditor']) {
+		const text = code(read('components', `${file}.tsx`));
+		assert.doesNotMatch(text, /\b(Modal|DetailPanel)\b/, `${file} uses a modal`);
+		assert.doesNotMatch(text, /addEventListener/, `${file} registers a listener`);
+	}
+	for (const [file, label] of [['InspectorPanel', 'Inspector'], ['KeysPanel', 'Keyboard shortcuts']] as const) {
+		assert.match(code(read('components', `${file}.tsx`)), new RegExp(`<aside\\s[^>]*aria-label="${label}"`), `${file} is an aside`);
+	}
+	assert.match(code(read('components', 'CanvasMenu.tsx')), /role="menu"/);
 });
 
 // A re-probe (a restart of ANY pipeline, a shell reconnect, Test connection) takes the probe away for a moment. Both

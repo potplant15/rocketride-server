@@ -386,6 +386,77 @@ are shown, and each action is announced through one polite live region.
 Animations respect the reduced-motion setting. The Table tab lists the same
 result for anyone who would rather not use the canvas.
 
+## Inspecting, menus and styles
+
+**Inspector.** Selecting a node or a relationship opens the inspector in a
+column to the right of the canvas. It is part of the page, not a drawer: it has
+no overlay, takes no focus when a click opens it (the canvas keeps panning and
+the keys keep working), and Escape closes it while focus is inside it. Enter,
+Inspect and the menu's Inspect are explicit requests, and they move focus to its
+heading. A node shows its labels, id, properties (each with the kind of value that
+was received: string, integer, float, boolean, list, map and so on; a whole number
+is "integer" because JSON does not tell 1 from 1.0, and a null shows the schema's
+sampled type as a sample) and the relationships drawn for
+it ("N drawn"; the database's own count of relationships is not known to the
+app); a relationship shows its type, ends and properties, with Select start and
+Select end; a found path lists its steps and says how it was found (one shortestPath call on Neo4j only; FalkorDB and Apache AGE try depth 1 to N, one call each), with Open as query, Clear path and Copy JSON.
+**New query from here** opens a new query tab when the workbench offers one.
+
+**Right-click menus.** A node, a relationship and the empty canvas each have a
+menu, drawn inside the canvas. It follows the WAI-ARIA menu pattern: focus moves
+to the first item, Up, Down, Home and End move through it, a letter jumps,
+Enter or Space chooses, Right opens **Expand by type** and Left goes back,
+Escape closes it and returns focus to the node, and Tab closes it. Shift+F10 or
+the Menu key opens it at the focused node. Anything that asks the database is
+off while another request is running or the drawing is out of date, and says so
+in its title. **Expand by type (sampled)** lists the relationship types the schema says
+can start or end at one of the node's labels; the schema is sampled, so the list can be incomplete. **Find path to...** then waits for
+you to click the second node (Escape cancels). **Connect the drawn nodes**
+connects every drawn node, as the toolbar button does.
+
+**Search.** The box above the canvas (focus it with `/`) looks only at the drawn
+nodes, never at the database: a node matches when the text is in its caption,
+one of its labels or any property value, ignoring case. Matching captions come
+first. The canvas dims the other nodes; Enter selects the current match and
+centres it, Down and Up step to the next and previous.
+
+**Layout and Export.** Layout offers Force, Tree (top down) and Left to right,
+Re-run layout, and whether nodes you dragged stay pinned. Export offers PNG and
+SVG images and the drawn graph as JSON. Where the host cannot download files
+(VS Code), it offers Copy SVG and Copy as JSON instead and says why PNG is not
+there. A PNG that would be too large to make says so and points at the SVG. Fit and Full screen sit beside them; the canvas does not refit when the inspector opens or the window resizes, only on Fit, a new layout and full screen.
+
+**Status line.** One line under the graph replaces the notices that floated over
+it. It is one fixed line high (long text is cut with an ellipsis, so a notice never resizes the canvas) and holds at most one item of each kind: out of date, the session's notice,
+what is running, the canvas budget, the layout, a path pick, a shown path and the
+selection. A long text shows its first sentence and the rest behind **Details**, which opens over the canvas.
+An out of date drawing says so once, offers **Rerun**, and keeps the full
+explanation in its Details. The result line (rows, time) is on the right.
+
+**Legend and styles.** The legend sits in the column to the right of the canvas, with the inspector, so it costs the canvas no height; the **Legend** button hides it. It lists the labels and relationship types that
+are drawn, with how many of each (drawn, not in the database). Clicking a label
+selects its drawn nodes. **Style** opens an editor under the legend: a label
+takes one of the six measured chart colours (or its automatic one), a size (S,
+M or L), a caption property and a badge (initials, a dot or none); a
+relationship type takes a colour from the four that are at least 3:1 against the
+canvas in every shipped theme (yellow and orange are below that in the light
+themes, so they are not offered). There is no free colour picker. A label keeps
+the colour it was first given, so a label added to the graph later never moves
+another label's colour, and up to six labels never share a colour unless you
+choose it (the editor says when two labels end up with the same one). Styles, captions included, are saved through the connection's user data; the legend
+says where on this mount once the mount knows (the sentence comes from the mount,
+not from this page). Until a connection's style has been read, labels are drawn in
+one neutral grey rather than in colours that would change a moment later.
+
+**Badges.** The letters inside a node are the shortest start of its label that no
+other label of the connection shares: Person and Product show "Pe" and "Pr",
+Topic shows "T". Adding a label that starts the same way lengthens both badges;
+colours do not move.
+
+**Keys.** The **Keys** button, or `?`, opens the shortcuts as another inline
+column. Like the inspector it is not a dialog: Escape or Close ends it while
+focus is inside.
+
 ## The sidebar
 
 For the active connection the sidebar lists its **node labels** and
