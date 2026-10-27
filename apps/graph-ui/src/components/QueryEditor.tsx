@@ -59,7 +59,7 @@ import type { Monaco } from 'shared/components/monaco';
 import type { ICompletionModel } from '../cypher/completion';
 import type { IEditorSnapshot, ISelection } from '../cypher/targets';
 import { readRefusalMarkers } from '../graph/writeWarnings';
-import { MARKER_OWNER, applyMarkers, ensureCypherCompletion, setCompletionContext } from './completionProvider';
+import { MARKER_OWNER, applyMarkers, ensureCypherCompletion, markersKey, setCompletionContext } from './completionProvider';
 import type { IEditorMarker } from './completionProvider';
 
 // =============================================================================
@@ -97,7 +97,7 @@ export interface IQueryEditorProps {
 	label: string;
 	/** What suggestions are made from (the connection's schema and engine); null or absent: none. */
 	completion?: ICompletionModel | null;
-	/** Marks in the text, by buffer offset (a failed statement's position). Shown until the next edit. */
+	/** Marks in the text, by buffer offset (a failed statement's position). Shown until the next edit; a fresh array each render is fine. */
 	markers?: readonly IEditorMarker[];
 	/** Mark, as the text changes, each statement the read workbench would refuse. Off in the write console. */
 	warnWrites?: boolean;
@@ -249,10 +249,13 @@ export const QueryEditor = forwardRef<IQueryEditorHandle, IQueryEditorProps>(fun
 		setCompletionContext(uri, completion ?? null);
 	}, [completion, mounted]);
 
+	// Keyed on what the marks say, not on the array: a caller that builds a fresh array each render must not bring a mark
+	// back on the text after an edit cleared it.
+	const marksKey = markersKey(markers);
 	useEffect(() => {
-		failureShown.current = markers !== undefined && markers.length > 0;
+		failureShown.current = marksKey !== '';
 		showMarks();
-	}, [markers, mounted, showMarks]);
+	}, [marksKey, mounted, showMarks]);
 
 	useEffect(() => {
 		scanRefusals();
@@ -342,6 +345,8 @@ export const QueryEditor = forwardRef<IQueryEditorHandle, IQueryEditorProps>(fun
 			// An edit ends the failure's mark (it pointed into the old text) and schedules the refusal check.
 			editor.onDidChangeModelContent(() => {
 				failureShown.current = false;
+				// The refusal warnings were measured on the old text: drop them until the check runs again.
+				refusals.current = [];
 				showMarks();
 				if (warnTimer.current) clearTimeout(warnTimer.current);
 				if (latestMarks.current.warnWrites) warnTimer.current = setTimeout(scanRefusals, WARNING_DEBOUNCE_MS);

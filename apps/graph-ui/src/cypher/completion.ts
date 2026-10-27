@@ -207,7 +207,8 @@ function bindings(tokens: readonly IToken[], variable: string): { names: string[
  */
 function written(name: string, dialect: GraphDialect | null): string | null {
 	if (PLAIN_NAME.test(name)) return name;
-	return quoteIdentifier(name, dialect ?? 'neo4j');
+	// Until the engine is known, only names that need no quoting: AGE cannot take a quoted one.
+	return dialect === null ? null : quoteIdentifier(name, dialect);
 }
 
 /**

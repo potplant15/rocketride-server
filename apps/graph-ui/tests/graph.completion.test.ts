@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type * as MonacoNS from 'monaco-editor';
-import { applyMarkers, completionContextCount, ensureCypherCompletion, setCompletionContext } from '../src/components/completionProvider';
+import { markersKey, applyMarkers, completionContextCount, ensureCypherCompletion, setCompletionContext } from '../src/components/completionProvider';
 import { parseSchema } from '../src/graph/schema';
 import { suggestAt } from '../src/cypher/completion';
 import type { ICompletionModel } from '../src/cypher/completion';
@@ -119,6 +119,11 @@ test('names that need quoting are inserted quoted, and AGE (which cannot take a 
 	assert.equal(suggestAt({ schema: odd, dialect: 'neo4j' }, 'MATCH (p:`Has Space`) RETURN p.').find((c) => c.label === 'full name')?.insertText, '`full name`');
 });
 
+test('before the engine is known only names that need no quotes are offered', () => {
+	const odd = parseSchema({ schema: { version: 2, labels: [{ name: 'Has Space', properties: [] }, { name: 'Plain', properties: [] }], relationship_types: [], sampled: true, truncated: false, refreshed_at: null, source: 'refresh', stale: false, error: null, capable: true } });
+	assert.deepEqual(suggestAt({ schema: odd, dialect: null }, 'MATCH (p:').map((c) => c.label), ['Plain']);
+});
+
 test('counts say about when estimated and nothing when absent', () => {
 	const view = parseSchema({ schema: { version: 2, labels: [{ name: 'A', properties: [], count: 5, count_estimated: false }, { name: 'B', properties: [], count: 7, count_estimated: true }, { name: 'C', properties: [] }], relationship_types: [], sampled: true, truncated: false, refreshed_at: null, source: 'refresh', stale: false, error: null, capable: true } });
 	const out = suggestAt({ schema: view, dialect: 'neo4j' }, '(x:');
@@ -206,4 +211,12 @@ test('marks are set under this app\'s owner name, clamped into the text, and an 
 	assert.equal(marks[0].markers[1].severity, 4);
 	applyMarkers(monaco, m, []);
 	assert.deepEqual(marks[1].markers, []);
+});
+
+test('the marks key follows the marks\' content, not the array, so a fresh array does not bring a cleared mark back', () => {
+	const a = [{ start: 1, end: 3, message: 'm', severity: 'error' as const }];
+	assert.equal(markersKey(a), markersKey(a.map((m) => ({ ...m }))));
+	assert.notEqual(markersKey(a), markersKey([{ ...a[0], start: 2 }]));
+	assert.equal(markersKey(undefined), '');
+	assert.equal(markersKey([]), '');
 });

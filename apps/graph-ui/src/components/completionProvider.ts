@@ -157,3 +157,14 @@ export function applyMarkers(monaco: typeof MonacoNS, model: MonacoNS.editor.ITe
 		})
 	);
 }
+
+/**
+ * A value that changes only when the marks themselves do, so a caller may build the array fresh on every render without
+ * bringing a cleared mark back.
+ *
+ * @param markers - The marks, or undefined.
+ * @returns A string identifying their content.
+ */
+export function markersKey(markers: readonly IEditorMarker[] | undefined): string {
+	return (markers ?? []).map((m) => `${m.severity}:${m.start}:${m.end}:${m.message}`).join('|');
+}

@@ -45,6 +45,8 @@ test('the failure mark is cleared by the next edit, and refusal warnings only ap
 	const editor = strip(fs.readFileSync(path.join(ROOT, 'src', 'components', 'QueryEditor.tsx'), 'utf8'));
 	assert.match(editor, /onDidChangeModelContent\([\s\S]*failureShown\.current = false/);
 	assert.match(editor, /latestMarks\.current\.warnWrites/);
+	assert.match(editor, /\[marksKey, mounted, showMarks\]/, 'the failure mark effect is keyed on the marks\' content');
+	assert.match(editor, /refusals\.current = \[\];\n\s*showMarks\(\)/, 'an edit drops warnings measured on the old text');
 });
 
 test('the plain text box says what it lacks, suggestions and marks included', () => {
