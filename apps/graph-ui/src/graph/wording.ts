@@ -43,6 +43,7 @@
 
 import { INITIAL_NODES, MAX_NODES, MAX_RELATIONSHIPS } from './budgets';
 import type { IGraphModel } from './model';
+import type { IResultSummary } from './results';
 import type { ReadQueryResult } from './types';
 
 /** "1,000" style number formatting (stable across locales). */
@@ -87,16 +88,81 @@ export function rowsMeta(result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 't
 	return elapsedMs === undefined ? base : `${base} · ${(elapsedMs / 1000).toFixed(1)} s round trip`;
 }
 
+/** What the write console's result line says on Apache AGE, whose node reports result rows, not a count of changes. */
+export const AGE_AFFECTED_NOT_REPORTED = 'Affected count not reported by Apache AGE';
+
 /**
  * The line under a result: the affected count first when the write console reported one, then {@link rowsMeta}.
  *
  * @param run - The run shown (its outcome, affected count and round trip).
  * @param result - Its answer.
+ * @param affectedNotReported - True for a write on Apache AGE (runConfig affectedNotReported): the line says so first.
  * @returns Text such as `3 affected · 0 rows returned (limit 25,000) · 0.4 s round trip`.
  */
-export function resultMeta(run: { outcome: string; affected?: number; ms?: number } | null, result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 'truncated'>): string {
+export function resultMeta(run: { outcome: string; affected?: number; ms?: number } | null, result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 'truncated'>, affectedNotReported = false): string {
 	const rows = rowsMeta(result, run?.ms);
+	if (affectedNotReported) return `${AGE_AFFECTED_NOT_REPORTED} · ${rows}`;
 	return run?.outcome === 'affected' ? `${num(run.affected ?? 0)} affected · ${rows}` : rows;
+}
+
+// =============================================================================
+// NOTICES: a headline, and the rest behind Details
+// =============================================================================
+
+/** The longest headline a notice shows; anything longer goes behind a Details disclosure. */
+export const NOTICE_HEADLINE_MAX = 160;
+
+/**
+ * Split a notice into its first sentence (the headline) and the rest (the details).
+ *
+ * @param text - The notice.
+ * @returns The headline, and the details ('' when there is one sentence).
+ */
+export function splitNotice(text: string): { headline: string; details: string } {
+	const match = /^([\s\S]*?[.!?])\s+([\s\S]+)$/.exec(text.trim());
+	return match ? { headline: match[1], details: match[2] } : { headline: text.trim(), details: '' };
+}
+
+/** One note about a result: what the Notes line lists. */
+export interface IResultNote {
+	id: 'unsafe-numbers' | 'malformed' | 'dangling';
+	headline: string;
+	details: string;
+}
+
+/**
+ * What is worth knowing about a result besides its rows, as notes: a short headline each, the full sentence behind it.
+ *
+ * @param summary - The result's summary.
+ * @returns The notes, in a fixed order (none for a plain result).
+ */
+export function resultNotes(summary: Pick<IResultSummary, 'unsafeNumbers' | 'malformed' | 'danglingRelationships'>): IResultNote[] {
+	const notes: IResultNote[] = [];
+	const unsafe = summary.unsafeNumbers;
+	if (unsafe > 0) {
+		notes.push({
+			id: 'unsafe-numbers',
+			headline: `${num(unsafe)} large ${unsafe === 1 ? 'integer' : 'integers'} may have been rounded`,
+			details: `${num(unsafe)} integer ${unsafe === 1 ? 'value' : 'values'} beyond 2^53 arrived as plain JSON number${unsafe === 1 ? '' : 's'} and may have been rounded before this app saw them. This node should send them as exact text; upgrade it.`,
+		});
+	}
+	const malformed = summary.malformed;
+	if (malformed > 0) {
+		notes.push({
+			id: 'malformed',
+			headline: `${num(malformed)} malformed ${malformed === 1 ? 'value' : 'values'} shown as plain data`,
+			details: `${num(malformed)} value${malformed === 1 ? ' looks' : 's look'} like graph values but ${malformed === 1 ? 'is' : 'are'} malformed, so ${malformed === 1 ? 'it is' : 'they are'} shown as plain data.`,
+		});
+	}
+	const dangling = summary.danglingRelationships;
+	if (dangling > 0) {
+		notes.push({
+			id: 'dangling',
+			headline: `${num(dangling)} ${dangling === 1 ? 'relationship' : 'relationships'} not drawn: an end node was not returned`,
+			details: `${num(dangling)} relationship${dangling === 1 ? '' : 's'} in this result ${dangling === 1 ? 'has' : 'have'} an end node that was not returned, so ${dangling === 1 ? 'it is' : 'they are'} not drawn. Return the nodes too, or expand a node.`,
+		});
+	}
+	return notes;
 }
 
 /**

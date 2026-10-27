@@ -9,11 +9,14 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { ASK_DRAFT_HEADLINE, askCheckText, askDraftText } from '../src/components/AskBar';
 import { entrySummary, historyEmptyText } from '../src/components/HistoryPanel';
 import { createLoadSlot } from '../src/graph/loadSlot';
-import { STILL_RUNNING_TEXT, historySummaryOf, limitPatch, runRefusal, settleRun, toHistoryEntry } from '../src/graph/runConfig';
+import { GATE_BUSY_TEXT } from '../src/graph/requestGate';
+import { STILL_RUNNING_TEXT, affectedNotReported, historySummaryOf, limitPatch, runRefusal, settleRun, toHistoryEntry } from '../src/graph/runConfig';
+import type { IResultSummary } from '../src/graph/results';
 import type { GraphValue, ReadQueryResult } from '../src/graph/types';
-import { resultMeta } from '../src/graph/wording';
+import { AGE_AFFECTED_NOT_REPORTED, NOTICE_HEADLINE_MAX, resultMeta, resultNotes, splitNotice } from '../src/graph/wording';
 import { node } from './support/builders';
 
 // A request left for the editor is taken from the host's slot once. De-duplicating it with a ref that starts at 0 on
@@ -54,6 +57,20 @@ test('the write console settles a statement with the affected count execute retu
 	assert.equal(settleRun('write', answer([])).outcome, 'rows', 'an answer without the count is not shown as "0 affected"');
 });
 
+// Apache AGE's node reports its result ROWS as `affected_rows` (0 for a write with no RETURN), not a count of changes.
+test('on Apache AGE a write settles as the rows it returned, and the result line says the affected count is not reported', () => {
+	const created = answer([], { affected_rows: 0 });
+	assert.equal(affectedNotReported('write', 'age'), true);
+	assert.equal(affectedNotReported('read', 'age'), false);
+	assert.equal(affectedNotReported('write', 'neo4j'), false);
+	assert.deepEqual(settleRun('write', created, 'age'), { outcome: 'rows', rowCount: 0, result: created });
+	assert.equal(settleRun('write', created, 'neo4j').outcome, 'affected');
+	assert.equal(resultMeta({ outcome: 'rows', ms: 400 }, created, true), `${AGE_AFFECTED_NOT_REPORTED} · 0 rows returned (limit 25,000) · 0.4 s round trip`);
+	assert.equal(AGE_AFFECTED_NOT_REPORTED, 'Affected count not reported by Apache AGE');
+	assert.doesNotMatch(resultMeta({ outcome: 'rows', ms: 400 }, created, true), /0 affected/);
+	assert.equal(resultMeta({ outcome: 'rows', ms: 400 }, created), '0 rows returned (limit 25,000) · 0.4 s round trip', 'elsewhere nothing is added');
+});
+
 test('the write console records no row limit: execute takes none, so none was sent', () => {
 	assert.deepEqual(limitPatch('write', 1000), { limitApplied: null });
 	assert.deepEqual(limitPatch('read', 1000), { limitApplied: 1000, limitState: 'node' });
@@ -69,6 +86,9 @@ test('history keeps a write\'s affected count without a limit, and a read\'s row
 	const failed = historySummaryOf({ cypher: 'X', verb: 'X', outcome: 'error', error: 'boom', ms: 1, limitApplied: null }, 1_000);
 	assert.equal(failed.outcome, 'error');
 	assert.equal(failed.error, 'boom');
+	const unreported = historySummaryOf({ cypher: 'CREATE (:X)', verb: 'CREATE', outcome: 'affected', ms: 1, limitApplied: null }, 1_000);
+	assert.equal('affected' in unreported, false, 'no count is invented');
+	assert.equal(entrySummary(toHistoryEntry(unreported, 'u')), 'affected count not reported');
 });
 
 test('the result line of a write leads with the affected count', () => {
@@ -85,6 +105,8 @@ test('a run asked for while a statement is still running, or while the surface i
 	assert.equal(runRefusal({ running: true, blocked: null }), STILL_RUNNING_TEXT);
 	assert.match(STILL_RUNNING_TEXT, /^Nothing was sent: a statement is still running\./);
 	assert.equal(runRefusal({ running: true, blocked: 'Checking this connection again.' }), 'Nothing was sent. Checking this connection again.');
+	assert.equal(runRefusal({ running: false, blocked: null, busy: GATE_BUSY_TEXT }), GATE_BUSY_TEXT, 'another tab\'s request still on the database');
+	assert.equal(runRefusal({ running: false, blocked: null, busy: null }), null);
 });
 
 // -----------------------------------------------------------------------------
@@ -96,4 +118,38 @@ test('History says "No entries match" when a search or Pinned only hides entries
 	assert.match(historyEmptyText(3, false).description, /Clear the search or turn off Pinned only/);
 	assert.deepEqual(historyEmptyText(0, true), { title: 'No history yet', description: 'Statements you run on this connection appear here.' });
 	assert.equal(historyEmptyText(0, false).title, 'Recording is off for this connection');
+});
+
+// -----------------------------------------------------------------------------
+// The result's warnings are one "Notes (N)" line, each a headline with its details
+// -----------------------------------------------------------------------------
+
+const summaryWith = (over: Partial<IResultSummary>): IResultSummary => ({ rowCount: 1, columnCount: 1, nodeCount: 0, relationshipCount: 0, pathCount: 0, danglingRelationships: 0, drawable: false, scalarOnly: true, malformed: 0, unsafeNumbers: 0, ...over });
+
+test('a result\'s warnings become notes: a short headline each, the full sentence in the details', () => {
+	assert.deepEqual(resultNotes(summaryWith({})), []);
+	const notes = resultNotes(summaryWith({ unsafeNumbers: 2, malformed: 1, danglingRelationships: 3 }));
+	assert.deepEqual(notes.map((n) => n.id), ['unsafe-numbers', 'malformed', 'dangling']);
+	assert.equal(notes[0].headline, '2 large integers may have been rounded');
+	assert.match(notes[0].details, /^2 integer values beyond 2\^53 arrived as plain JSON numbers/);
+	assert.equal(notes[1].headline, '1 malformed value shown as plain data');
+	assert.equal(notes[2].headline, '3 relationships not drawn: an end node was not returned');
+	assert.match(notes[2].details, /Return the nodes too, or expand a node\.$/);
+	assert.equal(resultNotes(summaryWith({ danglingRelationships: 1 }))[0].headline, '1 relationship not drawn: an end node was not returned');
+	for (const note of notes) assert.ok(note.headline.length <= NOTICE_HEADLINE_MAX, note.headline);
+});
+
+test('a long notice is split into its first sentence and the rest, for a headline with a Details disclosure', () => {
+	assert.deepEqual(splitNotice('Not sent: statement 2 looks like it changes data (CREATE). Query tabs only run reads. This is a text check.'), { headline: 'Not sent: statement 2 looks like it changes data (CREATE).', details: 'Query tabs only run reads. This is a text check.' });
+	assert.deepEqual(splitNotice('One sentence only.'), { headline: 'One sentence only.', details: '' });
+	assert.deepEqual(splitNotice('Not sent (CALL db.labels). Then more.'), { headline: 'Not sent (CALL db.labels).', details: 'Then more.' }, 'a dot inside a name does not end the sentence');
+});
+
+// M14: the Ask draft banner's line stays under 160 characters; what the text check found goes behind Details.
+test('the Ask draft banner quotes at most 100 characters of the question, and keeps the text check apart', () => {
+	const line = `${ASK_DRAFT_HEADLINE} ${askDraftText('which people work where '.repeat(20))}`;
+	assert.ok(line.length <= 160, line);
+	assert.match(line, /\u2026\u201d Check the Cypher, then Run\.$/);
+	assert.equal(askCheckText(null), null);
+	assert.match(askCheckText({ kind: 'CREATE' }) ?? '', /^The text check found CREATE; query tabs only read, so Run will refuse it\./);
 });

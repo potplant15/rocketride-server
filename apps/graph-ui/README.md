@@ -133,8 +133,66 @@ reload the page before working as another account.
 
 ## The workbench
 
-Opening a connection gives it a workbench: an editor, a row limit, and three
-result tabs.
+Opening a connection gives it a workbench document. It opens on **Overview**,
+beside **Query 1**, and nothing runs by itself. One row holds the tabs and, on
+the right, the shown tab's run bar, or on Overview its actions: **Explore**,
+**New query** and **Refresh schema** (read the schema again). **Explore** opens
+an Explore tab and runs a sample of 25 relationships with their end nodes
+(`MATCH (a)-[r]->(b) RETURN a, r, b LIMIT 25`, a read every engine runs).
+Pressing it again shows that tab without running it again; once you have
+edited that tab's text, Explore opens a new one and runs the sample there.
+
+- **Query tabs.** Each query tab has its own editor, row limit, runs, results
+  and graph, and a tab you are not looking at keeps them; only the tab shown
+  draws its results, so when you come back to a tab its graph is laid out
+  again: nodes you moved go back to a computed place, and the graph's layout
+  choice and canvas search start over. **+ New query** opens
+  an empty tab. Text that comes from elsewhere opens a tab of its own, so the
+  text in your other tabs is never replaced:
+  - a label or relationship type clicked in the sidebar: its 25-row preview,
+    run; the sidebar's **New query with this label** (or type): the same
+    statement, not run;
+  - an Ask draft, History's **Open in new tab**, a saved query, a starter
+    template, and the graph's **New query from here**: not run;
+  - History's **Run again**: run.
+
+  Only History's **Load into editor** and Saved's **Insert** change a tab you
+  already have: the query tab you were in last. In the code editor that is an
+  edit, so Ctrl/Cmd+Z brings the previous text back. Arrow keys move between
+  tabs, and Delete (Backspace on a Mac keyboard) closes the focused query tab;
+  closing a tab whose text you edited asks first. A workbench holds at most 8
+  query tabs; past that, a line says to close one, and nothing is opened or
+  closed for you. Query 1 keeps the draft the workbench has always kept for the
+  connection; the text of the other tabs lasts until the tab or the document is
+  closed. Tabs are not restored when the document opens again.
+- **One request at a time.** A workbench sends one request at a time across
+  all its tabs: statements and the graph's actions alike. A statement you
+  stopped waiting for counts until the database finishes it, because it still
+  holds a connection there (Apache AGE's node has four). Meanwhile **Run** waits
+  and says so, and anything asked for is not sent and says why; a statement
+  that was not sent is not recorded in History.
+- **Room for the results.** The divider under the editor sets its height: drag
+  it, or reach it with Tab and use ArrowUp and ArrowDown (24 px at a time) or
+  Home to hide the editor; a double click hides it too, and so does **Hide
+  editor** in the run bar. A hidden editor leaves the run bar, with the
+  statement's first line: click it, or **Show editor**, to bring the editor
+  back. While you drag, only the divider's line moves; the editor and the
+  results change size when you let go. The height is kept in your preferences
+  (`graph.editorHeight`).
+- **Full screen.** The graph's **Full screen** button fills the document with
+  the graph: the header, the tabs, the editor and the run bar are covered, and
+  the inspector stays. It is not the browser's full screen, so it works the same
+  in VS Code and in the RocketRide workspace. **Exit full screen** leaves it, and
+  so does Escape when nothing inside the graph used it; a new result that opens
+  as a table, or another tab, leaves it too.
+- **Notes.** What is worth knowing about a result besides its rows (integers
+  that may have been rounded, malformed graph values, relationships not drawn
+  because an end node was not returned) is one **Notes (N)** line under the
+  result, with the headlines; open it for the full sentences.
+
+Every query tab has an editor, a row limit, and three views of its result
+(Graph, Table and Raw), switched in the run bar. A tab that has not run shows
+**Run a query**.
 
 - **Run** sends the selection, or the statement the caret is in
   (Ctrl/Cmd+Enter). **Run all** sends every statement in order
@@ -213,10 +271,10 @@ result tabs.
 A result opens as a **Graph** when it holds nodes or relationships that can be
 drawn, and as a **Table** otherwise. **Raw** shows the node's answer as JSON and
 is always available. The Table lists every returned row positionally, so two
-columns with the same name both show; selecting a row opens it in full, with
-**Copy as JSON**. Integers beyond 2^53 are shown as the exact text the node sent,
-never rounded, and a result that arrived with one as a plain number says that it
-may have been rounded.
+columns with the same name both show; selecting a row opens it in full beside
+the table, with **Copy row as JSON**. Integers beyond 2^53 are shown as the
+exact text the node sent, never rounded, and a result that arrived with one as
+a plain number says that it may have been rounded.
 
 A result that hit a limit says which one: the row limit, the node's element
 budget or its value budget.
@@ -515,10 +573,16 @@ graph.
 
 ## Ask
 
-The Ask box asks the node's language model (`get_query`) to write Cypher. What
-comes back is a **preview**: it is put in the editor and **not run**; you read it,
-edit it, and press Run. The node has already checked that it reads only, and the
-text check runs on it again. An answer in words is shown as an answer. A pipeline
+**Ask** in the run bar shows the Ask box, which asks the node's language model
+(`get_query`) to write Cypher. What comes back opens in a **new query tab** as a
+draft, **not run**: the tab says it is a draft from Ask, quotes the question, and
+offers **Back to** the tab you asked from, whose text and results are as they
+were. You read the draft, edit it, and press Run. The node has already checked
+that it reads only, and the text check runs on it again. When all 8 query tabs
+are in use, the draft waits in the Ask box, with **Open the draft** for once a
+tab is closed. An answer that arrives after you closed the tab you asked from
+is dropped, and one that arrives after you moved to another tab opens behind
+it. An answer in words is shown as an answer. A pipeline
 with no language model gets a note that says so instead of an error. Any other
 failure is shown as an error or a warning. An error leads with the text it came
 with: the node's (a model that returned nothing, or the node's refusal of what
@@ -533,14 +597,46 @@ characters, is not sent. **Stop waiting** drops a late answer.
 
 Each statement you run is recorded per connection in your RocketRide workspace
 file on the server, not in this browser: its text as typed (including any
-literal values), when, how long it took, how many rows, and how it ended. You can
-search, pin, add a note, load a statement into the editor, run it again (an
-explicit action), delete entries, clear all, or turn recording off per
-connection. Up to 100 entries per connection and 8 KiB of text per entry are
+literal values), when, how long it took, how many rows, and how it ended.
+**History** in the run bar shows it beside the tabs, as part of the document
+rather than a drawer over it; **Saved** next to it switches to saved queries,
+and its close button, or Escape inside it, hides it. You can search, pin, add a
+note, load a statement into the editor (in place of the text of the query tab
+you were in last), run it again in a new tab (an explicit action), open it in a
+new tab without running it, delete entries, clear all, or turn recording off
+per connection. Up to 100 entries per connection and 8 KiB of text per entry are
 kept, and about 256 K characters of history across all your Graph Explorer
 connections: past that, the oldest entries anywhere are dropped first, unpinned
 before pinned. When a search or **Pinned only** hides every entry, the panel says
 that nothing matches. Tokens and connection strings are never recorded.
+
+## Saved queries and templates
+
+**Saved** in the run bar shows this connection's saved queries beside the tabs.
+**Save current query** keeps the text the query tab you were in last holds when
+you press it, under a name you type; with no query tab open, or an empty one, it
+says so and keeps nothing. A saved query opens in a new tab, not run (**Open in new tab**),
+goes into the editor at the caret, replacing any selection (**Insert**), or is
+renamed, or deleted after a confirmation. When a save is refused, the panel
+shows the reason and keeps nothing. The panel's last line says where saved
+queries are kept on this mount.
+
+**Starter templates** are reads to start from. The ones that name a label or a
+relationship type take the first one in this connection's schema that has data
+and that the engine can quote:
+
+- a sample of the graph (what Explore runs);
+- 25 nodes of a label;
+- a relationship type between two labels, or the type alone when the schema
+  names no pair;
+- on Neo4j and FalkorDB, nodes counted by label and relationships counted by
+  type;
+- on Neo4j, nodes with no relationships.
+
+Apache AGE gets only the first three: the two counts sort by a returned name
+(`ORDER BY` on an alias), which its node refuses, and whether it runs a pattern
+predicate has not been checked. No template takes parameters (the
+editor sends none).
 
 ## As a dev tool
 
@@ -587,9 +683,9 @@ What is different there:
     history is still loading (usually under a second), is lost if the account
     changes again before the load finishes. It is never added to another
     account's history.
-- Saved queries and label styles (the colours, sizes and badges given to
-  labels and relationship types) are kept in two more files in your user
-  folder on the server, `rocketride.graph.saved.json` and
+- Saved queries and label styles (the colours, sizes, captions and badges
+  given to labels and relationship types) are kept in two more files in your
+  user folder on the server, `rocketride.graph.saved.json` and
   `rocketride.graph.styles.json`, not in the history file, each with one
   section per account. The sidebar reads and writes them, about a second after
   a change; documents read and change them through the sidebar, for the
@@ -609,7 +705,10 @@ What is different there:
     switch to another account they are dropped, colours the sidebar was about
     to give the previous account's labels included, and that account never
     sees them.
-- Editor drafts and caption choices last for the session only.
+- Query tabs belong to their document. Query 1's draft and the editor height
+  last for the session only, and the other tabs' text until the tab or the
+  document is closed. Caption choices are part of the label styles, so they
+  are kept in `rocketride.graph.styles.json` (above).
 - Results grid layouts (sort, column widths) are kept in memory: in
   rocket-ui until the page reloads, in VS Code until the document's panel
   closes. They are never written into the host's own preferences.
@@ -645,8 +744,9 @@ What is different there:
 ## The write console
 
 A connection whose node reports `allow_execute` and supports the graph result
-shape has a **Write console** button. It is a separate document with its own
-editor and an **Execute** button, and it always says what it is:
+shape has a **Write console** button. It is a separate document with one editor
+(no query tabs) and an **Execute** button, its header says **Writes allowed**,
+and it always says what it is:
 
 - Before anything is sent, a confirmation lists the statements that look like
   they change data, with their text, and says **This is a text check, not a
@@ -655,11 +755,23 @@ editor and an **Execute** button, and it always says what it is:
   not flag is sent when you press Execute, without a dialog.
 - Statements go through `execute` with the graph result shape, so what a
   statement returned is drawn like any other result. The result line, the strip
-  and History show the count the node reports as affected. There is no row-limit
-  choice here: `execute` returns at most the node's own maximum.
-- Each statement is its own request. A batch stops at the first error; statements
-  that ran are not undone. The strip says how many ran and how many were not run.
+  and History show the count the node reports as affected. Apache AGE's node
+  reports the number of rows the statement returned there instead (0 for a
+  write with no `RETURN`), so on Apache AGE the result line says **Affected
+  count not reported by Apache AGE**, and the strip and History show the rows
+  returned. There is no row-limit choice here: `execute` returns at most the
+  node's own maximum.
+- History opens beside the editor here too. **Load into editor** and **Run
+  again** only put the statement in the editor; nothing is sent until you press
+  Execute.
+- Each statement is its own request, sent one by one. A batch stops at the
+  first error; a statement that already ran is not undone when a later one
+  fails. The strip says how many ran and how many were not run, and the
+  confirmation says so before anything is sent.
 - A write is never sent again by the app: no automatic retry.
+- The console sends one request at a time too, through its own gate (not the
+  workbench's): a write you stopped waiting for counts until the database
+  finishes it, and until then **Execute** waits and says so.
 - A failure that can come after the database ran the statement (the node could
   not return its answer, the answer was not understood, or the app stopped
   waiting) says **the write may have been applied**. Only a refusal before
@@ -693,6 +805,8 @@ editor and an **Execute** button, and it always says what it is:
 
 ## Limits
 
+- A workbench holds at most 8 query tabs. When the document closes, the full
+  app keeps only Query 1's text (as its draft); a dev tool keeps none.
 - It reads and writes through the node's tool surface: no cancel of a running
   query, no server-side cursor, no streaming of a large result. A query is
   bounded by the row limit, the node's element and value budgets and its

@@ -34,6 +34,12 @@ export const styles = {
 		...commonStyles.columnFill,
 	} as CSSProperties,
 
+	// A connection document's root: the positioned ancestor its in-document full screen covers.
+	documentRoot: {
+		...commonStyles.columnFill,
+		position: 'relative',
+	} as CSSProperties,
+
 	// Scrolling content column below the header (standard 20/24 gutters).
 	content: {
 		flex: 1,
