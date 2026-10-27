@@ -39,8 +39,8 @@
 // asks the node for them. Relationship counts add up (each relationship has
 // one type); per-label counts do not on engines where a node can have several
 // labels, so the total says "(per label)". An estimate says "about", and a
-// part with a count missing (AGE before its tables were analysed) is left out:
-// the drawer then says the size is not reported.
+// part with a count missing (AGE before its tables were analysed) says "not
+// reported". The cards, the drawer and the Overview use these same words.
 //
 // WHAT AN EMPTY LIST CAN SAY
 // A graph node that fails to START never appears in the task list at all, so an
@@ -269,17 +269,27 @@ function counted(value: { sum: number; estimated: boolean }, one: string, many: 
 }
 
 /**
- * A connection's size from the schema read in this session: `60 nodes (per label) · 92 relationships`. A part whose
- * counts are not all reported is left out.
+ * A connection's size from the schema read in this session, in the words the cards, the drawer and the Overview share:
+ * `60 nodes (per label) · 92 relationships`. A part with any count absent (AGE before its tables were analysed) says
+ * `nodes not reported` or `relationships not reported`, and `counts not reported` when no part has its counts.
  *
- * @param schema - The schema, or null when it was not read.
- * @returns The text, or '' when nothing is reported.
+ * @param schema - The schema, or null when it was not read (then nothing is said, and nothing is asked for).
+ * @returns The text; '' when the schema was not read, or lists no label and no relationship type.
  */
 export function countsText(schema: ISchemaView | null): string {
 	if (!schema) return '';
-	const nodes = total(schema.labels);
-	const relationships = total(schema.relationshipTypes);
-	return [nodes ? `${counted(nodes, 'node', 'nodes')} (per label)` : null, relationships ? counted(relationships, 'relationship', 'relationships') : null].filter(Boolean).join(' \u00b7 ');
+	const parts: Array<{ text: string; counted: boolean }> = [];
+	if (schema.labels.length > 0) {
+		const nodes = total(schema.labels);
+		parts.push(nodes ? { text: `${counted(nodes, 'node', 'nodes')} (per label)`, counted: true } : { text: 'nodes not reported', counted: false });
+	}
+	if (schema.relationshipTypes.length > 0) {
+		const relationships = total(schema.relationshipTypes);
+		parts.push(relationships ? { text: counted(relationships, 'relationship', 'relationships'), counted: true } : { text: 'relationships not reported', counted: false });
+	}
+	if (parts.length === 0) return '';
+	if (parts.every((part) => !part.counted)) return 'counts not reported';
+	return parts.map((part) => part.text).join(' \u00b7 ');
 }
 
 /** The drawer's and the details panel's rows: the summary first, the plumbing behind a disclosure. */
@@ -315,14 +325,15 @@ export function detailSections(endpoint: IExplorerEndpoint, probe: IProbeResult 
 }
 
 /**
- * The drawer's Size line.
+ * The drawer's Size line: {@link countsText} as a line of its own (a capital first).
  *
  * @param schema - The schema that was read.
- * @returns The counts; `Empty` for a fresh read that lists nothing; else `Not reported`.
+ * @returns The counts; `Empty` for a fresh read that lists nothing; `Not reported` for one that proves nothing.
  */
 export function sizeText(schema: ISchemaView): string {
 	if (schema.evidence === 'fresh' && schema.labels.length === 0 && schema.relationshipTypes.length === 0) return 'Empty';
-	return countsText(schema) || 'Not reported';
+	const text = countsText(schema);
+	return text === '' ? 'Not reported' : `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 }
 
 /**

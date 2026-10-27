@@ -78,7 +78,8 @@ A card also carries chips, each from what the node itself reports:
   counts, so on Neo4j and FalkorDB a node with two labels counts twice; the
   relationship total is exact. A count the database estimates (Apache AGE) says
   *about*, and a part with a count missing (AGE before its tables were analysed)
-  is left out.
+  says *nodes not reported* or *relationships not reported* (*counts not
+  reported* when neither has one).
 - **Empty graph**, only when a schema read in this session lists no label and
   no relationship type. A node that could not read its schema, or an older
   node, never shows it.
@@ -86,9 +87,10 @@ A card also carries chips, each from what the node itself reports:
 Selecting a card, or pressing Enter or Space on it, opens a drawer. Its summary
 comes first: the state and the chips (with **Supported (Cypher)** for a node
 that has `read_query`), the engine and version, the database or graph, and, once
-the schema was read, its size (**Not reported** when the schema has no counts)
-and a line such as "5 labels · 7 relationship types · 21 property keys
-(sampled)"; a fresh read that lists nothing says **Empty**. **Connection details** opens the rest: the pipeline, the node, whose
+the schema was read, its size in the same words as the card, and a line such as
+"5 labels · 7 relationship types · 21 property keys (sampled)"; a fresh read
+that lists nothing says **Empty**, and one that proves nothing (an older node, a
+failed read) says **Not reported**. **Connection details** opens the rest: the pipeline, the node, whose
 run it is, whether writes are allowed, and a sentence on what the node's read
 path guarantees. **Test connection** asks the node again; when nothing could be
 sent (the pipeline is not running, or a check is already in progress) it says

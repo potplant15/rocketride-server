@@ -341,18 +341,21 @@ test('"Empty graph" only for a fresh schema with no labels and no relationship t
 	assert.ok(!chipLabels(endpoint(), probeOf('falkordb'), view({ evidence: 'fresh' })).includes('Empty graph'));
 });
 
-test('counts: exact sums; "about" on an estimate; nothing for a part that is not reported (AGE before ANALYZE)', () => {
+test('counts: exact sums; "about" on an estimate; "not reported" for a part whose counts are absent (AGE before ANALYZE)', () => {
 	assert.equal(countsText(view({ labels: [label('A', 20), label('B', 40)], relationshipTypes: [type('R', 90), type('S', 2)] })), '60 nodes (per label) \u00b7 92 relationships');
 	assert.equal(countsText(view({ labels: [label('A', 1, true), label('B', 2)], relationshipTypes: [type('R', 1)] })), 'about 3 nodes (per label) \u00b7 1 relationship');
-	assert.equal(countsText(view({ labels: [label('A', null), label('B', 2)], relationshipTypes: [type('R', 5, true)] })), 'about 5 relationships', 'a label without a count: no node total');
-	assert.equal(countsText(view({ labels: [label('A', null)], relationshipTypes: [type('R', null)] })), '', 'AGE with no counts at all: nothing');
+	assert.equal(countsText(view({ labels: [label('A', null), label('B', 2)], relationshipTypes: [type('R', 5, true)] })), 'nodes not reported \u00b7 about 5 relationships', 'a label without a count: no node total, and it says so');
+	assert.equal(countsText(view({ labels: [label('A', 4)], relationshipTypes: [type('R', null)] })), '4 nodes (per label) \u00b7 relationships not reported');
+	assert.equal(countsText(view({ labels: [label('A', null)], relationshipTypes: [type('R', null)] })), 'counts not reported', 'AGE with no counts at all');
+	assert.equal(countsText(view({ labels: [label('A', null)], relationshipTypes: [] })), 'counts not reported');
 	assert.equal(countsText(view({ labels: [], relationshipTypes: [] })), '', 'an empty graph says so with its chip');
 	assert.equal(countsText(null), '', 'not read in this session: no counts, and no request for them');
 	assert.equal(countsText(view({ labels: [label('A', 1_234_567)], relationshipTypes: [] })), '1,234,567 nodes (per label)');
 });
 
 test('the drawer\'s size and schema lines', () => {
-	assert.equal(sizeText(view({ labels: [label('A', null)], relationshipTypes: [] })), 'Not reported');
+	assert.equal(sizeText(view({ labels: [label('A', null)], relationshipTypes: [] })), 'Counts not reported');
+	assert.equal(sizeText(view({ labels: [label('A', null)], relationshipTypes: [type('R', 2)] })), 'Nodes not reported \u00b7 2 relationships', 'a line starts with a capital');
 	assert.equal(sizeText(view({ evidence: 'fresh', labels: [], relationshipTypes: [] })), 'Empty');
 	assert.equal(sizeText(view({ evidence: 'unknown', labels: [], relationshipTypes: [] })), 'Not reported', 'an unreadable schema proves nothing');
 	assert.equal(sizeText(view({ labels: [label('A', 3)], relationshipTypes: [type('R', 1)] })), '3 nodes (per label) \u00b7 1 relationship');
