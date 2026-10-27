@@ -103,8 +103,11 @@ hostname pattern. The bearer token is optional because deployed servers choose
 their own authentication.
 
 Manufact's management MCP server requires an interactive OAuth flow. This
-non-interactive client cannot complete that flow, so the preset intentionally
-leaves its endpoint empty and does not connect to the management server.
+non-interactive client cannot complete OAuth for either the management server or
+a deployed endpoint. A deployed endpoint must allow unauthenticated access or
+accept the bearer token configured in **API Key**; OAuth-only endpoints are not
+supported. The preset therefore intentionally leaves its endpoint empty and
+does not connect to the management server.
 
 ---
 
@@ -159,7 +162,7 @@ Some MCP tools take no arguments (their input schema is empty). Strict reasoning
 
 | Field | Type | Description | Default |
 |---|---|---|---|
-| `mcp_client.bearer` | `string` | **API Key**<br/>Optional API key or bearer token for your deployed MCP server, if required. Find your server's connection details in the <b>Manufact dashboard</b>: <a href='https://cloud.manufact.com' target='_blank'>cloud.manufact.com</a>. Authentication depends on the deployed server. | `""` |
+| `mcp_client.bearer` | `string` | **API Key**<br/>Optional API key or bearer token for your deployed MCP server, if required. Find your server's connection details in the <b>Manufact dashboard</b>: <a href='https://manufact.com/cloud' target='_blank'>manufact.com/cloud</a>. Authentication depends on the deployed server. | `""` |
 | `mcp_client.endpoint` | `string` | **Endpoint**<br/>Streamable HTTP endpoint of an MCP server deployed on Manufact Cloud. Copy the URL from your Manufact dashboard. | `""` |
 | `mcp_client.serverName` | `string` | **Server name**<br/>Namespace for discovered tools, for example manufact.<toolName>. | `"manufact"` |
 

@@ -91,7 +91,7 @@
 		"mcp_client.bearer": {
 			"type": "string",
 			"title": "API Key",
-			"description": "Optional API key or bearer token for your deployed MCP server, if required. Find your server's connection details in the <b>Manufact dashboard</b>: <a href='https://cloud.manufact.com' target='_blank'>cloud.manufact.com</a>. Authentication depends on the deployed server.",
+			"description": "Optional API key or bearer token for your deployed MCP server, if required. Find your server's connection details in the <b>Manufact dashboard</b>: <a href='https://manufact.com/cloud' target='_blank'>manufact.com/cloud</a>. Authentication depends on the deployed server.",
 			"default": "",
 			"secure": true,
 			"ui": {
