@@ -74,6 +74,7 @@ import type { ApplyResultText } from '../components/ReviewSqlDialog';
 import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, readTableEngine, rowApplyMode, thrownApplyMayHaveRun } from '../sql/applyMode';
 import type { RowApplyMode } from '../sql/applyMode';
 import { applyHistoryEntries } from '../sql/applyHistory';
+import { registerStagedCount } from '../sql/stagedGuard';
 import {
 	RowEditError,
 	buildRowStatements,
@@ -415,6 +416,10 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 		const mark = source && target ? pendingCell(editsRef.current, target, source, column) : null;
 		return pendingCellEl(mark, cell.getValue(), first);
 	}, []);
+
+	// The workbench asks before another table's data replaces this page while
+	// changes are staged (sql/stagedGuard.ts).
+	useEffect(() => registerStagedCount(endpoint.key, () => editsRef.current.entries.length), [endpoint.key]);
 
 	// The marks follow the staged changes: re-run the formatters.
 	useEffect(() => {

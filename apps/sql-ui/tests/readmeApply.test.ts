@@ -37,6 +37,7 @@ import { APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS } from '../src/connect/tools';
 import { designApplyMode } from '../src/views/TableDesignView';
 import { rowApplyMode } from '../src/sql/applyMode';
 import { pendingCountText, pendingDetailText } from '../src/components/PendingChangesBar';
+import { leaveDataText } from '../src/sql/stagedGuard';
 import { ROW_CONFLICT_TEXT, coerceValue, rowEditGate } from '../src/sql/rowEdits';
 
 const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
@@ -60,6 +61,11 @@ describe('README claims: Changing rows', () => {
 		assert.ok(prose.includes(`\`${ROW_CONFLICT_TEXT}\``));
 		assert.match(prose, /for an edit, by the old values of the columns you changed \(for a delete, of every column\)/);
 		assert.match(prose, /Floating-point, date and time, JSON and binary columns, and longer decimals, are matched by key only/);
+	});
+
+	it('quotes the question asked before staged changes would be dropped (R2-M2)', () => {
+		assert.ok(prose.includes(`\`${leaveDataText(3, 'customers')}\``));
+		assert.match(prose, /\*\*Apply\*\* waits until you open \*\*Review SQL\*\*/);
 	});
 
 	it('says an unknown outcome is never sent again, and when locks may stay', () => {

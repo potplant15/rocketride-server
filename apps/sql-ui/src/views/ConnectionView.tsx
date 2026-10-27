@@ -26,7 +26,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Banner, Button, ContentHeader, StatusBadge, TabControl, TabPanel } from 'shell';
+import { Banner, Button, ConfirmDialog, ContentHeader, StatusBadge, TabControl, TabPanel } from 'shell';
 import type { ViewMenu } from 'shell';
 import { commonStyles } from 'shell';
 import type { SqlEndpoint } from '../connect';
@@ -47,6 +47,7 @@ import { DiagramView } from './DiagramView';
 import { QueryView } from './QueryView';
 import { TableDataView } from './TableDataView';
 import type { FilterChip } from '../sql/filters';
+import { leaveDataText, stagedCount } from '../sql/stagedGuard';
 import { TableDesignView } from './TableDesignView';
 
 // =============================================================================
@@ -222,20 +223,31 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 	const [dataSeed, setDataSeed] = useState<{ table: string; chips: FilterChip[]; seq: number } | null>(null);
 	const [designSeed, setDesignSeed] = useState<{ table: string | null; seq: number } | null>(null);
 	const seedSeqRef = useRef(0);
+	// A data seed asked for while the Data page holds staged changes: it would
+	// drop them, so the user is asked first (sql/stagedGuard.ts).
+	const [leaveAsk, setLeaveAsk] = useState<{ table: string; chips: FilterChip[]; staged: number } | null>(null);
+	const openData = useCallback((table: string, chips: FilterChip[]) => {
+		setDataSeed({ table, chips, seq: ++seedSeqRef.current });
+		selectPage('data');
+	}, [selectPage]);
 
 	// The page navigation the drawer buttons and the history panel consult
 	// (in place of opening inner documents).
 	const pageNav = useMemo<SqlPageNav>(() => ({
 		openQuery: addQuery,
 		openTableData: (table: string, chips?: FilterChip[]) => {
-			setDataSeed({ table, chips: chips ?? [], seq: ++seedSeqRef.current });
-			selectPage('data');
+			const staged = stagedCount(endpoint.key);
+			if (staged > 0) {
+				setLeaveAsk({ table, chips: chips ?? [], staged });
+				return;
+			}
+			openData(table, chips ?? []);
 		},
 		openDesign: (table: string | null) => {
 			setDesignSeed({ table, seq: ++seedSeqRef.current });
 			selectPage('design');
 		},
-	}), [addQuery, selectPage]);
+	}), [addQuery, selectPage, openData, endpoint.key]);
 
 	// First schema reflection as soon as the connection is live.
 	useEffect(() => {
@@ -447,6 +459,17 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 			</div>
 
 			{shortcutsOpen && <ShortcutSheet onClose={() => setShortcutsOpen(false)} />}
+
+			{leaveAsk && (
+				<ConfirmDialog
+					title="Discard staged changes?"
+					message={leaveDataText(leaveAsk.staged, leaveAsk.table)}
+					confirmLabel="Discard and open"
+					destructive
+					onConfirm={() => { const { table, chips } = leaveAsk; setLeaveAsk(null); openData(table, chips); }}
+					onCancel={() => setLeaveAsk(null)}
+				/>
+			)}
 		</div>
 	);
 };

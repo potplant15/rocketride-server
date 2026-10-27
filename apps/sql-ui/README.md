@@ -265,7 +265,14 @@ the table's engine before it asks, and when it cannot, the confirmation
 hedges. See [Each statement commits on its own](#each-statement-commits-on-its-own)
 for what happens when something fails. After an apply, each statement is
 recorded in [Query history](#query-history), the changes that were saved
-leave the bar, and the page and its row count are read again.
+leave the bar, and the page and its row count are read again. When an
+apply's answer never arrives (the connection, or the sidebar, went away),
+the changes stay staged and the page is read again, but **Apply** waits
+until you open **Review SQL**, which says some rows may already be saved
+and that a new row could be inserted twice. Nothing can be staged or undone
+while an apply runs, and opening another table's data while changes are
+staged asks first (`You have 3 staged changes. Discard them and open
+customers?`).
 
 Rows cannot be changed in a table without a primary key, on ClickHouse (no
 unique row keys, and its updates run as background mutations), on a
