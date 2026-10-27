@@ -62,14 +62,18 @@ const EVERY_OP: AlterOp[] = [
  * @returns The record.
  */
 function failure(over: Partial<DesignApplyFailure> = {}): DesignApplyFailure {
-	return { stage: 'statement', failedAt: 1, committed: 0, total: 3, remaining: 3, message: 'SQL execution failed: column "quantity" does not exist', transactional: true, unknown: false, fellBack: false, ...over };
+	return { stage: 'statement', failedAt: 1, committed: 0, total: 3, remaining: 3, message: 'SQL execution failed: column "quantity" does not exist', transactional: true, unknown: false, rollbackConfirmed: true, table: 'orders', ...over };
 }
 
 describe('designApplyMode: one transaction on PostgreSQL only', () => {
-	it('PostgreSQL asks for one transaction, and its note does not promise one before the reply says so', () => {
+	it('PostgreSQL asks for one transaction, and its note says what happens when the node has none', () => {
 		const mode = designApplyMode('postgres');
 		assert.equal(mode.atomic, true);
-		assert.match(mode.note ?? '', /^PostgreSQL: Apply sends the plan as one transaction, so a failure rolls back the whole plan\. The result says whether it ran as one\.$/);
+		assert.equal(mode.note, 'PostgreSQL: Apply asks for one transaction, so a failure rolls back the whole plan. If the node has none, nothing is sent and you are asked again.');
+	});
+
+	it('C-1: PostgreSQL on a node known to have no transaction tools: statement by statement, and the note says so up front', () => {
+		assert.deepEqual(designApplyMode('postgres', true), { atomic: false, note: 'PostgreSQL: this node has no transaction tools, so each statement commits on its own. A failure mid-plan leaves earlier statements applied.' });
 	});
 
 	it('MySQL and ClickHouse run statement by statement, with their notes unchanged', () => {
@@ -104,6 +108,13 @@ describe('the plan after a failed apply', () => {
 		assert.deepEqual(planAfterFailure(ops, failure({ transactional: false, failedAt: 2, committed: 2 })), ops.slice(2));
 		assert.deepEqual(planAfterFailure(ops, failure({ transactional: false, failedAt: 0, committed: 0 })), ops);
 	});
+
+	it('I-1: a statement whose outcome is unknown leaves the plan too, so it is never run again without the user seeing it', () => {
+		assert.deepEqual(planAfterFailure(ops, failure({ transactional: false, failedAt: 1, committed: 1, unknown: true })), ops.slice(2));
+		// One transaction whose commit answer was lost, or an apply with no answer at all: the plan stays, and the banner says to check the table.
+		assert.deepEqual(planAfterFailure(ops, failure({ stage: 'commit', failedAt: 3, unknown: true })), ops);
+		assert.deepEqual(planAfterFailure(ops, failure({ stage: 'apply', failedAt: 0, unknown: true, transactional: false })), ops);
+	});
 });
 
 describe('the outcome banner says the plan ran as one transaction only when the reply did', () => {
@@ -118,9 +129,9 @@ describe('the outcome banner says the plan ran as one transaction only when the 
 		assert.match(text, /The plan runs as one transaction: a failure rolls back the whole plan, so nothing was applied\./);
 	});
 
-	it('a commit whose answer never arrived: may or may not be applied', () => {
-		const { text } = describeApplyFailure(failure({ stage: 'commit', failedAt: 3, unknown: true, message: 'Stopped waiting for commit after 60 s.' }));
-		assert.match(text, /^The commit's answer did not arrive, so the plan may or may not be applied\./);
+	it('a commit whose answer never arrived: may or may not have been saved', () => {
+		const { text } = describeApplyFailure(failure({ stage: 'commit', failedAt: 3, unknown: true, message: 'Connection lost' }));
+		assert.match(text, /^The commit's answer did not arrive, so the plan may or may not have been saved\./);
 		assert.match(text, /Check the table before you apply again\./);
 		assert.doesNotMatch(text, /nothing was applied/);
 	});
@@ -132,14 +143,16 @@ describe('the outcome banner says the plan ran as one transaction only when the 
 		assert.equal(describeApplyFailure(failure({ transactional: false, failedAt: 0, committed: 0, remaining: 3 })).text, 'Statement 1 of 3 failed. Database reported: column "quantity" does not exist Statements 2–3 were not run. The plan now holds the remaining 3 statements.');
 	});
 
-	it('PostgreSQL on a node without the transaction tools says each statement committed on its own', () => {
-		const { text } = describeApplyFailure(failure({ transactional: false, fellBack: true, failedAt: 1, committed: 1, remaining: 2 }));
-		assert.match(text, /^This node has no transaction tools, so each statement committed on its own\. Statement 1 of 3 ran and is committed; statement 2 failed\./);
+	it('I-1: a statement whose answer never arrived may have run; it left the plan, and the banner says so', () => {
+		const { text } = describeApplyFailure(failure({ transactional: false, failedAt: 1, committed: 1, unknown: true, remaining: 1, message: 'Connection lost' }));
+		assert.match(text, /Statement 2 may have run: its answer did not arrive\. It was taken out of the plan; check the table before you stage it again\./);
+		assert.match(text, /The plan now holds the remaining 1 statement\.$/);
 	});
 
-	it('a statement whose answer never arrived may have run', () => {
-		const { text } = describeApplyFailure(failure({ transactional: false, failedAt: 1, committed: 1, unknown: true, remaining: 2, message: 'Stopped waiting for execute after 300 s.' }));
-		assert.match(text, /Statement 2 may have run too: its answer did not arrive\./);
+	it('I-2: a rollback that was not confirmed says the table may stay locked', () => {
+		const { text } = describeApplyFailure(failure({ rollbackConfirmed: false }));
+		assert.match(text, /The rollback was not confirmed; the database may hold locks on orders for up to 5 minutes\./);
+		assert.doesNotMatch(describeApplyFailure(failure()).text, /rollback was not confirmed/);
 	});
 
 	it('nothing sent (the apply was refused): nothing was applied, and allow_execute is named when it is the reason', () => {
@@ -151,17 +164,27 @@ describe('the outcome banner says the plan ran as one transaction only when the 
 
 	it('success: "as one transaction" only when the reply said so', () => {
 		const at = new Date(2026, 9, 23, 14, 39).getTime();
-		assert.deepEqual(describeApplySuccess({ at, transactional: true, fellBack: false, reReadWorked: true }), { variant: 'info', text: 'Applied 14:39 as one transaction · schema re-read from the database.' });
-		assert.deepEqual(describeApplySuccess({ at, transactional: false, fellBack: false, reReadWorked: true }), { variant: 'info', text: 'Applied 14:39 · schema re-read from the database.' });
-		assert.match(describeApplySuccess({ at, transactional: false, fellBack: true, reReadWorked: true }).text, /each statement committed on its own/);
-		assert.equal(describeApplySuccess({ at, transactional: false, fellBack: false, reReadWorked: false }).variant, 'warning');
+		assert.deepEqual(describeApplySuccess({ at, transactional: true, reReadWorked: true }), { variant: 'info', text: 'Applied 14:39 as one transaction · schema re-read from the database.' });
+		assert.deepEqual(describeApplySuccess({ at, transactional: false, reReadWorked: true }), { variant: 'info', text: 'Applied 14:39 · schema re-read from the database.' });
+		assert.equal(describeApplySuccess({ at, transactional: false, reReadWorked: false }).variant, 'warning');
+	});
+});
+
+describe('C-1: TableDesignView asks again before it applies without a transaction', () => {
+	it('a transactions-unavailable refusal is remembered and opens the per-statement question; agreeing resends with atomic false', () => {
+		assert.match(VIEW, /isTransactionsUnavailable\(err\)/);
+		assert.match(VIEW, /noteNoTransactions\(endpoint\.key\)/);
+		assert.match(VIEW, /perStatementConfirmText\(noTransactionReason\)/);
+		assert.match(VIEW, /onConfirm=\{\(\) => \{ setNoTransactionReason\(null\); void apply\(false\); \}\}/);
+		// Nothing was applied, so the refusal itself is not an outcome to report.
+		assert.match(VIEW, /if \(isTransactionsUnavailable\(err\)\) \{[^}]*setNoTransactionReason\(/);
 	});
 });
 
 describe('TableDesignView applies through applyBatch', () => {
 	it('sends the plan in one call, atomic by the dialect, and no longer runs statements one execute at a time', () => {
-		assert.match(VIEW, /\.applyBatch\(statements\.map\(\(sql\) => \(\{ sql \}\)\), \{ atomic: mode\.atomic \}\)/);
-		assert.match(VIEW, /const mode = designApplyMode\(snapshot\.dialect\)/);
+		assert.match(VIEW, /\.applyBatch\(statements\.map\(\(sql\) => \(\{ sql \}\)\), \{ atomic \}\)/);
+		assert.match(VIEW, /const mode = designApplyMode\(snapshot\.dialect, knownNoTransactions\(endpoint\.key\)\)/);
 		assert.doesNotMatch(VIEW, /for \(const sql of statements\)/);
 		assert.doesNotMatch(VIEW, /prev\.slice\(done\)/);
 		assert.match(VIEW, /setOps\(\(prev\) => planAfterFailure\(prev, \w+\)\)/);

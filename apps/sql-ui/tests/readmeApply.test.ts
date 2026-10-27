@@ -35,7 +35,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS } from '../src/connect/tools';
 import { designApplyMode } from '../src/views/TableDesignView';
-import { rowEditApplyMode } from '../src/components/ReviewSqlDialog';
+import { rowApplyMode } from '../src/sql/applyMode';
 
 const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
 
@@ -49,8 +49,8 @@ describe('README claims: Apply', () => {
 
 	it('names where there is no transaction, as the code decides', () => {
 		assert.match(prose, /ClickHouse opens no transactions, and a node older than the transaction tools has none\./);
-		assert.equal(rowEditApplyMode('clickhouse').atomic, false);
-		assert.equal(rowEditApplyMode('postgres').atomic && rowEditApplyMode('mysql').atomic, true);
+		assert.equal(rowApplyMode('clickhouse', {}).atomic, false);
+		assert.equal(rowApplyMode('postgres', {}).atomic && rowApplyMode('mysql', { engine: 'InnoDB' }).atomic, true);
 	});
 
 	it('says the designer applies as one transaction on PostgreSQL only, and quotes the notes the code shows', () => {

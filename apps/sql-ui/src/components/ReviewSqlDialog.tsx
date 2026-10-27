@@ -28,11 +28,12 @@
 //
 //   ReviewSqlDialog      the exact statements Apply will send, in order, each
 //                        with the rows it must change. BEGIN / COMMIT frame
-//                        them ONLY when the apply will be one transaction
-//                        (PostgreSQL and MySQL, through the node's `begin`
-//                        tool); otherwise the words say each statement
-//                        commits on its own. Values are shown inline to be
-//                        read; Apply binds them.
+//                        them ONLY when the apply asks for one transaction
+//                        (sql/applyMode.ts: PostgreSQL, and MySQL unless the
+//                        table's engine keeps none); otherwise the words say
+//                        each statement commits on its own, and where the
+//                        engine is not known they say it may. Values are
+//                        shown inline to be read; Apply binds them.
 //   ApplyConfirmDialog   "Apply 3 changes to orders on Shop Postgres?", one
 //                        line per change, and whether it is all or none.
 //   applyResultText      what the reply says was saved: all, none, some, or
@@ -46,25 +47,10 @@ import React from 'react';
 import type { CSSProperties } from 'react';
 import { Button, ConfirmDialog, Modal } from 'shell';
 import type { SqlApplyResult, SqlApplyStatement, SqlDialect } from '../connect';
+import { EACH_COMMITS_TEXT } from '../sql/applyMode';
+import type { ApplyWording } from '../sql/applyMode';
 import type { RowEdits } from '../sql/rowEdits';
 import { applyButtonLabel, pendingCountText } from './PendingChangesBar';
-
-// =============================================================================
-// APPLY MODE
-// =============================================================================
-
-/**
- * How staged row edits are applied on a dialect.
- *
- * @param dialect - The connection's dialect.
- * @returns `atomic`: what Apply asks the engine for; `transactional`: what the
- *          review and the confirmation may promise before the reply (the
- *          same: PostgreSQL and MySQL run them through the node's `begin`).
- */
-export function rowEditApplyMode(dialect: SqlDialect): { atomic: boolean; transactional: boolean } {
-	const atomic = dialect === 'postgres' || dialect === 'mysql';
-	return { atomic, transactional: atomic };
-}
 
 // =============================================================================
 // WORDING
@@ -85,13 +71,13 @@ function count(n: number, one: string, many: string): string {
 /**
  * Review SQL's opening sentence.
  *
- * @param transactional - Whether the apply will be one transaction.
+ * @param wording - What the apply may promise (sql/applyMode.ts).
  * @returns The sentence.
  */
-export function reviewIntroText(transactional: boolean): string {
-	return transactional
-		? 'These statements run in one transaction. If any fails, none are applied and your edits stay staged.'
-		: 'Each statement runs and commits on its own. If one fails, the ones before it stay applied and the rest are not run.';
+export function reviewIntroText(wording: ApplyWording): string {
+	if (wording === 'transaction') return 'These statements run in one transaction. If any fails, none are applied and your edits stay staged.';
+	if (wording === 'hedged') return 'These statements run in one transaction if the table\'s storage engine keeps transactions (InnoDB does; MyISAM does not, and there each commits on its own).';
+	return 'Each statement runs and commits on its own. If one fails, the ones before it stay applied and the rest are not run.';
 }
 
 /**
@@ -196,16 +182,16 @@ function commitLine(total: number): string {
 
 /**
  * The whole apply as one script, for reading and for Copy SQL: framed by
- * BEGIN / COMMIT only when it will run as one transaction.
+ * BEGIN / COMMIT only when it asks for one transaction.
  *
  * @param statements - The statements.
  * @param dialect - The dialect.
- * @param transactional - Whether the apply will be one transaction.
+ * @param wording - What the apply may promise (`each`: no transaction is asked for).
  * @returns The script, one statement per line.
  */
-export function reviewScript(statements: readonly SqlApplyStatement[], dialect: SqlDialect, transactional: boolean): string {
+export function reviewScript(statements: readonly SqlApplyStatement[], dialect: SqlDialect, wording: ApplyWording): string {
 	const body = statements.map((statement) => `${previewSql(statement, dialect)};`);
-	return (transactional ? [BEGIN_LINE, ...body, commitLine(statements.length)] : body).join('\n');
+	return (wording !== 'each' ? [BEGIN_LINE, ...body, commitLine(statements.length)] : body).join('\n');
 }
 
 /**
@@ -226,8 +212,8 @@ export interface ApplyConfirmFacts {
 	table: string;
 	/** The connection's name. */
 	connection: string;
-	/** Whether the apply will be one transaction. */
-	transactional: boolean;
+	/** What the apply may promise (sql/applyMode.ts). */
+	wording: ApplyWording;
 	/** How many of the changes are deletes. */
 	deletes: number;
 }
@@ -240,13 +226,15 @@ export interface ApplyConfirmFacts {
  * @returns The lead and the note.
  */
 export function applyConfirmParts(facts: ApplyConfirmFacts): { lead: string; note: string } {
-	const { total, table, connection, transactional, deletes } = facts;
+	const { total, table, connection, wording, deletes } = facts;
 	const lead = `Apply ${count(total, 'change', 'changes')} to ${table} on ${connection}?`;
 	let note: string;
-	if (transactional) {
+	if (wording === 'transaction') {
 		note = total === 1 ? 'It runs in one transaction.' : `They run together in one transaction: all ${total} are saved, or none.`;
+	} else if (wording === 'hedged') {
+		note = 'They run in one transaction if the table\'s storage engine keeps transactions; if it does not, each change commits on its own and a failure leaves earlier changes saved.';
 	} else {
-		note = total === 1 ? 'It commits on its own.' : 'Each change commits on its own. If one fails, the ones before it stay applied.';
+		note = total === 1 ? 'It commits on its own.' : EACH_COMMITS_TEXT;
 	}
 	if (deletes > 0) note += ' A delete cannot be undone after it commits.';
 	return { lead, note };
@@ -290,13 +278,14 @@ function clockTime(ms: number): string {
  * What an apply's reply says was saved.
  *
  * @param result - The reply (SqlSession.applyBatch).
- * @param facts - How many changes were sent, to which table, and when it finished.
+ * @param facts - How many changes were sent, to which table, when it finished, and what was promised.
  * @param facts.total - How many changes were sent.
  * @param facts.table - The table.
  * @param facts.at - When the reply arrived (Unix ms).
+ * @param facts.wording - What the confirmation promised (`hedged`: the table's engine was not known).
  * @returns The banner text.
  */
-export function applyResultText(result: SqlApplyResult, facts: { total: number; table: string; at: number }): ApplyResultText {
+export function applyResultText(result: SqlApplyResult, facts: { total: number; table: string; at: number; wording?: ApplyWording }): ApplyResultText {
 	const { total, table, at } = facts;
 	const failure = result.failure;
 	if (failure === null) {
@@ -310,16 +299,21 @@ export function applyResultText(result: SqlApplyResult, facts: { total: number; 
 	// A row count that did not match is the app's sentence, not the database's.
 	const own = failure.stage === 'expect' ? ` ${failure.message}` : '';
 	const message = failure.stage === 'expect' ? null : failure.message;
+	const locks = failure.rollbackConfirmed ? '' : ` The rollback was not confirmed; the database may hold locks on ${table} for up to 5 minutes.`;
 	if (result.transactional) {
 		if (failure.stage === 'commit' && failure.unknown) {
-			return { variant: 'warning', title: 'The commit\'s answer did not arrive.', detail: 'These changes may or may not be saved. Refresh the table to see what it holds now.', message };
+			return { variant: 'warning', title: 'The commit\'s answer did not arrive.', detail: `These changes may or may not have been saved; check the data.${locks}`, message };
 		}
 		const what = failure.stage === 'commit' ? 'The commit was refused.' : `Change ${failure.index + 1} of ${total} failed.${own}`;
-		return { variant: 'error', title: 'Apply failed. No changes were applied.', detail: `${what} Your edits are still staged.`, message };
+		if (facts.wording === 'hedged') {
+			return { variant: 'error', title: 'Apply failed.', detail: `${what} If the table's storage engine keeps no transactions, changes before the failure may be saved; check the data.${locks}`, message };
+		}
+		return { variant: 'error', title: 'Apply failed. No changes were applied.', detail: `${what} Your edits are still staged.${locks}`, message };
 	}
 	const parts: string[] = [];
 	if (own !== '') parts.push(own.trim());
-	if (failure.unknown) parts.push(`Change ${failure.index + 1} may have been applied: its answer did not arrive.`);
+	// Not staged again silently: it may have run (sql/rowEdits.ts settledCount drops it).
+	if (failure.unknown) parts.push(`Change ${failure.index + 1} may have been saved: its answer did not arrive. It is no longer staged; check the data.`);
 	const firstNotRun = failure.index + 2;
 	if (firstNotRun === total) parts.push(`Change ${total} was not run.`);
 	else if (firstNotRun < total) parts.push(`Changes ${firstNotRun}–${total} were not run.`);
@@ -439,8 +433,8 @@ export interface ReviewSqlDialogProps {
 	statements: SqlApplyStatement[];
 	/** One label per statement (rowStatementLabels), or none. */
 	labels?: string[];
-	/** Whether the apply will be one transaction (rowEditApplyMode). */
-	transactional: boolean;
+	/** What the apply may promise (sql/applyMode.ts rowApplyMode). */
+	wording: ApplyWording;
 	/** An apply is running. */
 	busy?: boolean;
 	/** Why Apply cannot run now, or null. */
@@ -459,14 +453,15 @@ export interface ReviewSqlDialogProps {
 
 /**
  * The Review SQL dialog: the exact statements, in order, framed by BEGIN /
- * COMMIT only when the apply will be one transaction.
+ * COMMIT only when the apply asks for one transaction.
  *
  * @param props - {@link ReviewSqlDialogProps}.
  * @returns The dialog.
  */
 export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
-	const { table, connectionName, dialect, statements, labels = [], transactional, busy = false, applyDisabledReason = null, onClose, onApply, onDiscardAll, onCopySql, onOpenInQuery } = props;
-	const script = reviewScript(statements, dialect, transactional);
+	const { table, connectionName, dialect, statements, labels = [], wording, busy = false, applyDisabledReason = null, onClose, onApply, onDiscardAll, onCopySql, onOpenInQuery } = props;
+	const script = reviewScript(statements, dialect, wording);
+	const framed = wording !== 'each';
 	const footer = (
 		<div style={styles.footer}>
 			{onCopySql && <Button variant="ghost" small onClick={() => onCopySql(script)}>Copy SQL</Button>}
@@ -488,13 +483,13 @@ export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
 	return (
 		<Modal title="Review SQL" onClose={onClose} footer={footer} width={720}>
 			<div style={styles.subtitle}>{pendingCountText(statements.length)} to {table} · {connectionName}</div>
-			<div style={styles.intro}>{reviewIntroText(transactional)}</div>
+			<div style={styles.intro}>{reviewIntroText(wording)}</div>
 			<div style={styles.sectionHead}>
 				<span>Statements</span>
 				<span>{reviewSummaryText(statements)}</span>
 			</div>
 			<div style={styles.script} role="list" aria-label="Statements Apply will run">
-				{transactional && (
+				{framed && (
 					<div style={{ ...styles.line, ...styles.frame }}>
 						<span style={styles.statement}>{BEGIN_LINE}</span>
 					</div>
@@ -505,7 +500,7 @@ export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
 						{labels[i] && <span style={styles.label}>{labels[i]}</span>}
 					</div>
 				))}
-				{transactional && (
+				{framed && (
 					<div style={{ ...styles.line, ...styles.frame }}>
 						<span style={styles.statement}>{commitLine(statements.length)}</span>
 					</div>

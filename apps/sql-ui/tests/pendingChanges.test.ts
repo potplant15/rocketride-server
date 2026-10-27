@@ -37,7 +37,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { SqlApplyResult, SqlApplyStatement } from '../src/connect';
 import { applyButtonLabel, discardConfirmText, discardNeedsConfirm, pendingCountText, pendingDetailText } from '../src/components/PendingChangesBar';
-import { applyConfirmText, applyConfirmTitle, applyResultText, previewSql, reviewIntroText, reviewScript, reviewSummaryText, rowEditApplyMode, rowStatementLabels, sqlLiteral } from '../src/components/ReviewSqlDialog';
+import { applyConfirmText, applyConfirmTitle, applyResultText, previewSql, reviewIntroText, reviewScript, reviewSummaryText, rowStatementLabels, sqlLiteral } from '../src/components/ReviewSqlDialog';
+import { EACH_COMMITS_TEXT, perStatementConfirmText, rowApplyMode } from '../src/sql/applyMode';
 import { emptyRowEdits, stageDelete, stageInsert, stageUpdate } from '../src/sql/rowEdits';
 import type { RowEditTarget } from '../src/sql/rowEdits';
 
@@ -73,7 +74,7 @@ describe('the pending-changes bar', () => {
 
 describe('Review SQL: BEGIN / COMMIT framing only when the apply is one transaction', () => {
 	it('transactional: the statements between BEGIN and COMMIT, and the intro says none are applied if any fails', () => {
-		const script = reviewScript(STATEMENTS, 'postgres', true);
+		const script = reviewScript(STATEMENTS, 'postgres', 'transaction');
 		assert.deepEqual(script.split('\n'), [
 			"BEGIN; -- through the node's begin tool",
 			'UPDATE "orders" SET "status" = \'paid\' WHERE "order_id" = 5;',
@@ -81,19 +82,25 @@ describe('Review SQL: BEGIN / COMMIT framing only when the apply is one transact
 			'DELETE FROM "orders" WHERE "order_id" = 14;',
 			'COMMIT; -- all 3, or none',
 		]);
-		assert.equal(reviewIntroText(true), 'These statements run in one transaction. If any fails, none are applied and your edits stay staged.');
+		assert.equal(reviewIntroText('transaction'), 'These statements run in one transaction. If any fails, none are applied and your edits stay staged.');
 	});
 
 	it('not transactional: no BEGIN, no COMMIT, and the intro says each commits on its own', () => {
-		const script = reviewScript(STATEMENTS, 'clickhouse', false);
+		const script = reviewScript(STATEMENTS, 'clickhouse', 'each');
 		assert.doesNotMatch(script, /\bBEGIN\b|\bCOMMIT\b/);
 		assert.equal(script.split('\n').length, 3);
-		assert.equal(reviewIntroText(false), 'Each statement runs and commits on its own. If one fails, the ones before it stay applied and the rest are not run.');
-		assert.doesNotMatch(reviewIntroText(false), /transaction/);
+		assert.equal(reviewIntroText('each'), 'Each statement runs and commits on its own. If one fails, the ones before it stay applied and the rest are not run.');
+		assert.doesNotMatch(reviewIntroText('each'), /transaction/);
 	});
 
-	it('the apply mode comes from the dialect: one transaction on PostgreSQL and MySQL only', () => {
-		assert.deepEqual(['postgres', 'mysql', 'clickhouse', 'unknown'].map((dialect) => rowEditApplyMode(dialect as never).transactional), [true, true, false, false]);
+	it('hedged (a MySQL table whose engine could not be read): BEGIN / COMMIT are sent, and the words say the engine may ignore them', () => {
+		assert.match(reviewScript(STATEMENTS, 'mysql', 'hedged'), /^BEGIN;[\s\S]*COMMIT; -- all 3, or none$/);
+		assert.equal(reviewIntroText('hedged'), 'These statements run in one transaction if the table\'s storage engine keeps transactions (InnoDB does; MyISAM does not, and there each commits on its own).');
+	});
+
+	it('the apply mode comes from the dialect and the table: one transaction on PostgreSQL and on a MySQL InnoDB table', () => {
+		assert.deepEqual(['postgres', 'clickhouse', 'unknown'].map((dialect) => rowApplyMode(dialect as never, {}).wording), ['transaction', 'each', 'each']);
+		assert.equal(rowApplyMode('mysql', { engine: 'InnoDB' }).wording, 'transaction');
 	});
 
 	it('counts the statements and the rows they must change', () => {
@@ -135,20 +142,31 @@ describe('the Apply confirmation says whether the changes are one transaction', 
 	it('names the count, the table and the connection', () => {
 		assert.equal(applyConfirmTitle(3), 'Apply 3 changes?');
 		assert.equal(applyConfirmTitle(1), 'Apply 1 change?');
-		assert.match(applyConfirmText({ total: 3, table: 'orders', connection: 'Shop Postgres', transactional: true, deletes: 1 }), /^Apply 3 changes to orders on Shop Postgres\?/);
+		assert.match(applyConfirmText({ total: 3, table: 'orders', connection: 'Shop Postgres', wording: 'transaction', deletes: 1 }), /^Apply 3 changes to orders on Shop Postgres\?/);
 	});
 
 	it('one transaction: all or none, and a delete cannot be undone once committed', () => {
-		const text = applyConfirmText({ total: 3, table: 'orders', connection: 'Shop Postgres', transactional: true, deletes: 1 });
+		const text = applyConfirmText({ total: 3, table: 'orders', connection: 'Shop Postgres', wording: 'transaction', deletes: 1 });
 		assert.match(text, /They run together in one transaction: all 3 are saved, or none\./);
 		assert.match(text, /A delete cannot be undone after it commits\./);
-		assert.doesNotMatch(applyConfirmText({ total: 3, table: 'orders', connection: 'Shop Postgres', transactional: true, deletes: 0 }), /delete/);
+		assert.doesNotMatch(applyConfirmText({ total: 3, table: 'orders', connection: 'Shop Postgres', wording: 'transaction', deletes: 0 }), /delete/);
 	});
 
 	it('not one transaction: says so, and that earlier changes stay applied when one fails', () => {
-		const text = applyConfirmText({ total: 3, table: 'events', connection: 'Analytics', transactional: false, deletes: 0 });
-		assert.match(text, /Each change commits on its own\. If one fails, the ones before it stay applied\./);
+		const text = applyConfirmText({ total: 3, table: 'events', connection: 'Analytics', wording: 'each', deletes: 0 });
+		assert.ok(text.endsWith(EACH_COMMITS_TEXT));
+		assert.equal(EACH_COMMITS_TEXT, 'Each change commits on its own; a failure leaves earlier changes saved.');
 		assert.doesNotMatch(text, /one transaction|or none/);
+		const hedged = applyConfirmText({ total: 3, table: 'orders', connection: 'Shop MySQL', wording: 'hedged', deletes: 0 });
+		assert.match(hedged, /They run in one transaction if the table's storage engine keeps transactions; if it does not, each change commits on its own and a failure leaves earlier changes saved\./);
+	});
+
+	it('C-1: where there was no transaction, nothing was applied, and the user is asked again in the per-statement words', () => {
+		assert.deepEqual(perStatementConfirmText('This node has no transaction tools, so nothing was applied.'), {
+			title: 'Apply without a transaction?',
+			text: 'This node has no transaction tools, so nothing was applied. Each change commits on its own; a failure leaves earlier changes saved.',
+			confirmLabel: 'Apply anyway',
+		});
 	});
 });
 
@@ -187,17 +205,29 @@ describe('the Apply result says what is saved', () => {
 		assert.equal(text.message, 'commit refused');
 	});
 
-	it('a commit whose answer never arrived: may or may not be saved', () => {
-		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 3, stage: 'commit', message: 'Stopped waiting for commit after 60 s.', committed: 0, unknown: true, rollbackConfirmed: true } };
+	it('a commit whose answer never arrived: may or may not have been saved', () => {
+		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 3, stage: 'commit', message: 'Connection lost', committed: 0, unknown: true, rollbackConfirmed: true } };
 		const text = applyResultText(result, { total: 3, table: 'orders', at });
 		assert.equal(text.title, 'The commit\'s answer did not arrive.');
-		assert.equal(text.detail, 'These changes may or may not be saved. Refresh the table to see what it holds now.');
+		assert.equal(text.detail, 'These changes may or may not have been saved; check the data.');
+	});
+
+	it('I-2: a rollback that was not confirmed says the locks may stay', () => {
+		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 0, stage: 'statement', message: 'SQL execution failed: deadlock', committed: 0, unknown: false, rollbackConfirmed: false } };
+		assert.equal(applyResultText(result, { total: 2, table: 'orders', at }).detail, 'Change 1 of 2 failed. Your edits are still staged. The rollback was not confirmed; the database may hold locks on orders for up to 5 minutes.');
+	});
+
+	it('I-4: a hedged apply that failed does not claim nothing was saved', () => {
+		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 1, stage: 'statement', message: 'x', committed: 0, unknown: false, rollbackConfirmed: true } };
+		const text = applyResultText(result, { total: 2, table: 'orders', at, wording: 'hedged' });
+		assert.equal(text.title, 'Apply failed.');
+		assert.match(text.detail, /If the table's storage engine keeps no transactions, changes before the failure may be saved; check the data\./);
 	});
 
 	it('without a transaction: how many are applied and what was not run', () => {
 		const result: SqlApplyResult = { transactional: false, results: [{ affected_rows: 1 }], failure: { index: 1, stage: 'statement', message: 'denied', committed: 1, unknown: false, rollbackConfirmed: true } };
 		assert.deepEqual(applyResultText(result, { total: 3, table: 'events', at }), { variant: 'error', title: 'Apply stopped at change 2 of 3. 1 of 3 applied.', detail: 'Change 3 was not run.', message: 'denied' });
 		const unknown: SqlApplyResult = { transactional: false, results: [], failure: { index: 0, stage: 'statement', message: 'Stopped waiting', committed: 0, unknown: true, rollbackConfirmed: true } };
-		assert.equal(applyResultText(unknown, { total: 3, table: 'events', at }).detail, 'Change 1 may have been applied: its answer did not arrive. Changes 2–3 were not run.');
+		assert.equal(applyResultText(unknown, { total: 3, table: 'events', at }).detail, 'Change 1 may have been saved: its answer did not arrive. It is no longer staged; check the data. Changes 2–3 were not run.');
 	});
 });
