@@ -37,6 +37,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createGeneration } from 'shared/explorer/generation';
+import { runStatementBatch } from 'shared/explorer/runner/batch';
+import type { IBatchView } from 'shared/explorer/runner/batch';
+import type { IStatementRunBase, PatternAnswer } from 'shared/explorer/runner/types';
+import type { SafetyLevel } from '../src/connect/savedConnections';
+import { needsConfirmation } from '../src/sql/safety';
 
 const SRC = path.resolve(__dirname, '..', 'src');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -63,10 +69,46 @@ describe('QueryView asks by the connection\'s safety level', () => {
 		assert.match(view, /const safety = safetyLevelOf\(connectionRecord\);/);
 	});
 
-	it('hands the runner needsConfirmation at that level, and nothing that turns asking off', () => {
-		assert.match(view, /patternChecksOn: \(\) => safety !== 'off',/);
-		assert.match(view, /patternCheck: \(run\) => needsConfirmation\(run\.sql, dialect, safety\),/);
+	it('hands the runner needsConfirmation at that level, read before every statement, and nothing that turns asking off', () => {
+		// The runner copies its hooks once per batch, so the level is read
+		// through a ref: a level changed mid-batch applies from the next
+		// statement on, as the comment above the hooks says (DA-R1 M5).
+		assert.match(view, /const safetyRef = useRef\(safety\);\s*safetyRef\.current = safety;/);
+		assert.match(view, /patternChecksOn: \(\) => safetyRef\.current !== 'off',/);
+		assert.match(view, /patternCheck: \(run\) => needsConfirmation\(run\.sql, dialect, safetyRef\.current\),/);
+		assert.match(view, /Read before every statement, so a level changed in the connection's\s*\/\/ editor applies from the next statement on/);
 		assert.doesNotMatch(view, /disablePatternChecks/);
+	});
+
+	it('a hook that reads a ref sees a level changed mid-batch, although the batch copies its hooks once (DA-R1 M5)', async () => {
+		interface Run extends IStatementRunBase { sql: string }
+		const safetyRef = { current: 'off' as SafetyLevel };
+		const asked: string[] = [];
+		const hooks = {
+			initRun: (target: { text: string }, index: number): Run => ({ index, sql: target.text, kind: 'write', verb: 'UPDATE', outcome: 'pending' } as unknown as Run),
+			textOf: (run: Run) => run.sql,
+			patternChecksOn: () => safetyRef.current !== 'off',
+			patternCheck: (run: Run) => needsConfirmation(run.sql, 'postgres', safetyRef.current),
+			prepare: (run: Run) => ({ send: run.sql }),
+			execute: async () => {
+				// The user raises the level while the first statement runs.
+				safetyRef.current = 'every';
+				return { affected_rows: 1 };
+			},
+			settle: () => ({ outcome: 'affected' }) as Partial<Run>,
+			describeFailure: (message: string) => ({ headline: message, verbatim: message, generic: false }),
+		};
+		const view: IBatchView<Run> = {
+			refused: () => undefined,
+			started: () => undefined,
+			runs: () => undefined,
+			active: () => undefined,
+			confirm: async (run): Promise<PatternAnswer> => { asked.push(run.sql); return 'cancel' as PatternAnswer; },
+			failed: () => undefined,
+			finished: () => undefined,
+		};
+		await runStatementBatch([{ text: 'UPDATE t SET a = 1 WHERE id = 1' }, { text: 'UPDATE t SET a = 2 WHERE id = 2' }], { ...hooks }, view, createGeneration().next());
+		assert.deepEqual(asked, ['UPDATE t SET a = 2 WHERE id = 2'], 'the second statement asks at the new level');
 	});
 
 	it('shows SQL\'s own dialog, not the shared one with its "stop asking" answer', () => {

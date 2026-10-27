@@ -148,4 +148,13 @@ describe('RecordDrawer', () => {
 	it('says so when the lookup finds no row', () => {
 		assert.match(drawer, /No row in \$\{edge\.refTable\} where/);
 	});
+
+	it('shows a key too large to look up exactly as a disabled link with the reason, and Show rows off with it (DA-R1 I3)', () => {
+		assert.match(drawer, /const linkOff = link \? linkRefusal\(link, row\) : null;/);
+		assert.match(drawer, /aria-disabled="true"/);
+		assert.match(drawer, /aria-describedby=\{reasonId\(field\.column\)\}/);
+		assert.match(drawer, /<div id=\{reasonId\(field\.column\)\} style=\{styles\.type\}>\{linkOff\}<\/div>/);
+		assert.match(drawer, /const showOff = showRowsRefusal\(edge, row\);/);
+		assert.match(drawer, /<GatedButton[\s\S]*?gateReason=\{showOff\}[\s\S]*?Show rows/);
+	});
 });

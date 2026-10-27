@@ -37,7 +37,7 @@
 // goes, for the mount it is in, every time it is open (SqlEnv history).
 // =============================================================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import {
 	Button,
@@ -52,7 +52,8 @@ import {
 } from 'shell';
 import type { SqlDialect, SqlEndpoint } from '../connect';
 import type { HistoryEntry } from '../history/types';
-import { useSchema } from '../schema/schemaStore';
+import { useExecuteState, useSchema } from '../schema/schemaStore';
+import { SCHEMA_ONLY_REASON, executeGateReason } from '../executeGate';
 import { historyTitle } from '../sql/batch';
 import { useSqlEnv } from '../sqlEnv';
 import { DEFAULT_HISTORY_LIMITS } from '../history/trim';
@@ -60,6 +61,7 @@ import { getDocs, nextQueryDoc } from '../docs';
 import type { QueryDocPayload } from '../docs';
 import { useSqlPageNav } from '../pageNav';
 import { SaveQueryButton } from './SavedQueriesPanel';
+import GatedButton from './GatedButton';
 import { announce } from '../a11y/announce';
 import { DatabaseIcon } from '../icons';
 
@@ -334,6 +336,13 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 	const entries = history.useHistory(endpoint);
 	const isRecording = history.useRecording(endpoint);
 	const privacyNotice = history.usePrivacyNotice();
+	// Why history can be neither shown nor changed now (the full app, after
+	// another account signed in without a reload), or null.
+	const refusal = history.useRefusal();
+	// A schema-only node runs nothing, so Rerun is off with the reason, like
+	// the query page's Run.
+	const rerunGate = executeGateReason(useExecuteState(endpoint.key));
+	const gateNoteId = useId();
 	// Row titles skip leading comments by this connection's comment rules.
 	const dialect = useSchema(endpoint.key).dialect;
 
@@ -411,6 +420,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 	 * @returns The list content.
 	 */
 	const renderList = (): React.ReactNode => {
+		if (refusal !== null) return <EmptyState icon={<DatabaseIcon />} title="History unavailable" description={refusal} />;
 		if (entries.length === 0) {
 			return (
 				<EmptyState
@@ -487,7 +497,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 								<Button variant="secondary" small onClick={() => onLoadIntoEditor(entry.sql)}>
 									Load into editor
 								</Button>
-								<Button variant="primary" small onClick={() => requestRerun(entry)}>Rerun</Button>
+								<GatedButton variant="primary" small onClick={() => requestRerun(entry)} gateReason={rerunGate} reasonId={gateNoteId}>Rerun</GatedButton>
 								<Button
 									variant="ghost"
 									small
@@ -544,7 +554,8 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 				onClose={onClose}
 				modeless
 				width={440}
-				persistKey="sqlHistoryWidth"
+				// The width rides the same preferences: kept only while history can be.
+				persistKey={refusal === null ? 'sqlHistoryWidth' : undefined}
 				avatar={<span style={styles.avatar}><DatabaseIcon /></span>}
 				title="History"
 				subtitle={`${endpoint.nodeName} · this connection`}
@@ -557,7 +568,8 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 							variant="ghost"
 							small
 							pressed={isRecording}
-							title="Record the statements you run on this connection"
+							disabled={refusal !== null}
+							title={refusal ?? 'Record the statements you run on this connection'}
 							onClick={() => {
 								history.setRecording(endpoint, !isRecording);
 								announce(isRecording ? 'Recording off for this connection' : 'Recording on for this connection');
@@ -582,6 +594,8 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 					/>
 					<ToggleGroup options={FILTERS} value={filter} onChange={setFilter} wrap />
 				</div>
+
+				{rerunGate && <div id={gateNoteId} style={styles.capLine}>{`Schema only: ${SCHEMA_ONLY_REASON} Rerun is off.`}</div>}
 
 				<Section label={`Statements (${visible.length})`}>
 					{renderList()}

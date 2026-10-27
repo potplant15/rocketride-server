@@ -43,9 +43,10 @@ you between them; what differs in a dev tool is under
   has an **Allow direct query execution** setting (`allow_execute`), off by
   default and worth leaving off until a caller truly needs it. With it off,
   schema browsing, the diagram and the Insights page still work; statements
-  do not. The first refused statement raises a banner: `This node does not
-  allow execute (allow_execute is off). Schema browsing works; statements
-  cannot run.` For a pipeline-bound connection the setting belongs to that
+  do not. The app finds out once when a connection opens (see [The
+  connection workbench](#the-connection-workbench)) and the query page then
+  says `This node does not allow execute (allow_execute is off). Schema
+  browsing works; statements cannot run.` For a pipeline-bound connection the setting belongs to that
   pipeline's node; for a direct connection it is part of the configuration
   you enter yourself.
 
@@ -114,8 +115,9 @@ Hovering the word gives the reason. The words follow pipelines starting and
 stopping as the engine reports them; until the app has first looked at your
 running pipelines, a pipeline row says nothing.
 
-Opening a connection gives it a workbench document and fills the sidebar
-with that database's tables. Everything else hangs off a connection: query
+Opening a connection gives it a workbench document, whose Overview page lists
+that database's tables; the sidebar lists connections only. Everything else
+hangs off a connection: query
 documents, the data browser, the designer and the diagram are each pinned to
 one for life, and two documents on two connections never see each other's
 history or settings.
@@ -141,8 +143,10 @@ When a connection opens, the app sends `SELECT 1` once to find out whether
 the node runs statements. It goes straight to the node, so it is not in your
 query history. If the node has `allow_execute` off, the connection is
 **schema only**: the header says so, and Run, Run all, Explain, New Query,
-**Select top 100**, **Count rows** and **Open data** are off with the reason
-shown, and the Data page says it cannot read rows. Tables, columns, keys,
+**Select top 100**, **Count rows**, **Open data** and History's **Rerun** are
+off with the reason shown, and the Data page says it cannot read rows. The
+run shortcuts send nothing either and say why, so no statement, and no row
+estimate for a confirmation, reaches the node. Tables, columns, keys,
 Diagram and Insights keep working. After you turn `allow_execute` on and
 restart the pipeline, **Check again** on the Overview page (or **Refresh
 Schema**) looks again. While the answer is not known yet, nothing is
@@ -213,11 +217,16 @@ A value that belongs to a foreign key is a link. It runs `SELECT * FROM
 <referenced> WHERE <key> = $1 LIMIT 2` (every column of a composite key, with
 the values sent separately) and opens that row in a drawer on top, with a back arrow and a Back
 button. If nothing matches, the drawer says so; if more than one row matches,
-it shows the first and says that too. A NULL key is not a link.
+it shows the first and says that too. A NULL key is not a link. A key that
+reached the browser as a number past 2^53 (9,007,199,254,740,992) was already
+rounded on the way, and could be another row's key, so it is not looked up:
+the link is off and says `This key is too large to look up exactly in the
+browser.` A key the node sends as text is exact and is followed as usual.
 
 **Rows that reference this one** lists the tables whose foreign keys point at
 the row's table. **Show rows** opens that table's data with a chip already set
-to this row's key. Foreign-key columns also say where they point in the
+to this row's key, and is off, with the same reason, for a key too large to
+hold exactly. Foreign-key columns also say where they point in the
 column's header tooltip, for example `BIGINT → customers.id`.
 
 With no sort of your own, the app orders by the primary key so paging is
@@ -526,10 +535,12 @@ sets max_execute_rows) and may be slow.`
 Each saved connection has a **safety level**, set in its connection editor
 under **Safety level for this connection**:
 
-- **Don't ask**: every statement runs as typed.
+- **Don't ask**: nothing asks before a statement is sent. What is sent does
+  not change: the row limit still applies (see [The row limit](#the-row-limit)).
 - **Ask before risky writes** (the default): asks before `UPDATE` or
   `DELETE` with no `WHERE`, an `UPDATE` or `DELETE` inside a `WITH` clause,
-  `TRUNCATE`, `DROP` and `ALTER`.
+  `TRUNCATE`, `DROP` and `ALTER`, and before an `EXPLAIN ANALYZE` of
+  anything but a read.
 - **Ask before every write**: asks before anything that is not a read.
   Reads are `SELECT` (a `WITH … SELECT` included), `EXPLAIN`, `SHOW` and
   `DESCRIBE`. Everything else asks: `INSERT`, a bounded `UPDATE` or
@@ -559,8 +570,14 @@ change**: `about N rows (planner estimate)` on PostgreSQL and MySQL, from a
 plain `EXPLAIN` (no `ANALYZE`, so nothing runs) of the statement. It reads
 `Estimating…` while that runs, and `No estimate` on ClickHouse, for a `WITH`
 chain, or when the plan gives no number; for `TRUNCATE` it reads `Every
-row`. Once an `UPDATE` or `DELETE` has an estimate, the title and the button
-name the rows: `Update about 20 rows in orders?` and **Update 20 rows**.
+row`. Once an `UPDATE` or `DELETE` on one table with a `WHERE` has an
+estimate, the title and the button name the rows: `Update about 20 rows in
+orders?` and **Update 20 rows**. With no `WHERE`, they say every row
+instead (`Delete every row from orders?`), and the planner's number sits
+beside **Every row** in the rows line. A `LIMIT` or a join bounds what the
+statement reaches, so then the body says `No WHERE clause: this can delete
+every row the statement reaches.`, the title names no count, and the
+estimate is marked as one that may be wrong for a `LIMIT` or a join.
 **Cancel** works at any time, also while the estimate is still running. The
 estimate is not recorded in History.
 
@@ -594,8 +611,14 @@ clauses: `SELECT ... FOR UPDATE` locks rows, and an upsert's `ON CONFLICT
 
 `EXPLAIN ANALYZE` runs the statement it describes rather than only planning
 it, so it is checked as that statement: `EXPLAIN ANALYZE DELETE FROM orders`
-is asked about like the `DELETE` it would run. A plain `EXPLAIN` runs
-nothing and is never asked about.
+is asked about like the `DELETE` it would run. Because an `EXPLAIN` reads
+like a plan, both asking levels also ask before one that runs anything but a
+read, even when that statement alone would not ask: `EXPLAIN ANALYZE DELETE
+FROM orders WHERE id = 7` deletes the row. The same goes for every spelling
+of it: PostgreSQL's `ANALYSE` and option lists (`EXPLAIN (ANALYZE)`,
+`EXPLAIN (ANALYZE true, BUFFERS)`), and MySQL's `DESCRIBE ANALYZE` and `DESC
+ANALYZE`. A plain `EXPLAIN`, `DESCRIBE` or `DESC` runs nothing and is never
+asked about.
 
 Read "a check on the statement text" literally. It never consults the
 database for permission, does not know what a `WHERE` clause actually
@@ -717,10 +740,21 @@ reached the app — the node's own wrapper included, not just the sentence
 the banner quotes — and such a message can carry a value from the
 statement. Both stay in the preferences file until the entry is deleted,
 the list is cleared, or the bounds below trim it. It is not a server audit
-log, and not a place for secrets. History belongs to the account that ran
-it: when you sign out, or another account signs in, the app forgets the
-history it was holding before it shows or saves anything for the next
-account, so one account's statements never reach another's file.
+log, and not a place for secrets.
+
+History belongs to the account that ran it. When you sign out, or another
+account signs in, the app forgets the history it was holding before it shows
+anything for the next account. As a dev tool, each account has its own
+section of the history file. In the app, the shell reads your workspace
+preferences once per page and keeps them until the page reloads, so after
+another account signs in without a reload the app shows that account no
+history, records none of its statements, and saves nothing to the workspace
+preferences (no history, saved query, grid layout or drawer width) until the
+page is reloaded. The History drawer says `Signed in as a different account:
+reload the page to see your history.` A setting the shell itself saves in
+that time, such as a theme change, still writes the preferences it holds,
+the first account's history among them, into the signed-in account's file,
+so reload the page before working as another account.
 
 The list is bounded, because the preferences file is read and written on
 every app switch: 100 entries per connection including pinned ones, 8 KB per
@@ -751,12 +785,15 @@ history, the dev tool reads that file before it shows or changes anything,
 never writes a file it could not read (saved queries are then kept for that
 session only), and two windows that change saved queries at the same time
 each write the file from what they read, so the last one to save wins.
-Saved queries belong to the account that saved them: signing out, or
-another account signing in, forgets them at once, and one account's saved
-queries are never shown to or written for another. In the app, which reads
-your workspace preferences once per page, another account signing in
-without a reload sees no saved queries and can save none until the page is
-reloaded.
+Saved queries belong to the account that saved them, and signing out, or
+another account signing in, stops showing them at once. As a dev tool, each
+account has its own section of the file, so one account's saved queries are
+never shown to or written for another. In the app, which reads your
+workspace preferences once per page, another account signing in without a
+reload sees no saved queries and can save none until the page is reloaded;
+the drawer says `Signed in as a different account: reload the page to see
+your saved queries.` What the shell itself may still save in that time is
+under [Query history](#query-history).
 
 Change saved queries in one window at a time: if two windows change them,
 the one that saves last overwrites the other's change.
@@ -865,8 +902,10 @@ error, because nothing went wrong on the database's side.
 
 Every number in the tree is a planner estimate. Plain `EXPLAIN` does not run
 the statement, so nothing on this page was measured; numbers are suffixed
-`est.` under the legend `Planner estimates, not measurements.` There is no
-`EXPLAIN ANALYZE`. The parsers are tested against recorded fixtures rather
+`est.` under the legend `Planner estimates, not measurements.` The drawer
+never sends `EXPLAIN ANALYZE`; one typed into a query runs as a statement
+and is checked as the statement it runs (see
+[Confirmations](#confirmations)). The parsers are tested against recorded fixtures rather
 than a live database.
 
 ## Changing a table
@@ -1001,7 +1040,9 @@ these differences:
 - **Row editing needs a primary key**, and is not offered on ClickHouse. New
   rows are listed in the pending-changes bar and in Review SQL, not in the
   grid.
-- **No `EXPLAIN ANALYZE`.** Plan numbers are estimates, never measurements.
+- **The plan drawer never runs `EXPLAIN ANALYZE`.** Its numbers are
+  estimates, never measurements. An `EXPLAIN ANALYZE` typed into a query
+  runs like any statement (see [Confirmations](#confirmations)).
 - **No `DELIMITER`.** Buffers that change the terminator split wrongly.
 - **Declared foreign keys only.** Nothing is inferred from column names, and
   ClickHouse declares no foreign keys at all.

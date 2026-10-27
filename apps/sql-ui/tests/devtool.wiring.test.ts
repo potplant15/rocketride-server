@@ -812,7 +812,11 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 			assert.throws(() => JSON.stringify(host.prefs), /circular/i, '#2625\'s channel hands out the host\'s object');
 			delete host.prefs.tableLayouts['probe'];
 
-			const env = createLocalSqlEnv({} as SqlCore, true, () => undefined, { getPref: () => undefined, setPref: () => undefined });
+			// The layouts ride the page's workspace pin (history/workspacePin.ts):
+			// read and written for the account the preferences were read for.
+			let fingerprint = 'u1|org-1|team-1';
+			const core = { identity: { get: () => ({ known: true, fingerprint }) } } as unknown as SqlCore;
+			const env = createLocalSqlEnv(core, true, () => undefined, { getPref: () => undefined, setPref: () => undefined });
 			const grids = env.gridPersistence;
 			assert.notEqual(grids, SESSION_GRIDS, 'the full app\'s layouts are not a frame\'s session ones');
 			host.prefs.tableLayouts['sql-overview-tables'] = { sort: [{ column: 'name', dir: 'asc' }] };
@@ -826,6 +830,12 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 			grids.write('sql-overview-tables', 'sort', blob);
 			tabulatorSetSort(blob);
 			assert.deepEqual(host.prefs.tableLayouts['sql-overview-tables'], { sort: [{ column: 'name', dir: 'desc' }] }, 'a write reaches the prefs as a plain copy');
+
+			// Another account without a reload: the shell still holds the first one's layouts.
+			fingerprint = 'u2|org-1|team-1';
+			assert.equal(grids.read('sql-overview-tables', 'sort'), false, 'another account reads none of them');
+			grids.write('sql-overview-tables', 'sort', [{ column: 'name', dir: 'asc' }]);
+			assert.deepEqual(host.prefs.tableLayouts['sql-overview-tables'], { sort: [{ column: 'name', dir: 'desc' }] }, 'and writes none');
 		} finally {
 			host.uninstall();
 		}

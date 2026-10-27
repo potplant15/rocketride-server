@@ -80,6 +80,10 @@ describe('needsConfirmation: the level × kind matrix', () => {
 		['unbounded DELETE', 'DELETE FROM orders', { off: null, risky: 'DELETE without WHERE', every: 'DELETE without WHERE' }],
 		['DELETE inside a WITH clause', 'WITH gone AS (DELETE FROM orders WHERE id = 1 RETURNING *) SELECT * FROM gone', { off: null, risky: 'DELETE inside a WITH clause', every: 'DELETE inside a WITH clause' }],
 		['EXPLAIN ANALYZE runs its statement', 'EXPLAIN ANALYZE DELETE FROM orders', { off: null, risky: 'DELETE without WHERE', every: 'DELETE without WHERE' }],
+		['EXPLAIN ANALYZE of a bounded write still runs it', 'EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7', { off: null, risky: 'EXPLAIN ANALYZE', every: 'EXPLAIN ANALYZE' }],
+		['EXPLAIN (ANALYZE) option form', 'EXPLAIN (ANALYZE) DELETE FROM orders WHERE id = 7', { off: null, risky: 'EXPLAIN ANALYZE', every: 'EXPLAIN ANALYZE' }],
+		['EXPLAIN (ANALYZE true, …) option form', 'EXPLAIN (ANALYZE true, BUFFERS) UPDATE orders SET a = 1 WHERE id = 7', { off: null, risky: 'EXPLAIN ANALYZE', every: 'EXPLAIN ANALYZE' }],
+		['EXPLAIN ANALYZE of a read runs nothing that writes', 'EXPLAIN ANALYZE SELECT * FROM orders', { off: null, risky: null, every: null }],
 		['CREATE', 'CREATE TABLE t (id int)', { off: null, risky: null, every: 'a schema change' }],
 		['ALTER', 'ALTER TABLE orders ADD COLUMN note text', { off: null, risky: 'ALTER', every: 'ALTER' }],
 		['DROP', 'DROP TABLE orders', { off: null, risky: 'DROP +name', every: 'DROP +name' }],
@@ -100,6 +104,46 @@ describe('needsConfirmation: the level × kind matrix', () => {
 			assert.deepEqual(matrix(sql), expected);
 		});
 	}
+
+	it('EXPLAIN ANALYZE and DESCRIBE ANALYZE of a write never run unasked at risky or every, on every dialect (DA-R1 M4)', () => {
+		for (const dialect of ['postgres', 'mysql', 'clickhouse', 'unknown'] as SqlDialect[]) {
+			for (const sql of ['EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7', 'EXPLAIN (ANALYZE) DELETE FROM orders WHERE id = 7']) {
+				assert.ok(needsConfirmation(sql, dialect, 'risky'), `${dialect} risky: ${sql}`);
+				assert.ok(needsConfirmation(sql, dialect, 'every'), `${dialect} every: ${sql}`);
+			}
+		}
+		for (const dialect of ['mysql', 'unknown'] as SqlDialect[]) {
+			for (const sql of ['DESCRIBE ANALYZE DELETE t FROM t JOIN u ON t.id = u.id', 'DESC ANALYZE UPDATE t JOIN u ON t.id = u.id SET t.x = 0 WHERE u.y = 1']) {
+				assert.ok(needsConfirmation(sql, dialect, 'risky'), `${dialect} risky: ${sql}`);
+				assert.ok(needsConfirmation(sql, dialect, 'every'), `${dialect} every: ${sql}`);
+			}
+		}
+	});
+
+	it('the README says which spellings of ANALYZE ask', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(prose, /`TRUNCATE`, `DROP` and `ALTER`, and before an `EXPLAIN ANALYZE` of anything but a read\./);
+		assert.match(prose, /`EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7` deletes the row/);
+		assert.match(prose, /MySQL's `DESCRIBE ANALYZE` and `DESC ANALYZE`/);
+	});
+
+	it('the README says when the title counts rows and when it says every row (DA-R1 M3)', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(prose, /Once an `UPDATE` or `DELETE` on one table with a `WHERE` has an estimate, the title and the button name the rows: `Update about 20 rows in orders\?` and \*\*Update 20 rows\*\*\./);
+		assert.match(prose, /With no `WHERE`, they say every row instead \(`Delete every row from orders\?`\)/);
+		assert.match(prose, /`No WHERE clause: this can delete every row the statement reaches\.`, the title names no count/);
+	});
+
+	it('says what EXPLAIN ANALYZE does', () => {
+		const sql = 'EXPLAIN ANALYZE DELETE FROM orders WHERE id = 7';
+		const copy = writeConfirmCopy(needsConfirmation(sql, 'postgres', 'risky') as WriteConfirmation, sql, 'Shop Postgres');
+		assert.equal(copy.title, 'Run this EXPLAIN?');
+		assert.equal(copy.consequence, 'ANALYZE runs the statement to measure it, so what it changes is changed for real.');
+	});
 
 	it('a bounded UPDATE … WHERE asks at every and not at risky, on every dialect', () => {
 		for (const dialect of ['postgres', 'mysql', 'clickhouse', 'unknown'] as SqlDialect[]) {
@@ -265,15 +309,45 @@ describe('writeConfirmCopy', () => {
 		return writeConfirmCopy(found, sql, 'Shop Postgres', estimate);
 	};
 
-	it('with an estimate, an UPDATE or DELETE names the rows and the table in the title and the button', () => {
-		const update = copyFor("UPDATE orders SET status = 'cancelled'", 'risky', { state: 'rows', rows: 20 });
+	it('with an estimate, a filtered UPDATE or DELETE names the rows and the table in the title and the button', () => {
+		const update = copyFor("UPDATE orders SET status = 'cancelled' WHERE placed < '2020-01-01'", 'every', { state: 'rows', rows: 20 });
 		assert.equal(update.title, 'Update about 20 rows in orders?');
 		assert.equal(update.confirmLabel, 'Update 20 rows');
 		const del = copyFor('DELETE FROM public.orders WHERE id < 3', 'every', { state: 'rows', rows: 1 });
 		assert.equal(del.title, 'Delete about 1 row from public.orders?');
 		assert.equal(del.confirmLabel, 'Delete 1 row');
-		const big = copyFor('UPDATE orders SET a = 1', 'risky', { state: 'rows', rows: 12345 });
+		const big = copyFor('UPDATE orders SET a = 1 WHERE b = 2', 'every', { state: 'rows', rows: 12345 });
 		assert.equal(big.confirmLabel, `Update ${(12345).toLocaleString()} rows`);
+	});
+
+	// DA-R1 M3: the body said "every row in the table" under a title that
+	// counted fewer. The title never shows a count the body contradicts.
+	it('an UPDATE or DELETE of a whole table says every row in the title too, whatever the estimate', () => {
+		const update = copyFor("UPDATE orders SET status = 'cancelled'", 'risky', { state: 'rows', rows: 20 });
+		assert.equal(update.title, 'Update every row in orders?');
+		assert.equal(update.confirmLabel, 'Update every row');
+		assert.equal(update.consequence, 'No WHERE clause: this changes every row in the table.');
+		const del = copyFor('DELETE FROM orders', 'risky', { state: 'rows', rows: 3 });
+		assert.equal(del.title, 'Delete every row from orders?');
+		assert.equal(del.confirmLabel, 'Delete every row');
+		assert.equal(del.consequence, 'No WHERE clause: this deletes every row in the table.');
+	});
+
+	it('a LIMIT or a join: no count in the title, and the body says the rows the statement reaches, not the table', () => {
+		for (const [sql, verb, body] of [
+			['DELETE FROM orders LIMIT 10', 'DELETE', 'No WHERE clause: this can delete every row the statement reaches.'],
+			['DELETE o FROM orders o JOIN customers c ON c.id = o.customer_id AND c.active = 0', 'DELETE', 'No WHERE clause: this can delete every row the statement reaches.'],
+			['UPDATE orders o JOIN customers c ON c.id = o.customer_id AND c.active = 0 SET o.note = NULL', 'UPDATE', 'No WHERE clause: this can change every row the statement reaches.'],
+		] as const) {
+			const found = needsConfirmation(sql, 'mysql', 'risky') as WriteConfirmation;
+			const copy = writeConfirmCopy(found, sql, 'Shop MySQL', { state: 'rows', rows: 3 });
+			assert.equal(copy.title, `Run this ${verb}?`, sql);
+			assert.equal(copy.confirmLabel, `Run ${verb}`, sql);
+			assert.equal(copy.consequence, body, sql);
+		}
+		// A filtered one with a LIMIT or a join keeps the count out of the title too.
+		const limited = 'UPDATE orders SET a = 1 WHERE b = 2 LIMIT 5';
+		assert.equal(writeConfirmCopy(needsConfirmation(limited, 'mysql', 'every') as WriteConfirmation, limited, 'Shop MySQL', { state: 'rows', rows: 900 }).title, 'Run this UPDATE?');
 	});
 
 	it('without an estimate, keeps the plain title and button', () => {
@@ -315,7 +389,7 @@ describe('writeConfirmCopy', () => {
 	it('an unbounded write says it changes every row, and the button names the verb', () => {
 		const copy = copyFor("UPDATE orders SET status = 'cancelled'");
 		assert.equal(copy.title, 'Run this UPDATE?');
-		assert.match(copy.consequence, /No WHERE clause: this changes every row/);
+		assert.match(copy.consequence, /No WHERE clause: this changes every row in the table/);
 		assert.equal(copy.confirmLabel, 'Run UPDATE');
 	});
 

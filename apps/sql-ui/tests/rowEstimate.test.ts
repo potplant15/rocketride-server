@@ -134,6 +134,20 @@ describe('rowsChangeText', () => {
 		assert.equal(rowsChangeText(ask(sql), sql, { state: 'none' }), 'No estimate');
 	});
 
+	it('says every row for a whole-table UPDATE or DELETE, with the planner\'s number beside it (DA-R1 M3)', () => {
+		const sql = 'DELETE FROM orders';
+		assert.equal(rowsChangeText(ask(sql), sql, { state: 'rows', rows: 3 }), 'Every row (about 3 by the planner\'s estimate)');
+		assert.equal(rowsChangeText(ask(sql), sql, { state: 'estimating' }), 'Every row');
+		assert.equal(rowsChangeText(ask(sql), sql, { state: 'none' }), 'Every row');
+	});
+
+	it('says a LIMIT or a join can make the estimate wrong', () => {
+		const mysql = (sql: string) => needsConfirmation(sql, 'mysql', 'every') as WriteConfirmation;
+		for (const sql of ['DELETE FROM orders LIMIT 10', 'UPDATE orders o JOIN customers c ON c.id = o.customer_id SET o.note = NULL WHERE c.active = 0']) {
+			assert.equal(rowsChangeText(mysql(sql), sql, { state: 'rows', rows: 3 }), 'about 3 rows (planner estimate, which may be wrong for a LIMIT or a join)', sql);
+		}
+	});
+
 	it('says every row for TRUNCATE, and has no line for other schema changes', () => {
 		assert.equal(rowsChangeText(ask('TRUNCATE orders'), 'TRUNCATE orders', { state: 'none' }), 'Every row');
 		assert.equal(rowsChangeText(ask('DROP TABLE orders'), 'DROP TABLE orders', { state: 'none' }), null);
