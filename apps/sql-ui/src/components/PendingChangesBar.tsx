@@ -25,6 +25,10 @@
 // =============================================================================
 //
 // Sits above the data grid while row edits are staged (sql/rowEdits.ts).
+// It also says that closing the tab discards them: neither mount lets the
+// app ask before a tab closes (every SQL Explorer document is static, which
+// the shell never treats as dirty, and a dev-tool frame cannot veto its
+// close), so the bar says it instead.
 // Presentational: the counts and every action come from props, and it owns
 // no dialog. Discard asks first only when two or more changes would go
 // (discardNeedsConfirm, discardConfirmText); the parent shows that question
@@ -81,7 +85,7 @@ export function pendingCountText(total: number): string {
  *
  * @param table - The table.
  * @param counts - The staged rows per kind.
- * @returns `to orders: 1 edited row, 1 new row, 1 deleted row. Nothing is saved yet.`
+ * @returns `to orders: 1 edited row, 1 new row, 1 deleted row. Nothing is saved yet, and closing this tab discards them.`
  */
 export function pendingDetailText(table: string, counts: PendingCounts): string {
 	const parts = [
@@ -89,7 +93,7 @@ export function pendingDetailText(table: string, counts: PendingCounts): string 
 		counts.inserted > 0 ? count(counts.inserted, 'new row', 'new rows') : '',
 		counts.deleted > 0 ? count(counts.deleted, 'deleted row', 'deleted rows') : '',
 	].filter((part) => part !== '');
-	return `to ${table}: ${parts.join(', ')}. Nothing is saved yet.`;
+	return `to ${table}: ${parts.join(', ')}. Nothing is saved yet, and closing this tab discards ${counts.total === 1 ? 'it' : 'them'}.`;
 }
 
 /**

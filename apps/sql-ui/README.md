@@ -207,7 +207,8 @@ Staged rows are marked in the grid: a tint, plus ✎ before an edited value
 (its tooltip says what it was) and **Deleted** on a deleted row, which is
 struck through. New rows are not shown in the grid. The bar above it counts
 every change, for example `3 pending changes to orders: 1 edited row, 1 new
-row, 1 deleted row. Nothing is saved yet.` **Discard** drops them all (it
+row, 1 deleted row. Nothing is saved yet, and closing this tab discards
+them.` **Discard** drops them all (it
 asks first when there are two or more), **Review SQL** shows the exact
 statements, and **Apply** asks first, then sends them. Opening another
 table's data while changes are staged asks first (`You have 3 staged
@@ -677,6 +678,9 @@ there, with these differences:
   on PostgreSQL and on transactional MySQL tables, and designer plans on
   PostgreSQL) runs as one transaction. Other engines and ClickHouse commit per
   statement, and you are asked again.
+- **Closing a connection's tab discards its staged changes.** Neither the app
+  nor the dev tool can ask before a tab closes, so the pending-changes bar says
+  so instead. Reloading the page discards them too. Apply or Discard first.
 - **Conflict checks are partial.** Edits compare only exactly-comparable
   columns, and case- or accent-only changes on insensitive collations go
   undetected (see [Changing rows](#changing-rows)).

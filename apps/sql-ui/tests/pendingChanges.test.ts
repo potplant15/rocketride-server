@@ -49,11 +49,22 @@ const STATEMENTS: SqlApplyStatement[] = [
 ];
 
 describe('the pending-changes bar', () => {
-	it('counts the changes and says nothing is saved yet', () => {
+	// DA-R2 M4: neither mount lets the app ask before a tab closes (SQL
+	// Explorer's documents are static, which the shell never treats as
+	// dirty, and a dev-tool frame cannot veto its close), so the bar says
+	// what closing does.
+	it('counts the changes, says nothing is saved yet, and that closing the tab discards them', () => {
 		assert.equal(pendingCountText(3), '3 pending changes');
 		assert.equal(pendingCountText(1), '1 pending change');
-		assert.equal(pendingDetailText('orders', { edited: 1, inserted: 1, deleted: 1, total: 3 }), 'to orders: 1 edited row, 1 new row, 1 deleted row. Nothing is saved yet.');
-		assert.equal(pendingDetailText('orders', { edited: 2, inserted: 0, deleted: 3, total: 5 }), 'to orders: 2 edited rows, 3 deleted rows. Nothing is saved yet.');
+		assert.equal(pendingDetailText('orders', { edited: 1, inserted: 1, deleted: 1, total: 3 }), 'to orders: 1 edited row, 1 new row, 1 deleted row. Nothing is saved yet, and closing this tab discards them.');
+		assert.equal(pendingDetailText('orders', { edited: 2, inserted: 0, deleted: 3, total: 5 }), 'to orders: 2 edited rows, 3 deleted rows. Nothing is saved yet, and closing this tab discards them.');
+		assert.equal(pendingDetailText('orders', { edited: 1, inserted: 0, deleted: 0, total: 1 }), 'to orders: 1 edited row. Nothing is saved yet, and closing this tab discards it.');
+	});
+
+	it('the README quotes the bar and lists closing the tab as a limit', () => {
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.ok(prose.includes(`\`3 pending changes ${pendingDetailText('orders', { edited: 1, inserted: 1, deleted: 1, total: 3 })}\``));
+		assert.match(prose, /- \*\*Closing a connection's tab discards its staged changes\.\*\* Neither the app nor the dev tool can ask before a tab closes, so the pending-changes bar says so instead\. Reloading the page discards them too\. Apply or Discard first\./);
 	});
 
 	it('the action is Apply, with its count; never Commit', () => {
