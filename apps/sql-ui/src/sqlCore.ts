@@ -349,8 +349,19 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 
 	// ── Open failures, for the sidebar's status (per identity) ──────────────
 
-	/** The last failure opening each connection, by id, until it next opens. */
+	/**
+	 * The last failure opening each connection, by id: until it next opens, or
+	 * a later discovery shows its run up (the cause was fixed elsewhere).
+	 */
 	let openErrors: Record<string, string> = {};
+	/** The discovery each failure was recorded after (`refreshedAt`). */
+	const failedAfter = new Map<string, number>();
+	/**
+	 * Failures that only say a pipeline connection's pipeline is not running:
+	 * its row says Stopped from discovery already, so they are not recorded
+	 * as failures to reach it.
+	 */
+	const notRunning = new WeakSet<object>();
 	const statusListeners = new Set<() => void>();
 	const statusChanged = (): void => statusListeners.forEach((listener) => listener());
 	/**
@@ -369,11 +380,35 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 			if (!(connId in openErrors)) return;
 			const { [connId]: _opened, ...rest } = openErrors;
 			openErrors = rest;
+			failedAfter.delete(connId);
 		} else {
 			openErrors = { ...openErrors, [connId]: error instanceof Error ? error.message : String(error) };
+			failedAfter.set(connId, endpoints.getState().refreshedAt);
 		}
 		statusChanged();
 	};
+
+	/**
+	 * Forget a failure once a discovery made after it shows the connection's
+	 * run ready or being probed: whatever stopped it from opening is gone.
+	 */
+	const forgetRecovered = (): void => {
+		if (failedAfter.size === 0) return;
+		const state = endpoints.getState();
+		const live = new Set(state.endpoints.filter((endpoint) => endpoint.state === 'ready' || endpoint.state === 'probing').map((endpoint) => endpoint.legacyKey));
+		let next = openErrors;
+		for (const [connId, after] of failedAfter) {
+			const record = getSavedConnection(connId);
+			if (state.refreshedAt <= after || record === undefined || !live.has(endpointKeyForConnection(record))) continue;
+			const { [connId]: _recovered, ...rest } = next;
+			next = rest;
+			failedAfter.delete(connId);
+		}
+		if (next === openErrors) return;
+		openErrors = next;
+		statusChanged();
+	};
+	const offRecovered = endpoints.subscribe(forgetRecovered);
 
 	// ── The saved-connection list, per identity ──────────────────────────────
 
@@ -394,6 +429,7 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		// The list is per user: a new identity (or none) must not see the last one's.
 		resetSavedConnections({ force: true });
 		// So are the failures opening its connections.
+		failedAfter.clear();
 		if (Object.keys(openErrors).length > 0) {
 			openErrors = {};
 			statusChanged();
@@ -514,13 +550,17 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 			await rediscover(tool);
 			found = match(legacyKey);
 		}
-		if (found === undefined) {
-			throw unavailable(tool, record.mode === 'direct'
-				? `The connection '${record.name}' started, but its pipeline was not found running. Try again.`
-				: `The pipeline '${record.pipelineName}' is not running in your workspace. Start it and try again.`);
-		}
-		if (found.state === 'stopped') {
-			throw unavailable(tool, found.stateDetail ?? `The pipeline '${found.pipelineName}' is not running. Start it and try again.`);
+		if (found === undefined || found.state === 'stopped') {
+			const error = found === undefined
+				? unavailable(tool, record.mode === 'direct'
+					? `The connection '${record.name}' started, but its pipeline was not found running. Try again.`
+					: `The pipeline '${record.pipelineName}' is not running in your workspace. Start it and try again.`)
+				: unavailable(tool, found.stateDetail ?? `The pipeline '${found.pipelineName}' is not running. Start it and try again.`);
+			// A pipeline that is simply not running is Stopped, not unreachable.
+			// (A direct connection's pipeline is the app's to start, so it not
+			// running after a start is a failure.)
+			if (record.mode === 'pipeline') notRunning.add(error);
+			throw error;
 		}
 		return found;
 	};
@@ -591,8 +631,10 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 				// key and everything else stay the record's.
 				return record.mode === 'pipeline' ? { ...endpoint, pipelineName: found.pipelineName } : endpoint;
 			} catch (error) {
-				// The sidebar's row says Unreachable, with this text, until it opens.
-				noteOpen(askedBy, connId, error);
+				// The sidebar's row says Unreachable, with this text, until it opens
+				// or discovery shows it up; a pipeline that is not running says
+				// Stopped instead (and an older failure no longer stands).
+				noteOpen(askedBy, connId, error instanceof Error && notRunning.has(error) ? null : error);
 				throw error;
 			}
 		},
@@ -656,6 +698,7 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 			discovery.dispose();
 			activation.dispose();
 			identity.dispose();
+			offRecovered();
 			statusListeners.clear();
 		},
 		statusSource,

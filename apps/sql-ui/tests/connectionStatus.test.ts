@@ -44,6 +44,7 @@ import type { ConnectionStatusSource, DiscoveredStatus } from '../src/connection
 import { createLocalSidebarBridge } from '../src/localEnv';
 import { createSqlCore } from '../src/sqlCore';
 import { taskRow } from './support';
+import type { IFakeTaskRow } from './support';
 import { USER, engineScript, scriptedClientRealm, until } from './realm';
 import { DIRECT, PIPELINE, postgres, rig } from './devtoolRig';
 
@@ -109,7 +110,16 @@ describe('connectionStatus: an open failure', () => {
 });
 
 describe('the sidebar\'s status source: discovery and open failures, in the realm that holds the core', () => {
-	it('dev tool: a failed open makes the row Unreachable until the next open succeeds; task events move it; nothing is published for it', async () => {
+	/** The direct connection's temporary pipeline, once it runs. */
+	const directRow = (): IFakeTaskRow => taskRow('sqlconn-c-direct', {
+		name: 'SQL: Scratch',
+		source: 'tools_1',
+		token: 'tk_sentinel_direct',
+		pipeline: { project_id: 'sqlconn-c-direct', name: 'SQL: Scratch', components: [{ id: 'tools_1', provider: 'tools' }, { id: 'db_mysql_1', provider: 'db_mysql' }] },
+	});
+	const REFUSED = 'The server refused to start the pipeline: quota reached.';
+
+	it('dev tool: opening a stopped pipeline leaves its row Stopped, not Unreachable; starting it makes it Running; nothing is published for it (review I1, CE1)', async () => {
 		const rows = [taskRow('p1')];
 		const r = await rig({ rows });
 		const sources: ConnectionStatusSource[] = [];
@@ -125,21 +135,20 @@ describe('the sidebar\'s status source: discovery and open failures, in the real
 			r.engine.realm.emit('shell:event', { event: { event: 'apaevt_task', body: { action: 'stop' } } });
 			await until(() => latest() === 'Stopped', 'Stopped after the task event', 3_000);
 
-			// Opening it now fails: Unreachable, with the failure's text.
+			// Opening it now fails because it is not running: that is what Stopped says already.
 			await assert.rejects(r.env.resolveEndpoint(PIPELINE));
-			await until(() => latest() === 'Unreachable', 'Unreachable after the failed open');
-			// The failure's own text: here the endpoint store's word for a run that stopped.
-			assert.equal(sources.at(-1)!.openErrors['c-pipe'], 'This pipeline is no longer running.');
-
-			// It runs again and opens: the failure is forgotten.
-			rows.push(taskRow('p1'));
-			await r.env.resolveEndpoint(PIPELINE);
-			await until(() => latest() === 'Running', 'Running after the next open');
+			await settle();
+			assert.equal(latest(), 'Stopped');
 			assert.deepEqual(sources.at(-1)!.openErrors, {});
+
+			// The user starts it: the next task event's discovery shows it Running.
+			rows.push(taskRow('p1'));
+			r.engine.realm.emit('shell:event', { event: { event: 'apaevt_task', body: { action: 'start' } } });
+			await until(() => latest() === 'Running', 'Running once the pipeline runs', 3_000);
 
 			// None of it went through the channel: no new state topic, no event or
 			// call (the sidebar's only other posts are its replies to the frame's
-			// own resolve calls above).
+			// own resolve call above).
 			const later = r.spy.posts.slice(posts) as Array<{ __rrtool?: string; topic?: string }>;
 			assert.deepEqual(later.filter((post) => post.__rrtool !== 'state' && post.__rrtool !== 'reply'), [], 'no event or call');
 			const topics = new Set(later.filter((post) => post.__rrtool === 'state').map((post) => post.topic));
@@ -150,13 +159,38 @@ describe('the sidebar\'s status source: discovery and open failures, in the real
 		}
 	});
 
+	it('a failure to reach a connection is Unreachable, with its text, until discovery next shows the run up (review I1)', async () => {
+		const rows = [taskRow('p1')];
+		const r = await rig({ rows });
+		r.engine.script['client.use'] = () => { throw new Error(REFUSED); };
+		const sources: ConnectionStatusSource[] = [];
+		const off = r.mount.bridge.subscribeStatus((source) => { sources.push(source); });
+		const latest = (): string => connectionStatus(DIRECT, sources.at(-1)!.discovered, sources.at(-1)!.openErrors).label;
+		try {
+			await until(() => sources.at(-1)!.discovered !== null, 'the first discovery');
+			await assert.rejects(r.env.resolveEndpoint(DIRECT));
+			await until(() => latest() === 'Unreachable', 'Unreachable after the refused start');
+			assert.equal(sources.at(-1)!.openErrors['c-direct'], REFUSED);
+			// The pipeline is up after all (started elsewhere, or a retry by the
+			// server): the next discovery shows it, and the old failure goes.
+			rows.push(directRow());
+			r.engine.realm.emit('shell:event', { event: { event: 'apaevt_task', body: { action: 'start' } } });
+			await until(() => latest() === 'Open', 'Open once discovery shows the run', 3_000);
+			assert.deepEqual(sources.at(-1)!.openErrors, {});
+		} finally {
+			off();
+			r.dispose();
+		}
+	});
+
 	it('an account change forgets the open failures', async () => {
-		const r = await rig({ rows: [] });
+		const r = await rig();
+		r.engine.script['client.use'] = () => { throw new Error(REFUSED); };
 		const sources: ConnectionStatusSource[] = [];
 		const off = r.mount.bridge.subscribeStatus((source) => { sources.push(source); });
 		try {
-			await assert.rejects(r.env.resolveEndpoint(PIPELINE));
-			await until(() => sources.at(-1)!.openErrors['c-pipe'] !== undefined, 'the failure');
+			await assert.rejects(r.env.resolveEndpoint(DIRECT));
+			await until(() => sources.at(-1)!.openErrors['c-direct'] !== undefined, 'the failure');
 			r.engine.realm.orgChanged('org-2');
 			await until(() => Object.keys(sources.at(-1)!.openErrors).length === 0, 'the failures to be forgotten');
 		} finally {
@@ -166,22 +200,19 @@ describe('the sidebar\'s status source: discovery and open failures, in the real
 	});
 
 	it('an open that began under one account and fails under the next records nothing for the next', async () => {
-		const r = await rig({ rows: [] });
+		const r = await rig();
 		const sources: ConnectionStatusSource[] = [];
 		const off = r.mount.bridge.subscribeStatus((source) => { sources.push(source); });
-		// Discovery answers only when released, so the open is still waiting when the account changes.
+		// The start answers only when released, so the open is still waiting when the account changes.
 		const waiting: Array<() => void> = [];
-		const getTasks = r.engine.script['client.getTasks']!;
-		r.engine.script['client.getTasks'] = (params) => new Promise((resolve) => { waiting.push(() => resolve(getTasks(params))); });
+		r.engine.script['client.use'] = () => new Promise((_resolve, reject) => { waiting.push(() => reject(new Error(REFUSED))); });
 		try {
-			await until(() => waiting.length > 0, 'the first discovery');
-			waiting.splice(0).forEach((go) => go());
-			const opening = r.env.resolveEndpoint(PIPELINE);
-			await until(() => waiting.length > 0, 'the open\'s discovery');
+			await until(() => sources.at(-1)!.discovered !== null, 'the first discovery');
+			const opening = r.env.resolveEndpoint(DIRECT);
+			await until(() => waiting.length > 0, 'the open\'s start');
 			r.engine.realm.orgChanged('org-2');
 			r.engine.realm.accountUpdate(account('u1', 'org-2', 'team-2'));
 			await until(() => r.mount.core.identity.get().known && r.mount.core.identity.get().fingerprint === 'u1|org-2|team-2', 'the next account');
-			r.engine.script['client.getTasks'] = getTasks;
 			waiting.splice(0).forEach((go) => go());
 			await assert.rejects(opening);
 			await settle();
