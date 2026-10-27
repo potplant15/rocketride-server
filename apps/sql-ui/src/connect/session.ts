@@ -120,6 +120,15 @@ const REFUSED: readonly RegExp[] = [
 	/\bcould not send request\b|\bwebsocket not connected\b|\bnot connected to (?:the )?server\b/i,
 ];
 
+/**
+ * A database connection that broke during the call, or a wait that ran
+ * out: whether a COMMIT (or a per-statement change's own commit) took
+ * effect cannot be known, even when the text carries a DBAPI error prefix
+ * or the node's wrapper. Checked before the {@link REFUSED} list wherever
+ * the call may have committed (review P4 R2-I3).
+ */
+const CONNECTION_LOST = /\b(?:OperationalError|InterfaceError)\b|server closed the connection|lost connection|gone away|broken pipe|connection (?:was |is )?(?:already )?(?:closed|reset|lost|terminated|aborted)|terminating connection|could not (?:send|receive) data|time(?:d)? ?out\b|timeout/i;
+
 /** The node's answer for a session it no longer holds (reaped, rolled back, or committed). */
 const SESSION_GONE = /\bunknown or expired (?:transaction )?session\b/i;
 
@@ -137,9 +146,11 @@ function isUnknownTool(error: unknown): boolean {
 }
 
 /**
- * Whether a failed call is known to have taken no effect: nothing was sent
- * (no task, no token, a local refusal, the server's pre-dispatch
- * TASK_STOPPED), or the answer is a refusal on the {@link REFUSED} list.
+ * Whether a failed call that may have committed (the COMMIT, or a
+ * per-statement change, which commits as it runs) is known to have taken no
+ * effect: nothing was sent (no task, no token, a local refusal, the
+ * server's pre-dispatch TASK_STOPPED), or the answer is a refusal on the
+ * {@link REFUSED} list that is not about a broken connection.
  *
  * @param error - What the call threw.
  * @returns True only when its outcome is known.
@@ -149,6 +160,7 @@ function refusedForCertain(error: unknown): boolean {
 	if (error.kind === 'unavailable' || error.kind === 'upgrade' || error.kind === 'invalid') return true;
 	if (error.code === TRANSIENT_TASK_CODE) return true;
 	if (error.kind !== 'raised') return false;
+	if (CONNECTION_LOST.test(error.message)) return false;
 	return REFUSED.some((pattern) => pattern.test(error.message));
 }
 

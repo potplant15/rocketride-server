@@ -367,3 +367,46 @@ describe('apply without a transaction', () => {
 		assert.deepEqual(fake.calls[1]!.input, { sql: 'ALTER TABLE "orders" ADD COLUMN "notes" text', session_id: 'tx-1' }, 'no params key when there is nothing to bind');
 	});
 });
+
+describe('R2-I3: a connection that broke during a commit leaves the outcome unknown, never "refused"', () => {
+	const LOST = [
+		'(psycopg2.OperationalError) server closed the connection unexpectedly\n\tThis probably means the server terminated abnormally before or while processing the request.',
+		'SQL execution failed: server closed the connection unexpectedly',
+		'(psycopg2.InterfaceError) connection already closed',
+		"(pymysql.err.OperationalError) (2013, 'Lost connection to MySQL server during query')",
+		"SQL execution failed: (2006, 'MySQL server has gone away')",
+		'SQL execution failed: could not send data to server: Broken pipe',
+		'SQL execution failed: canceling statement due to statement timeout',
+	];
+
+	it('at the COMMIT, whatever the follow-up rollback finds gone: unknown', async () => {
+		for (const message of LOST) {
+			const fake = fakeClient(node({
+				commit: () => { throw raised(message); },
+				rollback: () => { throw raised('unknown or expired transaction session: tx-1'); },
+			}));
+			const failure = (await sessionOn(fake.client).applyBatch(EDITS, { atomic: true })).failure!;
+			assert.equal(failure.stage, 'commit', message);
+			assert.equal(failure.unknown, true, message);
+		}
+	});
+
+	it('at the implicit commit of a per-statement change: unknown, so it is settled and not sent again', async () => {
+		for (const message of LOST) {
+			const fake = fakeClient(node({ execute: (call) => {
+				if (String(call.input.sql).startsWith('DELETE')) throw raised(message);
+				return { rows: [], affected_rows: 1 };
+			} }));
+			const failure = (await sessionOn(fake.client).applyBatch(EDITS, { atomic: false })).failure!;
+			// The DELETE is the third statement: the two before it committed.
+			assert.deepEqual([failure.unknown, failure.committed], [true, 2], message);
+		}
+	});
+
+	it('a refusal that is not about the connection stays known (the database said no)', async () => {
+		const fake = fakeClient(node({ execute: () => { throw raised('SQL execution failed: duplicate key value violates unique constraint "orders_pkey"'); } }));
+		assert.equal((await sessionOn(fake.client).applyBatch(EDITS, { atomic: false })).failure?.unknown, false);
+		const refused = fakeClient(node({ commit: () => { throw raised('commit refused: an earlier statement failed and aborted this transaction.'); }, rollback: () => { throw raised('unknown or expired transaction session: tx-1'); } }));
+		assert.equal((await sessionOn(refused.client).applyBatch(EDITS, { atomic: true })).failure?.unknown, false);
+	});
+});
