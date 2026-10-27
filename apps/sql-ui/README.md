@@ -675,8 +675,9 @@ there, with these differences:
   seconds does it ask you to open it. A document that is already open stays
   open, with run and apply disabled, while the sidebar is closed. While nobody
   is signed in, a document says it is waiting for sign-in.
-- **Grid layouts are kept for the session.** A grid's sort, column widths and
-  page size are kept in memory: in rocket-ui until the page reloads, in VS Code
+- **Grid layouts are kept for the session.** A grid's sort, page size and the
+  widths of fixed-size columns are kept in memory (a column that stretches to
+  fit is not kept at a width): in rocket-ui until the page reloads, in VS Code
   until the document's panel closes. The full app keeps them in its workspace
   preferences.
 - **Account changes close documents.** A document opened under one account
