@@ -88,7 +88,7 @@ import { GRAPH_BATCH_WORDS, affectedNotReported, historySummaryOf, limitPatch, p
 import { chooseTab, summarizeResult } from '../graph/results';
 import type { ResultTab } from '../graph/results';
 import type { ILoadSlot } from '../graph/loadSlot';
-import { GATE_WAITING_TITLE, gateRefusalNotice, isGateRefusal, isGateRefusalText } from '../graph/requestGate';
+import { gateRefusalNotice, gateWaitingTitle, isGateRefusal, isGateRefusalText } from '../graph/requestGate';
 import type { IRequestGate } from '../graph/requestGate';
 import { inspectorTextOfRow } from '../graph/rowInspect';
 import { EDITOR_HEIGHT_PREF_KEY, clampEditorHeight, splitToggled, storedEditorHeight } from '../graph/splitPane';
@@ -666,10 +666,10 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 					{firstLineOf(text) || '(empty)'}
 				</button>
 			)}
-			<Button variant="primary" disabled={runner.running || blocked !== null || gateBusy !== null} onClick={() => run(false)} small={inRow} title={waiting ? GATE_WAITING_TITLE : 'Run the selection or the statement at the caret (Ctrl/Cmd+Enter)'}>
+			<Button variant="primary" disabled={runner.running || blocked !== null || gateBusy !== null} onClick={() => run(false)} small={inRow} title={waiting ? gateWaitingTitle(mode === 'read' ? 'Run' : 'Execute') : 'Run the selection or the statement at the caret (Ctrl/Cmd+Enter)'}>
 				{mode === 'read' ? 'Run' : 'Execute'}
 			</Button>
-			<Button variant="ghost" disabled={runner.running || blocked !== null || gateBusy !== null} onClick={() => run(true)} small={inRow} title={waiting ? GATE_WAITING_TITLE : 'Run every statement in order (Ctrl/Cmd+Shift+Enter)'}>
+			<Button variant="ghost" disabled={runner.running || blocked !== null || gateBusy !== null} onClick={() => run(true)} small={inRow} title={waiting ? gateWaitingTitle(mode === 'read' ? 'Run all' : 'Execute all') : 'Run every statement in order (Ctrl/Cmd+Shift+Enter)'}>
 				{mode === 'read' ? 'Run all' : 'Execute all'}
 			</Button>
 			{mode === 'read' && (

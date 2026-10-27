@@ -173,7 +173,7 @@ test('a gate refusal is a warning with no pipeline hint and no History entry, an
 	assert.ok(/if \(run\.outcome === 'error' && isGateRefusalText\(run\.error\)\) return;\s*env\.history\.record\(/.test(record), 'a statement that was never sent is not recorded');
 	assert.ok(/const gateBusy = useSyncExternalStore\(gate \? gate\.subscribe : NO_GATE\.subscribe, gate \? gate\.busy : NO_GATE\.busy, gate \? gate\.busy : NO_GATE\.busy\);/.test(surface), 'the surface follows its gate');
 	assert.ok(/if \(gateBusy === null\) setStartRefusal\(\(current\) => \(isGateRefusalText\(current\) \? null : current\)\);/.test(surface), '"Try again in a moment" goes once the gate is free');
-	assert.ok(/waiting \? 'Waiting for an earlier request to finish…'/.test(surface) && /title=\{waiting \? GATE_WAITING_TITLE :/.test(surface), 'Run says it is waiting, and why');
+	assert.ok(/waiting \? 'Waiting for an earlier request to finish…'/.test(surface) && /title=\{waiting \? gateWaitingTitle\(mode === 'read' \? 'Run' : 'Execute'\) :/.test(surface) && /title=\{waiting \? gateWaitingTitle\(mode === 'read' \? 'Run all' : 'Execute all'\) :/.test(surface), 'Run says it is waiting, and why, naming its own button (Execute in the write console)');
 });
 
 // A hidden tab keeps its runs, result and graph session, but no canvas or grid (8 tabs x every open document).

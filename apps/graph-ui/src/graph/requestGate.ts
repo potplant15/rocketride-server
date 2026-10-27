@@ -65,8 +65,15 @@ export function gateBusyText(host: GateHost): string {
 /** What a request refused by the workbench's gate says. */
 export const GATE_BUSY_TEXT = gateBusyText('workbench');
 
-/** The title of a Run button that waits for the gate. */
-export const GATE_WAITING_TITLE = 'An earlier request is still running on the database; Run is available again once it finishes.';
+/**
+ * The title of a run button that waits for the gate.
+ *
+ * @param button - The button's own label: Run or Run all in the workbench, Execute or Execute all in the write console.
+ * @returns The sentence.
+ */
+export function gateWaitingTitle(button: 'Run' | 'Run all' | 'Execute' | 'Execute all'): string {
+	return `An earlier request is still running on the database; ${button} is available again once it finishes.`;
+}
 
 /**
  * Whether a sentence is a gate's refusal (a run that ended with it was never sent).

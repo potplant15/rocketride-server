@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ExplorerToolError } from 'shared/explorer';
-import { GATE_BUSY_TEXT, createRequestGate, gateBusyText, gateRefusalNotice, isGateRefusal, isGateRefusalText } from '../src/graph/requestGate';
+import { GATE_BUSY_TEXT, createRequestGate, gateBusyText, gateRefusalNotice, gateWaitingTitle, isGateRefusal, isGateRefusalText } from '../src/graph/requestGate';
 
 /** A call that settles when told to. */
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
@@ -122,4 +122,9 @@ test('the write console\'s gate is its own, and its refusal names it', async () 
 	assert.equal(isGateRefusalText(GATE_BUSY_TEXT), true);
 	assert.equal(isGateRefusalText('boom'), false);
 	assert.equal(gateRefusalNotice(gateBusyText('write console')).headline, 'Not sent: an earlier request from this write console is still running on the database.');
+});
+
+test('a waiting button\'s title names that button: Run in the workbench, Execute in the write console', () => {
+	assert.equal(gateWaitingTitle('Run'), 'An earlier request is still running on the database; Run is available again once it finishes.');
+	assert.match(gateWaitingTitle('Execute all'), /; Execute all is available again once it finishes\.$/);
 });
