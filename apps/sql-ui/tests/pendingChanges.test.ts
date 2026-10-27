@@ -162,7 +162,7 @@ describe('the Apply result says what is saved', () => {
 	});
 
 	it('a failure in one transaction: nothing was applied, the database\'s words verbatim, the edits stay staged', () => {
-		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 1 }], failure: { index: 1, stage: 'statement', message: 'SQL execution failed: duplicate key', committed: 0, unknown: false } };
+		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 1 }], failure: { index: 1, stage: 'statement', message: 'SQL execution failed: duplicate key', committed: 0, unknown: false, rollbackConfirmed: true } };
 		assert.deepEqual(applyResultText(result, { total: 3, table: 'orders', at }), {
 			variant: 'error',
 			title: 'Apply failed. No changes were applied.',
@@ -173,14 +173,14 @@ describe('the Apply result says what is saved', () => {
 
 	it('a row count that did not match is the app\'s own sentence, not the database\'s', () => {
 		const sentence = 'The statement changed 0 rows; it must change exactly 1 row. The row may have changed or gone since it was read.';
-		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 0 }], failure: { index: 0, stage: 'expect', message: sentence, committed: 0, unknown: false } };
+		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 0 }], failure: { index: 0, stage: 'expect', message: sentence, committed: 0, unknown: false, rollbackConfirmed: true } };
 		const text = applyResultText(result, { total: 1, table: 'orders', at });
 		assert.equal(text.detail, `Change 1 of 1 failed. ${sentence} Your edits are still staged.`);
 		assert.equal(text.message, null);
 	});
 
 	it('a refused commit is a failure too', () => {
-		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 3, stage: 'commit', message: 'commit refused', committed: 0, unknown: false } };
+		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 3, stage: 'commit', message: 'commit refused', committed: 0, unknown: false, rollbackConfirmed: true } };
 		const text = applyResultText(result, { total: 3, table: 'orders', at });
 		assert.equal(text.title, 'Apply failed. No changes were applied.');
 		assert.equal(text.detail, 'The commit was refused. Your edits are still staged.');
@@ -188,16 +188,16 @@ describe('the Apply result says what is saved', () => {
 	});
 
 	it('a commit whose answer never arrived: may or may not be saved', () => {
-		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 3, stage: 'commit', message: 'Stopped waiting for commit after 60 s.', committed: 0, unknown: true } };
+		const result: SqlApplyResult = { transactional: true, results: [], failure: { index: 3, stage: 'commit', message: 'Stopped waiting for commit after 60 s.', committed: 0, unknown: true, rollbackConfirmed: true } };
 		const text = applyResultText(result, { total: 3, table: 'orders', at });
 		assert.equal(text.title, 'The commit\'s answer did not arrive.');
 		assert.equal(text.detail, 'These changes may or may not be saved. Refresh the table to see what it holds now.');
 	});
 
 	it('without a transaction: how many are applied and what was not run', () => {
-		const result: SqlApplyResult = { transactional: false, results: [{ affected_rows: 1 }], failure: { index: 1, stage: 'statement', message: 'denied', committed: 1, unknown: false } };
+		const result: SqlApplyResult = { transactional: false, results: [{ affected_rows: 1 }], failure: { index: 1, stage: 'statement', message: 'denied', committed: 1, unknown: false, rollbackConfirmed: true } };
 		assert.deepEqual(applyResultText(result, { total: 3, table: 'events', at }), { variant: 'error', title: 'Apply stopped at change 2 of 3. 1 of 3 applied.', detail: 'Change 3 was not run.', message: 'denied' });
-		const unknown: SqlApplyResult = { transactional: false, results: [], failure: { index: 0, stage: 'statement', message: 'Stopped waiting', committed: 0, unknown: true } };
+		const unknown: SqlApplyResult = { transactional: false, results: [], failure: { index: 0, stage: 'statement', message: 'Stopped waiting', committed: 0, unknown: true, rollbackConfirmed: true } };
 		assert.equal(applyResultText(unknown, { total: 3, table: 'events', at }).detail, 'Change 1 may have been applied: its answer did not arrive. Changes 2–3 were not run.');
 	});
 });

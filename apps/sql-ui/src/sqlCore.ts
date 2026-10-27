@@ -96,6 +96,7 @@ import {
 	toDialect,
 	upsertSavedConnection,
 } from './connect';
+import { transactionsUnavailable } from './connect/session';
 import type { SavedConnectionsFs, SavedSqlConnection, SqlApplyResult, SqlApplyStatement, SqlDialect, SqlEndpoint, SqlSession } from './connect';
 import { isSafetyLevel } from './connect/savedConnections';
 import { gateApplyStatements } from './sql/gate';
@@ -187,8 +188,9 @@ export interface SqlCore {
 	 * whole list is checked first with the node's dialect
 	 * (sql/gate.ts gateApplyStatements: one statement per entry, no
 	 * transaction control, and no transaction on an unknown dialect); a
-	 * ClickHouse session undoes nothing, so there each statement commits on
-	 * its own. The session id never leaves this realm.
+	 * ClickHouse session undoes nothing, so an atomic apply there is refused
+	 * as `transactions-unavailable` before anything is sent. The session id
+	 * never leaves this realm.
 	 *
 	 * @param connId - The connection.
 	 * @param statements - The statements, in order.
@@ -536,8 +538,10 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		const refusal = gateApplyStatements(statements.map((statement) => statement.sql), dialect, atomic);
 		if (refusal !== null) throw new ExplorerToolError({ kind: 'invalid', tool: 'apply', message: refusal });
 		// A ClickHouse `begin` reserves a connection but opens no transaction
-		// (the node's `_sessionsAreTransactions`), so it is never asked for one.
-		return session.applyBatch(statements, { atomic: atomic && dialect !== 'clickhouse' });
+		// (the node's `_sessionsAreTransactions`): an atomic apply there sends
+		// nothing, and the caller asks the user before sending `atomic: false`.
+		if (atomic && dialect === 'clickhouse') throw transactionsUnavailable('apply', 'ClickHouse has no transactions, so nothing was applied.');
+		return session.applyBatch(statements, { atomic });
 	}, 'apply');
 
 	const sessionFor = (endpoint: SqlEndpoint): SqlSession => {

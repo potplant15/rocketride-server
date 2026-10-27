@@ -270,14 +270,16 @@ each entry must be exactly one statement, and transaction control inside it
 is refused. Nothing in an apply is ever sent twice, and the transaction
 never leaves the sidebar (as a dev tool) or the app's own engine connection.
 
-An apply's statements may take 5 minutes in all, the time the node keeps an
-idle transaction open. After that the app stops waiting and rolls back; a
-statement still running on the server keeps its locks until it ends. Where
-there is no transaction to have, each change commits on its own, the first
-failure stops the rest, and both the confirmation and the result say so:
-ClickHouse opens no transactions, and a node older than the transaction
-tools has none. A row change on MySQL rolls back only on a table whose
-engine has transactions (InnoDB, the default).
+Each statement of an apply may take up to 5 minutes, the time the node keeps
+an idle transaction open. A statement still running after that stops the
+apply: the app stops waiting and rolls back, and the statement keeps its
+locks on the server until it ends. Where there is no transaction to have,
+nothing is sent: ClickHouse opens no transactions, and a node older than the
+transaction tools has none. The app then asks again, saying that each change
+will commit on its own and that a failure leaves earlier changes saved, and
+sends the statements one by one only if you agree; the first failure stops
+the rest. A row change on MySQL rolls back only on a table whose engine has
+transactions (InnoDB, the default).
 
 A statement is sent a second time in one case only. When the pipeline task
 is stopping or restarting, the engine refuses a statement with

@@ -54,15 +54,15 @@ import { SQL_APP_ID } from '../src/appId';
 import { applyReplicaConnections, deleteSavedConnection, endpointForConnection, endpointKeyForConnection, getSavedConnections, getSavedConnectionsPartial, getSavedConnectionsStatus, ownSavedConnections, resetSavedConnections } from '../src/connect';
 import type { PipelineBoundConnection, SavedSqlConnection } from '../src/connect';
 import { lookupConnection } from '../src/connectionRecord';
-import { MAX_APPLY_STATEMENTS, MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkApplyInput, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
+import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkApplyInput, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
 import type { ConnectionsState, HistoryState, SqlOps } from '../src/ops';
 import { attachSqlFrame, connectionDocState, directReleaseKey, frameGates, routeDocKey, sqlChannel } from '../src/sqlFrame';
 import { SESSION_GRIDS, createRemoteSqlEnv } from '../src/sqlEnv';
 import { setActiveConnection } from '../src/navigation';
 import { SUMMON_EVENT, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
-import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS } from '../src/sqlTimeouts';
-import { APPLY_BUDGET_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, NODE_TX_IDLE_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
+import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS, applyBatchTimeoutMs } from '../src/sqlTimeouts';
+import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, MAX_APPLY_STATEMENTS, NODE_TX_IDLE_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
 import { taskRow } from './support';
 import { DIRECT, PIPELINE, manualTimers, postgres, rig, toolRequests } from './devtoolRig';
@@ -332,7 +332,7 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			assert.equal(bus('rollback'), END_TX_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
 			const applied = toolRequests(r.engine, 'execute').filter((request) => (request.params as { input: { session_id?: string } }).input.session_id !== undefined);
 			assert.equal(applied.length, 2);
-			for (const request of applied) assert.ok((request.timeoutMs as number) <= APPLY_BUDGET_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS, `an apply's statement waits at most the apply's budget (${request.timeoutMs})`);
+			for (const request of applied) assert.equal(request.timeoutMs, APPLY_STATEMENT_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS, 'each statement of an apply waits the node\'s idle-transaction time');
 			assert.equal(DIALECT_WAIT_MS, 15_000);
 			assert.equal(GET_SCHEMA_WAIT_MS, 60_000);
 			assert.equal(REFRESH_SCHEMA_WAIT_MS, 135_000);
@@ -356,7 +356,9 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			await session.applyBatch([{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1] }], { atomic: true });
 			assert.ok(r.frameCalls.some((call) => call.op === 'sql.applyBatch'));
 			for (const call of r.frameCalls) {
-				assert.equal(call.timeoutMs, SQL_OP_TIMEOUT_MS[call.op as keyof typeof SQL_OP_TIMEOUT_MS], `${call.op} frame timeout`);
+				// An apply's frame waits for its own statements (one wait each); the named entry is the longest one.
+				const expected = call.op === 'sql.applyBatch' ? applyBatchTimeoutMs(1) : SQL_OP_TIMEOUT_MS[call.op as keyof typeof SQL_OP_TIMEOUT_MS];
+				assert.equal(call.timeoutMs, expected, `${call.op} frame timeout`);
 			}
 			const at = (op: keyof typeof SQL_OP_TIMEOUT_MS): number => SQL_OP_TIMEOUT_MS[op];
 			const busOf = (wait: number): number => wait + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS;
@@ -375,12 +377,16 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			assert.ok(at('sql.execute') > controllerLongest, `frame ${at('sql.execute')} > controller ${controllerLongest}`);
 			assert.equal(at('sql.execute'), controllerLongest + FRAME_OP_MARGIN_MS);
 			assert.ok(at('sql.execute') <= MAX_TIMER_MS);
-			// An apply: resolve; the gate's dialect call; begin; its statements, the
-			// apply's budget in all; commit; and a rollback after a failure. Bounded
-			// by the node's 300 s idle-transaction timeout, so minutes, not a day.
-			assert.equal(at('sql.applyBatch'), RESOLVE_BUDGET_MS + busOf(DIALECT_WAIT_MS) + busOf(BEGIN_WAIT_MS) + busOf(APPLY_BUDGET_MS) + 2 * busOf(END_TX_WAIT_MS) + FRAME_OP_MARGIN_MS);
-			assert.equal(APPLY_BUDGET_MS, NODE_TX_IDLE_MS);
-			assert.ok(at('sql.applyBatch') < 15 * 60_000, `${at('sql.applyBatch')} ms`);
+			// An apply: resolve; the gate's dialect call; begin; one wait per
+			// statement, each at most the node's 300 s idle-transaction time (never
+			// the 24 h cap); commit; and a rollback after a failure. The frame
+			// passes the timeout for its own count; the named entry is the longest.
+			const applyOf = (n: number): number => RESOLVE_BUDGET_MS + busOf(DIALECT_WAIT_MS) + busOf(BEGIN_WAIT_MS) + n * busOf(APPLY_STATEMENT_WAIT_MS) + 2 * busOf(END_TX_WAIT_MS) + FRAME_OP_MARGIN_MS;
+			assert.equal(applyBatchTimeoutMs(3), applyOf(3));
+			assert.equal(at('sql.applyBatch'), applyOf(MAX_APPLY_STATEMENTS));
+			assert.equal(APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS);
+			assert.ok(applyBatchTimeoutMs(1) < 15 * 60_000, `${applyBatchTimeoutMs(1)} ms for one statement`);
+			assert.ok(at('sql.applyBatch') <= MAX_TIMER_MS);
 			for (const op of Object.keys(SQL_OP_TIMEOUT_MS) as Array<keyof typeof SQL_OP_TIMEOUT_MS>) assert.notEqual(at(op), 120_000, op);
 		} finally {
 			r.dispose();
@@ -891,7 +897,7 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 			assert.equal(toolRequests(r.engine, 'execute').length, 1, 'never sent again');
 			assert.equal(toolRequests(r.engine, 'rollback').length, 1);
 			assert.equal(toolRequests(r.engine, 'commit').length, 0);
-			assert.deepEqual(result, { transactional: true, results: [], failure: { index: 0, stage: 'statement', message: 'Task was stopped', code: 'TASK_STOPPED', committed: 0, unknown: false } });
+			assert.deepEqual(result, { transactional: true, results: [], failure: { index: 0, stage: 'statement', message: 'Task was stopped', code: 'TASK_STOPPED', committed: 0, unknown: false, rollbackConfirmed: true } });
 		} finally {
 			r.dispose();
 		}

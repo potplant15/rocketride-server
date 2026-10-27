@@ -44,10 +44,10 @@
 //                             30 s pool timeout, plus the 10 s pad)
 //   commit/rollback  60 s     (each first waits for the session's lock, behind
 //                             a statement still running in it)
-//   an Apply's       300 s IN ALL, each statement waiting for what is left
-//   statements                (the node's idle-transaction timeout, so no
-//                             transaction of the app's is ever waited on
-//                             longer than the node would keep an abandoned one)
+//   an Apply's       300 s EACH (the node's idle-transaction timeout: a
+//   statements                stalled statement is not waited on longer than
+//                             the node would keep an abandoned transaction,
+//                             and a long plan is not cut off as a whole)
 //
 // The waits for the shared tools come from the library's documented table
 // (shared/explorer/connect/session DEFAULT_TOOL_TIMEOUTS), so SQL and the
@@ -58,6 +58,7 @@
 // =============================================================================
 
 import { checkObject, isPlainObject } from 'shared/explorer/checks';
+import { ExplorerToolError } from 'shared/explorer/errors';
 import { DEFAULT_TIMEOUT_PAD_MS, DEFAULT_TOOL_TIMEOUTS } from 'shared/explorer/connect/session';
 import type { IToolSessionOptions } from 'shared/explorer/connect/session';
 
@@ -80,13 +81,37 @@ export const STATEMENT_WAIT_PAD_MS = DEFAULT_TIMEOUT_PAD_MS;
 export const NODE_TX_IDLE_MS = 300_000;
 
 /**
- * The longest an Apply's statements may take in all. Each statement waits
- * for what is left of it, so a stalled one ends the apply here, not after
- * the 24 h statement cap: the transaction is rolled back (it is never
- * committed), and the node's idle reaper is the backstop for a rollback that
- * cannot get through.
+ * The longest one statement of an Apply is waited for (less when the node
+ * publishes a shorter statement deadline). The node's reaper skips a session
+ * while a statement runs in it, so only the gap BETWEEN calls has to stay
+ * under its idle timeout, which the app's back-to-back calls do: each
+ * statement gets its own wait, and a long plan is not cut off as a whole. A
+ * statement still running when its wait ends stops the apply: the
+ * transaction is rolled back (it is never committed), and the reaper is the
+ * backstop for a rollback that cannot get through.
  */
-export const APPLY_BUDGET_MS = NODE_TX_IDLE_MS;
+export const APPLY_STATEMENT_WAIT_MS = NODE_TX_IDLE_MS;
+
+/** The most statements one apply may carry (a longer list is refused before anything is sent). */
+export const MAX_APPLY_STATEMENTS = 1000;
+
+/**
+ * The code of the refusal an atomic apply gets where there is no transaction
+ * to have (a ClickHouse node, or a node without the `begin` tool). Nothing
+ * was sent; the caller asks the user before sending the statements again,
+ * one by one (`atomic: false`).
+ */
+export const TRANSACTIONS_UNAVAILABLE_CODE = 'transactions-unavailable';
+
+/**
+ * Whether an apply was refused because the engine has no transactions.
+ *
+ * @param error - What the apply threw.
+ * @returns True for {@link TRANSACTIONS_UNAVAILABLE_CODE}.
+ */
+export function isTransactionsUnavailable(error: unknown): boolean {
+	return error instanceof ExplorerToolError && error.code === TRANSACTIONS_UNAVAILABLE_CODE;
+}
 
 /** Client wait of the `begin` tool: a connection out of the node's pool (SQLAlchemy's 30 s pool timeout) plus the pad. */
 export const BEGIN_WAIT_MS = 30_000 + DEFAULT_TIMEOUT_PAD_MS;

@@ -44,7 +44,7 @@ export type {
 export { DATABASE_PROVIDERS } from './discovery';
 export { createSqlEndpoints } from './endpoints';
 export { createSqlSession, toDialect } from './session';
-export { SQL_TOOLS, DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS, statementWaitMs } from './tools';
+export { SQL_TOOLS, DIALECT_WAIT_MS, GET_SCHEMA_WAIT_MS, REFRESH_SCHEMA_WAIT_MS, TRANSACTIONS_UNAVAILABLE_CODE, isTransactionsUnavailable, statementWaitMs } from './tools';
 export { refreshEndpoints, useSqlEndpoints } from './endpointStore';
 export type { EndpointStatus, EndpointState } from './endpointStore';
 export {

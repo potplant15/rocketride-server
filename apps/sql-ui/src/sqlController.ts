@@ -106,6 +106,7 @@ import type { DevToolPeer } from 'shared/explorer/devtool/realm';
 import type { IFocusTarget } from 'shared/explorer/devtool/watch';
 import { SQL_APP_ID } from './appId';
 import { getSavedConnections, getSavedConnectionsStatus, subscribeSavedConnections } from './connect';
+import { MAX_APPLY_STATEMENTS } from './connect/tools';
 import { connectionEditorDocKey } from './docs';
 import type { ConnectionsState, HistoryState, SqlOps } from './ops';
 import { checkHistoryEdit, checkHistoryEntry } from './history/api';
@@ -213,9 +214,6 @@ export function checkExecuteInput(input: { sql: unknown; params?: unknown; idemp
 	if (input.params !== undefined && (!Array.isArray(input.params) || !input.params.every((value) => isJsonValue(value)))) throw invalidInput('execute', 'The statement parameters must be a list of JSON values.');
 	if (input.idempotent !== undefined && typeof input.idempotent !== 'boolean') throw invalidInput('execute', 'idempotent must be true or false.');
 }
-
-/** The most statements one apply may carry (a frame's list is refused beyond it). */
-export const MAX_APPLY_STATEMENTS = 1000;
 
 /**
  * Check `sql.applyBatch`'s input.

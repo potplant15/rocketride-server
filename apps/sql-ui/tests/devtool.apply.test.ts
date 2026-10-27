@@ -26,8 +26,9 @@
 //
 // `sql.applyBatch` (a dev-tool frame) and the full app's session both
 // reach sqlCore.ts applyBatch, which checks the list with the node's
-// dialect before anything is sent: ClickHouse never opens a transaction (its
-// sessions undo nothing), and an unknown dialect never gets one. The
+// dialect before anything is sent: an atomic apply on ClickHouse (its
+// sessions undo nothing) is refused as `transactions-unavailable`, as on a
+// node without `begin`, and an unknown dialect never gets one. The
 // statement-level sequences are in applySession.test.ts; T3/T4/T10 for the
 // op are in devtool.wiring.test.ts.
 // =============================================================================
@@ -36,7 +37,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ExplorerToolError } from 'shared/explorer/errors';
 import { SQL_APP_ID } from '../src/appId';
-import { getSavedConnections, resetSavedConnections } from '../src/connect';
+import { TRANSACTIONS_UNAVAILABLE_CODE, getSavedConnections, isTransactionsUnavailable, resetSavedConnections } from '../src/connect';
 import { createLocalSqlEnv } from '../src/localEnv';
 import { APPLY_UNKNOWN_DIALECT_TEXT } from '../src/sql/gate';
 import { createSqlCore } from '../src/sqlCore';
@@ -65,14 +66,27 @@ function nodeOf(dialect: string | (() => never)) {
 }
 
 describe('the engine core decides the transaction with the node\'s dialect', () => {
-	it('ClickHouse: asked for one transaction, it opens none (a session there undoes nothing) and each statement commits on its own', async () => {
+	it('ClickHouse: asked for one transaction, nothing is sent and the refusal is typed; asked for none, each statement commits on its own', async () => {
 		const r = await rig({ tool: nodeOf('clickhouse') });
 		try {
 			const session = r.env.getSession(await r.env.resolveEndpoint(PIPELINE));
-			const result = await session.applyBatch(EDITS, { atomic: true });
+			await assert.rejects(session.applyBatch(EDITS, { atomic: true }), (error: unknown) => isTransactionsUnavailable(error) && error instanceof ExplorerToolError && error.code === TRANSACTIONS_UNAVAILABLE_CODE);
+			assert.deepEqual(['begin', 'execute', 'commit', 'rollback'].map((tool) => toolRequests(r.engine, tool).length), [0, 0, 0, 0], 'nothing was sent');
+			const result = await session.applyBatch(EDITS, { atomic: false });
 			assert.deepEqual(result, { transactional: false, results: [{ affected_rows: 1 }, { affected_rows: 1 }], failure: null });
 			assert.deepEqual(['begin', 'commit', 'rollback'].map((tool) => toolRequests(r.engine, tool).length), [0, 0, 0]);
 			assert.equal(toolRequests(r.engine, 'execute').length, 2);
+		} finally {
+			r.dispose();
+		}
+	});
+
+	it('a node without the begin tool: the frame gets the typed refusal, and nothing but begin reached the node', async () => {
+		const r = await rig({ tool: (params) => (params.tool === 'begin' ? (() => { throw new Error('No handler found for tool "begin" on node "db_1"'); })() : nodeOf('postgres')(params)) });
+		try {
+			const session = r.env.getSession(await r.env.resolveEndpoint(PIPELINE));
+			await assert.rejects(session.applyBatch(EDITS, { atomic: true }), (error: unknown) => isTransactionsUnavailable(error));
+			assert.deepEqual(['begin', 'execute'].map((tool) => toolRequests(r.engine, tool).length), [1, 0]);
 		} finally {
 			r.dispose();
 		}

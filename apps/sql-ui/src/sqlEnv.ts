@@ -56,7 +56,7 @@ import type { JsonValue } from 'shared/explorer/devtool/reply';
 import type { IDataGridPersistence } from 'shell';
 import type { SqlOps } from './ops';
 import type { SqlApplyResult, SqlApplyStatement, SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SqlSession, SavedSqlConnection, SqlDialect } from './connect';
-import { SQL_OP_TIMEOUT_MS } from './sqlTimeouts';
+import { SQL_OP_TIMEOUT_MS, applyBatchTimeoutMs } from './sqlTimeouts';
 import type { IPrefsAccessor } from 'shared/explorer/history/types';
 import type { SqlHistoryApi } from './history/api';
 
@@ -227,7 +227,7 @@ function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint): Sql
 				...(statement.expect !== undefined ? { expect: statement.expect } : {}),
 			})),
 			atomic: opts.atomic,
-		}, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] }),
+		}, { timeoutMs: applyBatchTimeoutMs(statements.length) }),
 	};
 }
 

@@ -33,17 +33,18 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { APPLY_BUDGET_MS, NODE_TX_IDLE_MS } from '../src/connect/tools';
+import { APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS } from '../src/connect/tools';
 import { designApplyMode } from '../src/views/TableDesignView';
 import { rowEditApplyMode } from '../src/components/ReviewSqlDialog';
 
 const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
 
 describe('README claims: Apply', () => {
-	it('states the apply budget the session uses, and that it is the node\'s idle-transaction time', () => {
-		assert.equal(APPLY_BUDGET_MS, 5 * 60_000);
-		assert.equal(APPLY_BUDGET_MS, NODE_TX_IDLE_MS);
-		assert.match(prose, /An apply's statements may take 5 minutes in all, the time the node keeps an idle transaction open\./);
+	it('states the wait each statement of an apply gets, and that it is the node\'s idle-transaction time', () => {
+		assert.equal(APPLY_STATEMENT_WAIT_MS, 5 * 60_000);
+		assert.equal(APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS);
+		assert.match(prose, /Each statement of an apply may take up to 5 minutes, the time the node keeps an idle transaction open\./);
+		assert.match(prose, /Where there is no transaction to have, nothing is sent/);
 	});
 
 	it('names where there is no transaction, as the code decides', () => {

@@ -131,11 +131,21 @@ export interface SqlApplyFailure {
 	 */
 	committed: number;
 	/**
-	 * True when the failing step's answer never arrived (the client stopped
-	 * waiting), so it may have taken effect too: the statement, when each
-	 * statement commits on its own, or the commit itself.
+	 * True when the failing step's outcome is not known, so it may have taken
+	 * effect too: the statement, when each statement commits on its own, or
+	 * the commit itself. Known only from an answer that says nothing ran (a
+	 * refusal the session lists); a dropped connection or a stopped wait is
+	 * unknown.
 	 */
 	unknown: boolean;
+	/**
+	 * False when a rollback was needed and its answer did not confirm it (it
+	 * timed out, or never got through): the database undoes the transaction
+	 * once the rollback runs or the node's idle reaper takes the session
+	 * (300 s), and until then its locks stay. Always true without a
+	 * transaction.
+	 */
+	rollbackConfirmed: boolean;
 }
 
 /** What an Apply did. */
@@ -253,8 +263,11 @@ export interface SqlSession {
 	 * statement that changes another number of rows than its `expect`, rolls
 	 * everything back, and a refused commit is a failure too. Where there is
 	 * no transaction to have (a ClickHouse session undoes nothing; a node
-	 * without the transaction tools), each statement commits on its own, the
-	 * first failure stops the rest, and the result says `transactional: false`.
+	 * without the transaction tools), NOTHING is sent: the call throws
+	 * `transactions-unavailable` (connect/tools.ts), and the caller asks the
+	 * user before sending again with `atomic: false`. Then each statement
+	 * commits on its own, the first failure stops the rest, and the result
+	 * says `transactional: false`.
 	 *
 	 * Every caller a view can reach goes through the engine core
 	 * (sqlCore.ts `applyBatch`), which first checks the whole list with
@@ -268,7 +281,8 @@ export interface SqlSession {
 	 * @returns What ran; a failure once statements are being sent is data
 	 *          (`failure`), never thrown.
 	 * @throws ExplorerToolError when nothing was applied: the list was
-	 *         refused, the connection is not running, or `begin` was refused.
+	 *         refused, the connection is not running, `begin` was refused,
+	 *         or there are no transactions (`transactions-unavailable`).
 	 */
 	applyBatch(statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult>;
 	/**
