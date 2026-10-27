@@ -36,7 +36,7 @@ import { runSchemaChecks } from '../schema/quality';
 import { useTableRecordRequest } from '../navigation';
 import { SqlPageNavProvider } from '../pageNav';
 import { pageHasOwnHeader, showsWorkbenchHeader } from '../pageFrame';
-import { executeGateReason, schemaOnlyExplanation } from '../executeGate';
+import { SCHEMA_ONLY_NOTE_ID, executeGateReason, schemaOnlyExplanation } from '../executeGate';
 import { opensShortcutSheet } from '../components/shortcuts';
 import GatedButton from '../components/GatedButton';
 import ShortcutSheet from '../components/ShortcutSheet';
@@ -156,9 +156,6 @@ const styles = {
 // =============================================================================
 // CONSTANTS
 // =============================================================================
-
-/** Id of the visible schema-only note the gated controls point at. */
-const SCHEMA_ONLY_ID = 'sql-schema-only';
 
 // =============================================================================
 // COMPONENT
@@ -379,7 +376,7 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 							>
 								{snapshot.status === 'loading' ? 'Reading...' : 'Refresh Schema'}
 							</Button>
-							<GatedButton variant="primary" onClick={() => pageNav.openQuery({})} gateReason={gateReason} reasonId={SCHEMA_ONLY_ID}>
+							<GatedButton variant="primary" onClick={() => pageNav.openQuery({})} gateReason={gateReason} reasonId={SCHEMA_ONLY_NOTE_ID}>
 								New Query
 							</GatedButton>
 						</>
@@ -389,7 +386,7 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 
 			{/* Why statements are off, in words, and a way to look again. */}
 			{gateReason && showsWorkbenchHeader(activePage) && (
-				<div id={SCHEMA_ONLY_ID} style={styles.schemaOnlyNote}>
+				<div id={SCHEMA_ONLY_NOTE_ID} style={styles.schemaOnlyNote}>
 					<Banner variant="warning">
 						<strong>Schema only. </strong>
 						{schemaOnlyExplanation(endpoint.nodeName)}{' '}

@@ -122,8 +122,10 @@ The app finds out once when a connection opens whether the node runs
 statements: it sends `SELECT 1`. It goes straight to the node, so it is not in your
 query history. If the node has `allow_execute` off, the connection is
 **schema only**: the header says so, and Run, Run all, Explain, New Query,
-**Select top 100**, **Count rows**, **Open data** and History's **Rerun** are
-off with the reason shown, and the Data page says it cannot read rows. The
+**Select top 100**, **Count rows**, **Open data**, **+ Create Table** and
+History's **Rerun** are off with the reason shown, and the Data page says it
+cannot read rows. **Design** still opens, to read a table's structure and its
+DDL, and says that Apply is off. The
 run shortcuts send nothing either and say why, so no statement, and no row
 estimate for a confirmation, reaches the node. Tables, columns, keys,
 Diagram and Insights keep working. After you turn `allow_execute` on and
