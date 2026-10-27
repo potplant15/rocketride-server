@@ -161,6 +161,9 @@ const GraphApp: React.FC<ShellAppProps> = ({ identity }) => {
 		pinned.userData.notify();
 	}, [pinned, fingerprint, loaded]);
 
+	// What is automatic (colour slots, 1.2's captions moved) is saved with the person's next change in this page.
+	useEffect(() => prefs.onWrite(() => pinned.userData.userWrote()), [prefs, pinned]);
+
 	// A loaded schema's labels get their colour slots here (the realm that owns the schema); a slot write still pending
 	// when the app unmounts is dropped (it is made again from the schema next time).
 	useEffect(() => {

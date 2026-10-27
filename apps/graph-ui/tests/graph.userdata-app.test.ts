@@ -16,7 +16,7 @@ import path from 'node:path';
 import type { IDataGridPersistence } from 'shell';
 import { ExplorerToolError } from 'shared/explorer';
 import type { IPrefsAccessor } from 'shared/explorer';
-import { makeGraphHistory } from '../src/adapters/explorer';
+import { CAPTIONS_PREF_KEY, makeGraphHistory } from '../src/adapters/explorer';
 import { createSchemaStore } from '../src/graph/schemaStore';
 import { APP_USER_DATA_NOTE, EMPTY_STYLE, SESSION_USER_DATA_NOTE, createMemoryUserData, devToolUserDataNote, followAssignments } from '../src/graph/userData';
 import { SAVED_QUERIES_PREF, STYLES_PREF } from '../src/graph/userDataStore';
@@ -189,7 +189,7 @@ describe('the full app\'s history goes through the same pin', () => {
 describe('colour slots: given once, in the realm that owns the schema, written only to a store that was read', () => {
 	const two = { version: 2, labels: [{ name: 'Person', properties: [] }, { name: 'Company', properties: [] }], relationship_types: [], sampled: true, truncated: false, refreshed_at: null, source: 'startup', stale: false, error: null, capable: true };
 
-	it('the slots of a loaded schema\'s labels are shown at once and written once, debounced; a later new label takes a free slot without moving any', async () => {
+	it('the slots of a loaded schema\'s labels are shown at once and saved with the next change in the page; a later new label takes a free slot without moving any', async () => {
 		const shell = shellModel(FP_A);
 		const timers = manualTimers();
 		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin(), { schedule: timers.schedule });
@@ -197,11 +197,12 @@ describe('colour slots: given once, in the realm that owns the schema, written o
 		const off = followAssignments(schemas, data);
 		await schemas.load(KEY, async () => ({ schema: two }), failure);
 		assert.deepEqual(data.style(KEY).get().style.assigned, { Company: 0, Person: 1 }, 'shown at once');
-		assert.equal(shell.bag.get(STYLES_PREF), undefined, 'not written yet');
-		timers.advance(1_000);
-		assert.deepEqual((shell.bag.get(STYLES_PREF) as Record<string, { assigned: unknown }>)[KEY].assigned, { Company: 0, Person: 1 }, 'written after the pause');
+		timers.advance(5_000);
+		assert.equal(shell.bag.get(STYLES_PREF), undefined, 'not written by itself (the full app holds it)');
+		data.userWrote();
+		assert.deepEqual((shell.bag.get(STYLES_PREF) as Record<string, { assigned: unknown }>)[KEY].assigned, { Company: 0, Person: 1 }, 'written with the next change');
 		await schemas.load(KEY, async () => ({ schema: { ...two, labels: [{ name: 'Aardvark', properties: [] }, ...two.labels] } }), failure, { refresh: true });
-		timers.advance(1_000);
+		data.userWrote();
 		assert.deepEqual(data.style(KEY).get().style.assigned, { Company: 0, Person: 1, Aardvark: 2 });
 		off();
 	});
@@ -221,8 +222,8 @@ describe('colour slots: given once, in the realm that owns the schema, written o
 		loaded = true;
 		data.notify();
 		assert.equal(data.style(KEY).get().ready, true);
-		timers.advance(1_000);
-		assert.ok((shell.bag.get(STYLES_PREF) as Record<string, unknown>)[KEY], 'written once loaded');
+		data.userWrote();
+		assert.ok((shell.bag.get(STYLES_PREF) as Record<string, unknown>)[KEY], 'written once loaded, with the next change');
 		off();
 	});
 
@@ -245,12 +246,12 @@ describe('colour slots: given once, in the realm that owns the schema, written o
 		const schemas = createSchemaStore(() => 1);
 		const off = followAssignments(schemas, data);
 		await schemas.load(KEY, async () => fixture('schema_v2'), failure);
-		timers.advance(5_000);
+		data.userWrote();
 		assert.equal(shell.bag.get(STYLES_PREF), undefined, 'nothing written for B');
 		shell.signIn(FP_A);
 		data.notify();
 		assert.ok(Object.keys(data.style(KEY).get().style.assigned).length > 0, 'assigned for A');
-		timers.advance(1_000);
+		data.userWrote();
 		assert.ok((shell.bag.get(STYLES_PREF) as Record<string, unknown>)[KEY], 'and written for A');
 		off();
 	});
@@ -291,6 +292,8 @@ describe('the full app routes every preference it keeps through the one page pin
 		assert.match(app, /const \[prefs\] = useState\(createForwardingPrefs\);/, 'one accessor that reads its own writes');
 		assert.match(app, /<AppPrefsBinding prefs=\{prefs\} onBound=\{pinned\.userData\.notify\} \/>/, 'readers read again once the shell hands out the new accessor');
 		assert.match(app, /const \{ loaded \} = useWorkspace\(\);/, 'styles and saved queries wait for the shell to load the prefs');
+		assert.match(app, /useEffect\(\(\) => prefs\.onWrite\(\(\) => pinned\.userData\.userWrote\(\)\), \[prefs, pinned\]\);/, 'what is automatic is saved with the person\'s next change in this page');
+		assert.match(read('GraphSidebar.tsx'), /const typeColors = useMemo\(\(\) => typeColorsOf\(style\), \[style\]\);/, 'the sidebar draws type colours as the canvas does');
 		assert.doesNotMatch(app, /prefs: prefs[,\s}]/, 'the bare accessor never reaches the env');
 		const bridge = read('adapters', 'react.ts');
 		assert.match(bridge, /export const pinnedGraphHistory = pinHistory\(graphHistory\);/);
@@ -319,7 +322,7 @@ describe('review P5: the full app across accounts, and the shell\'s snapshot acc
 		data.forget();
 		data.notify();
 		await schemas.load('k1|dev|user|uB|K_B', async () => schemaOf(['BSecretLabel']), failure);
-		timers.advance(5_000);
+		data.userWrote();
 		assert.equal(bag.get(STYLES_PREF), undefined, 'nothing written for B, and the write pending for A was dropped');
 		// A is back without a reload, and loads a connection of A's.
 		owner = FP_A;
@@ -327,7 +330,7 @@ describe('review P5: the full app across accounts, and the shell\'s snapshot acc
 		data.forget();
 		data.notify();
 		await schemas.load('k1|dev|user|uA|K_A', async () => schemaOf(['Person']), failure);
-		timers.advance(1_000);
+		data.userWrote();
 		const written = bag.get(STYLES_PREF) as Record<string, unknown>;
 		assert.deepEqual(Object.keys(written), ['k1|dev|user|uA|K_A'], 'A\'s own connection only');
 		assert.equal(JSON.stringify(written).includes('BSecretLabel'), false);
@@ -343,6 +346,7 @@ describe('review P5: the full app across accounts, and the shell\'s snapshot acc
 		data.want([{ key: 'k1|dev|user|uA|K', labels: ['Person'], complete: true }]);
 		owner = FP_B;
 		timers.advance(1_000);
+		data.userWrote();
 		assert.equal(bag.get(STYLES_PREF), undefined, 'even without forget(): never written under another account');
 	});
 
@@ -378,5 +382,63 @@ describe('review P5: the full app across accounts, and the shell\'s snapshot acc
 		assert.match(appHistoryNote('another'), /kept for this session only/);
 		assert.match(appHistoryNote('nobody'), /nobody is signed in/);
 		for (const note of [appUserDataNote('another'), appUserDataNote('nobody'), appHistoryNote('another'), appHistoryNote('nobody')]) assert.ok(note.length <= 160, note);
+	});
+});
+
+describe('DA-R1: two pages of one account, and captions from 1.2', () => {
+	const schemaOf = (names: string[]) => ({ schema: { version: 2, labels: names.map((name) => ({ name, properties: [] })), relationship_types: [], sampled: true, truncated: false, refreshed_at: null, source: 'startup', stale: false, error: null, capable: true } });
+
+	it('I-1: the full app shows new colour slots at once and saves them only with the next change the person makes in that page', async () => {
+		const shell = shellModel(FP_A);
+		const timers = manualTimers();
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin(), { schedule: timers.schedule });
+		const schemas = createSchemaStore(() => 1);
+		const off = followAssignments(schemas, data);
+		await schemas.load(KEY, async () => schemaOf(['Person', 'Company']), failure);
+		timers.advance(10_000);
+		assert.deepEqual(data.style(KEY).get().style.assigned, { Company: 0, Person: 1 }, 'shown at once');
+		assert.equal(shell.bag.get(STYLES_PREF), undefined, 'merely opening a connection writes nothing');
+		data.userWrote();
+		assert.deepEqual((shell.bag.get(STYLES_PREF) as Record<string, { assigned: unknown }>)[KEY].assigned, { Company: 0, Person: 1 }, 'saved with the next change the person makes');
+		off();
+	});
+
+	it('I-1: a person\'s own edit carries the held slots with it', async () => {
+		const shell = shellModel(FP_A);
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin());
+		data.want([{ key: KEY, labels: ['Person'], complete: true }]);
+		await data.editSaved(KEY, { action: 'save', name: 'Mine', cypher: 'RETURN 1' });
+		assert.deepEqual((shell.bag.get(STYLES_PREF) as Record<string, { assigned: unknown }>)[KEY].assigned, { Person: 0 });
+	});
+
+	it('I-5: 1.2\'s caption choices are shown at once and moved into the style once, with the next change; never for another account', async () => {
+		const shell = shellModel(FP_A);
+		shell.bag.set(CAPTIONS_PREF_KEY, { [KEY]: { Person: 'name', Company: '<id>', Bad: 7 }, other: { Topic: 'title' } });
+		shell.bag.set(STYLES_PREF, { [KEY]: { labels: { Company: { caption: 'legalName' } } } });
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, createWorkspacePin());
+		assert.equal(data.style(KEY).get().style.labels.Person?.caption, 'name', 'shown from the old choice before any write');
+		assert.equal(data.style(KEY).get().style.labels.Company?.caption, 'legalName', 'a caption already in the style wins');
+		assert.ok(shell.bag.has(CAPTIONS_PREF_KEY), 'nothing written yet');
+		// The person clears Person's caption: the move happens first, then the edit, so the old choice does not come back.
+		await data.editStyle(KEY, { kind: 'label', label: 'Person', clear: ['caption'] });
+		assert.equal(shell.bag.get(CAPTIONS_PREF_KEY), undefined, 'the old key is cleared');
+		const styles = shell.bag.get(STYLES_PREF) as Record<string, { labels: Record<string, { caption?: string }> }>;
+		assert.equal(styles[KEY].labels.Person, undefined, 'the person\'s clear stands');
+		assert.equal(styles[KEY].labels.Company.caption, 'legalName');
+		assert.equal(styles.other.labels.Topic.caption, 'title', 'every connection moved, once');
+		assert.equal(data.style(KEY).get().style.labels.Person, undefined);
+	});
+
+	it('I-5: another account signed in without a reload: nothing is moved or written for it', async () => {
+		const shell = shellModel(FP_A);
+		shell.bag.set(CAPTIONS_PREF_KEY, { [KEY]: { Person: 'name' } });
+		const pin = createWorkspacePin();
+		pin.access(FP_A);
+		shell.signIn(FP_B);
+		const data = createAppUserData(shell.prefs, shell.owner, LOADED, pin);
+		data.userWrote();
+		assert.deepEqual(shell.bag.get(CAPTIONS_PREF_KEY), { [KEY]: { Person: 'name' } }, 'left alone');
+		assert.equal(shell.bag.get(STYLES_PREF), undefined);
+		assert.equal(data.style(KEY).get().style.labels.Person, undefined, 'and not shown to B');
 	});
 });

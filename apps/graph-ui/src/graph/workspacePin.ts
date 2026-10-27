@@ -49,6 +49,7 @@ import type { IDataGridPersistence } from 'shell';
 import { ExplorerToolError } from 'shared/explorer';
 import type { IPrefsAccessor } from 'shared/explorer';
 import type { IPrefsAttachable } from 'shared/explorer/react';
+import { CAPTIONS_PREF_KEY } from '../adapters/explorer';
 import { APP_HISTORY_PRIVACY_NOTE, memoryPrefs } from '../env';
 import { APP_USER_DATA_NOTE, createStoredUserData } from './userData';
 import type { IOwnedUserData, IStoredUserDataOptions, IUserDataSource } from './userData';
@@ -124,6 +125,8 @@ export interface IForwardingPrefs extends IPrefsAccessor {
 	 * @returns True when it is a new one (a reader told about a write before it existed should read again).
 	 */
 	bind(api: IPrefsAccessor): boolean;
+	/** Be told after every write made through it (GraphApp: a change the person made in this page). */
+	onWrite(listener: () => void): () => void;
 }
 
 /**
@@ -138,6 +141,7 @@ export interface IForwardingPrefs extends IPrefsAccessor {
 export function createForwardingPrefs(): IForwardingPrefs {
 	let current: IPrefsAccessor | null = null;
 	const written = new Map<string, unknown>();
+	const listeners = new Set<() => void>();
 	return {
 		bind(api) {
 			if (api === current) return false;
@@ -150,6 +154,13 @@ export function createForwardingPrefs(): IForwardingPrefs {
 			if (!current) return;
 			written.set(key, value);
 			current.setPref(key, value);
+			listeners.forEach((listener) => listener());
+		},
+		onWrite(listener) {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
 		},
 	};
 }
@@ -196,7 +207,10 @@ export function pinnedGrids(pin: IWorkspacePin, grids: IDataGridPersistence, own
 /**
  * The full app's styles and saved queries: two keys of the workspace preferences, for the pinned account only, and
  * only once the shell has loaded them (until then they read as loading, and no colour slot is written: a write before
- * the load would replace what the account's file holds). Nobody signed in, or another account, reads nothing (the
+ * the load would replace what the account's file holds). Colour slots, and the caption choices 1.2 kept under
+ * `graph.captions`, are shown at once and saved only with the person's next change in this page (`userWrote`): two
+ * pages of one account each write their whole partition, so an automatic write from an older page would replace what
+ * the newer one saved. Nobody signed in, or another account, reads nothing (the
  * saved queries say why) and changes nothing (refused with the reason). GraphApp calls `notify()` when the account
  * or the load changes.
  *
@@ -224,7 +238,9 @@ export function createAppUserData(prefs: IPrefsAccessor, ownerNow: () => string 
 			return pinned;
 		},
 	};
-	return createStoredUserData({ styles: source, saved: source, owner: ownerNow, privacyNote: () => appUserDataNote(pin.access(ownerNow())) }, opts);
+	// The page writes its whole preferences partition on any write: what is automatic waits for the person's next change
+	// in this page (holdSlots), and 1.2's caption choices are moved into the styles then, once.
+	return createStoredUserData({ styles: source, saved: source, owner: ownerNow, privacyNote: () => appUserDataNote(pin.access(ownerNow())) }, { holdSlots: true, legacyCaptionsPref: CAPTIONS_PREF_KEY, ...opts });
 }
 
 /** A history store's attach, through the page's pin. */

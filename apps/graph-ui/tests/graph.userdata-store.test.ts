@@ -36,6 +36,7 @@ import {
 } from '../src/graph/userDataStore';
 import type { ISavedQuery } from '../src/graph/userData';
 import { EMPTY_STYLE } from '../src/graph/userData';
+import { TYPE_COLOR_SLOTS } from '../src/graph/colors';
 
 const KEY = 'k1|neo';
 const OTHER = 'k2|falkor';
@@ -353,5 +354,15 @@ describe('labels named like Object members are just labels', () => {
 		assert.deepEqual(Object.getOwnPropertyDescriptor(read.labels, 'constructor')?.value, { badge: 'dot' });
 		assert.equal(Object.getPrototypeOf(read.labels), Object.prototype, 'still a plain object');
 		assert.equal(Object.hasOwn(read.labels, 'toString'), false, 'an inherited member is not a label');
+	});
+});
+
+describe('relationship-type colours: only the measured slots', () => {
+	it('a type slot outside TYPE_COLOR_SLOTS is refused from a frame and from the owning realm, and dropped when read', () => {
+		assert.deepEqual([...TYPE_COLOR_SLOTS], [0, 1, 2, 4], 'the premise: yellow (5) and orange (3) fail 3:1 on the light themes');
+		assert.throws(() => checkStyleEdit({ kind: 'type', type: 'KNOWS', patch: { slot: 5 } }), refused(/not one this app makes/));
+		assert.throws(() => applyStyleChange({}, KEY, { kind: 'type', type: 'KNOWS', patch: { slot: 3 } }), refused(/cannot be drawn in that colour/));
+		assert.doesNotThrow(() => applyStyleChange({}, KEY, { kind: 'type', type: 'KNOWS', patch: { slot: 4 } }));
+		assert.deepEqual(readConnectionStyle({ types: { OLD: { slot: 5 }, OK: { slot: 1 } } }).types, { OK: { slot: 1 } }, 'an older file\'s yellow type is read as no choice');
 	});
 });
