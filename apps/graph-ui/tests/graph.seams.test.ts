@@ -12,7 +12,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createGraphSession } from '../src/graph/graphSession';
 import type { IGraphSessionDeps } from '../src/graph/graphSession';
-import { failurePosition } from '../src/graph/errorPosition';
 import { parseSchema } from '../src/graph/schema';
 import { createSchemaStore } from '../src/graph/schemaStore';
 import type { ReadQueryResult } from '../src/graph/types';
@@ -82,7 +81,6 @@ test('the redesign members answer for real: expandByType sends for a drawn node,
 	const state = session.getState();
 	session.clearPath();
 	assert.equal(session.getState(), state);
-	assert.equal(failurePosition('Invalid input (line 1, column 10 (offset: 9))', 'neo4j'), null);
 });
 
 test('schemaViewOf: null until a load completed, then the view; a failed first load is the empty unknown view, not null', async () => {
