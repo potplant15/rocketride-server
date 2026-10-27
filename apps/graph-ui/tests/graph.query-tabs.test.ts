@@ -176,3 +176,16 @@ test('the sentences the tabs show stay under 160 characters, whatever the titles
 	const long = 'x'.repeat(500);
 	for (const text of [tabsFullText(previewTitle(long)), tabsFullText(askTitle(long)), tabsFullText(historyTitle(long))]) assert.ok(text.length <= 160, text);
 });
+
+// An Ask answer can arrive long after the question: it opens its tab without taking the screen from the tab now shown.
+test('a tab can open in the background: the shown tab and the query tab shown last stay as they were', () => {
+	const state = activateTab(withTabs(1), FIRST_QUERY_TAB);
+	const placed = placeRequest(state, { kind: 'new', origin: 'ask', title: askTitle('late'), text: 'MATCH (n) RETURN n', run: false, activate: false });
+	assert.ok('target' in placed);
+	assert.equal(placed.state.active, FIRST_QUERY_TAB);
+	assert.equal(placed.state.lastQuery, FIRST_QUERY_TAB);
+	assert.ok(placed.state.tabs.some((t) => t.id === placed.target));
+	const opened = openTab(state, { origin: 'query', activate: false });
+	assert.ok('id' in opened);
+	assert.equal(opened.state.active, FIRST_QUERY_TAB);
+});

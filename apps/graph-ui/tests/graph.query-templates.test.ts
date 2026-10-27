@@ -91,6 +91,26 @@ test('Apache AGE gets no CALL, no ORDER BY on an alias, no labels() or type(), a
 	assert.ok(starterTemplates(live('falkordb'), 'falkordb').some((t) => t.id === 'count-types'));
 });
 
+// What Apache AGE's node refuses outright (NODE-FACTS section 4, probed on AGE 1.5.0): none of it may reach an AGE template.
+test('every template offered on Apache AGE avoids what its node refuses', () => {
+	const refused: [RegExp, string][] = [
+		[/\bRETURN\s+\*/i, 'RETURN *'],
+		[/\bORDER\s+BY\b/i, 'ORDER BY (on an alias it is refused)'],
+		[/\bWHERE\s+\(?\w+:/i, 'a label predicate'],
+		[/\(\w*:[^)\s{]+:[^)\s{]+/, 'several labels on one node'],
+		[/\belementId\s*\(/i, 'elementId()'],
+		[/\b(all)?shortestPath\s*\(/i, 'shortestPath()'],
+		[/\b(datetime|date|time|localtime|localdatetime|duration)\s*\(/i, 'temporal functions'],
+		[/\bEXISTS\s*[{(]|=~|\[\s*\w+\s+IN\b/i, 'EXISTS, regex or a list comprehension'],
+		[/\bMERGE\b|\bCALL\b/i, 'MERGE or CALL'],
+		[/\[[^\]]*:\w+\|/, 'relationship type alternation'],
+		[/\*\s*\]|\*\.\.\s*\]/, 'unbounded variable length'],
+	];
+	for (const template of starterTemplates(live('age'), 'age')) {
+		for (const [pattern, what] of refused) assert.doesNotMatch(template.cypher, pattern, `${template.id}: ${what}`);
+	}
+});
+
 test('no template takes parameters until a parameters panel exists', () => {
 	for (const dialect of DIALECTS) for (const template of starterTemplates(live(dialect), dialect)) assert.doesNotMatch(template.cypher, /\$\w/, `${dialect} ${template.id}`);
 });

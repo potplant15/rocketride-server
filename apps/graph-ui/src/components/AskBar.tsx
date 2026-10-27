@@ -82,7 +82,10 @@ export const ASK_STOP_NOTE = 'Stop waiting stops this bar from waiting; the node
 /** Props. */
 export interface IAskBarProps {
 	endpoint: IExplorerEndpoint;
-	/** Open the drafted Cypher in a new query tab, not run; false when no tab could be opened (the workbench said why). */
+	/**
+	 * Hand the drafted Cypher to the workbench, which opens it in a new query tab, not run (or drops it when the tab it
+	 * was asked from is gone), and says so. False when no tab could be opened: the draft then waits here.
+	 */
 	onDraft(cypher: string, question: string): boolean;
 	/** Told when a question is sent (the workbench notes which tab it was asked from). */
 	onAsked?(): void;
@@ -93,7 +96,7 @@ export interface IAskBarProps {
 }
 
 const styles = {
-	root: { padding: '12px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
+	root: { padding: '4px 24px', display: 'flex', flexDirection: 'column', gap: 4, borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
 	row: { display: 'flex', gap: 8, alignItems: 'center' } as CSSProperties,
 	input: { flex: 1, minWidth: 0 } as CSSProperties,
 	close: commonStyles.paneHeaderButton,
@@ -119,6 +122,13 @@ export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onC
 	useEffect(() => {
 		if (focusSeq > 0) row.current?.querySelector('input')?.focus();
 	}, [focusSeq]);
+	// An answer that arrives after the bar is gone (its document closed) is dropped, as after Stop waiting.
+	useEffect(
+		() => () => {
+			ticket.current += 1;
+		},
+		[]
+	);
 
 	const ask = useCallback(async () => {
 		const session = env.session(endpoint);
@@ -136,9 +146,7 @@ export const AskBar: React.FC<IAskBarProps> = ({ endpoint, onDraft, onAsked, onC
 		if (result.kind === 'ignored') return;
 		if (result.kind === 'cypher') {
 			// A draft that could not get a tab (all are in use) waits here, never dropped.
-			const opened = onDraft(result.cypher, asked.current);
-			setOutcome(opened ? null : result);
-			if (opened) announcer.announce('The draft from Ask opened in a new tab. It has not been run.');
+			setOutcome(onDraft(result.cypher, asked.current) ? null : result);
 			return;
 		}
 		setOutcome(result);

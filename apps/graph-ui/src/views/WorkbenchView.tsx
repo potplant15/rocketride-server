@@ -40,8 +40,14 @@
 // graph's "New query from here". Only History's "Load into editor" and Saved's
 // "Insert" go into an existing tab (the query tab shown last), as an edit the
 // editor can undo. Query 1 keeps the persisted draft the one editor had before
-// tabs; the other tabs last for the session. At most MAX_QUERY_TABS: past that,
-// a sentence says to close one, and nothing is dropped.
+// tabs; the other tabs last for the session, and closing one whose text was
+// edited asks first. At most MAX_QUERY_TABS: past that, a sentence says to close
+// one, and nothing is dropped.
+//
+// One row holds the tabs and the shown tab's run bar (each surface portals its
+// bar into it), or Overview's actions: the graph gets the height a second row
+// would take. Every read of every tab goes through one request gate
+// (graph/requestGate.ts), so the workbench sends one request at a time.
 //
 // A sidebar click is a preview REQUEST (graph/previews.ts): this workbench takes
 // it by its nonce, once, whenever it mounts, so the click that summoned a cold
@@ -58,7 +64,7 @@
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Banner, Button, ContentHeader, EmptyState, ToggleGroup } from 'shell';
+import { Banner, Button, ConfirmDialog, ContentHeader, EmptyState, ToggleGroup } from 'shell';
 import type { IExplorerEndpoint } from 'shared/explorer';
 import { announcer } from '../adapters/explorer';
 import { patternCheck } from '../cypher/classify';
@@ -83,6 +89,7 @@ import SavedQueriesPanel from '../components/SavedQueriesPanel';
 import SidePanel from '../components/SidePanel';
 import { createLoadSlot } from '../graph/loadSlot';
 import type { ILoadSlot } from '../graph/loadSlot';
+import { createRequestGate } from '../graph/requestGate';
 
 /** Nothing is remembered here: a request is taken through the env, which clears it for every later mount. */
 const NONE_TAKEN: ReadonlySet<string> = new Set();
@@ -96,6 +103,9 @@ const SIDE_OPTIONS: { id: SideView; label: string }[] = [
 ];
 
 const styles = {
+	// The tab row: the tabs, then the shown tab's run bar (or Overview's actions).
+	tabRow: { flex: '0 0 auto', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, minHeight: 38, padding: '0 24px', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
+	barHost: { flex: '0 1 auto', minWidth: 0, display: 'flex', justifyContent: 'flex-end', padding: '4px 0' } as CSSProperties,
 	notice: { padding: '8px 24px 0' } as CSSProperties,
 	body: { flex: 1, minHeight: 0, display: 'flex' } as CSSProperties,
 	panes: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } as CSSProperties,
@@ -103,7 +113,7 @@ const styles = {
 	hidden: { display: 'none' } as CSSProperties,
 	surface: { flex: 1, minHeight: 0 } as CSSProperties,
 	overview: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } as CSSProperties,
-	overviewActions: { display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 24px 0' } as CSSProperties,
+	overviewActions: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 0' } as CSSProperties,
 	overviewBody: { flex: 1, minHeight: 0, overflowY: 'auto' } as CSSProperties,
 	askNote: { marginTop: 4, fontSize: 12 } as CSSProperties,
 	askActions: { display: 'flex', gap: 6, marginTop: 6 } as CSSProperties,
@@ -160,6 +170,14 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	}, []);
 	const [seqs, setSeqs] = useState<Readonly<Record<string, number>>>({});
 	const texts = useRef(new Map<string, string>());
+	// The text each tab was opened with, so closing one that was edited can ask first.
+	const opening = useRef(new Map<string, string>());
+	// The tab whose close waits for a confirmation.
+	const [closing, setClosing] = useState<string | null>(null);
+	// The shown tab's run bar goes into the tab row (an element of this document).
+	const [barHost, setBarHost] = useState<HTMLElement | null>(null);
+	// One request at a time across the tabs (graph/requestGate.ts).
+	const [requests] = useState(createRequestGate);
 	// Why the last tab was not opened (the limit), until a tab opens or closes.
 	const [tabsNotice, setTabsNotice] = useState<string | null>(null);
 	// The banner on each tab Ask opened, until it is dismissed.
@@ -178,6 +196,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 		}
 		setTabsNotice(null);
 		commitTabs(placed.state);
+		if (!opening.current.has(placed.target)) opening.current.set(placed.target, placed.put.insert ? '' : placed.put.text);
 		const now = gateNow.current;
 		const runNow = placed.put.run && now.mounted && now.paused === null;
 		if (placed.put.run && !runNow) announcer.announce(`The statement was put in the editor but not run. ${now.paused ?? 'This connection cannot be browsed yet.'}`);
@@ -187,21 +206,30 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	}, [commitTabs, slotOf]);
 
 	const activate = useCallback((id: string) => commitTabs(activateTab(tabsNow.current, id)), [commitTabs]);
-	const close = useCallback((id: string) => {
+	const closeNow = useCallback((id: string) => {
 		commitTabs(closeTab(tabsNow.current, id));
 		slots.current.delete(id);
 		texts.current.delete(id);
+		opening.current.delete(id);
 		setSeqs(({ [id]: _gone, ...rest }) => rest);
 		setAskNotes(({ [id]: _gone, ...rest }) => rest);
 		setTabsNotice(null);
 	}, [commitTabs]);
+	// A tab's text is kept nowhere else (Query 1's draft aside), so closing one that was edited asks first.
+	const close = useCallback((id: string) => {
+		const text = texts.current.get(id) ?? '';
+		const edited = id !== FIRST_QUERY_TAB && text.trim() !== '' && text !== (opening.current.get(id) ?? '');
+		if (edited) setClosing(id);
+		else closeNow(id);
+	}, [closeNow]);
 	const newQuery = useCallback(() => {
 		deliver({ kind: 'new', origin: 'query', text: '', run: false });
 	}, [deliver]);
 	const openText = useCallback((origin: QueryTabOrigin, title: string, cypher: string): void => {
 		if (deliver({ kind: 'new', origin, title: clipTitle(title), text: cypher, run: false })) announcer.announce(`${clipTitle(title)} opened in a new tab. It has not been run.`);
 	}, [deliver]);
-	const openNewQuery = useCallback((cypher: string, title: string) => openText('graph', title, cypher), [openText]);
+	// The graph's and the Overview's "New query": with no text, an empty tab like + New query.
+	const openNewQuery = useCallback((cypher: string, title: string) => (cypher.trim() === '' ? newQuery() : openText('graph', title, cypher)), [newQuery, openText]);
 
 	// The 25-row preview of a label or type, in a tab of its own: run for a click, not run for "New query".
 	const openPreview = useCallback((kind: 'label' | 'type', name: string, run: boolean) => {
@@ -221,9 +249,10 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 		deliver({ kind: 'new', origin: 'preview', title, text: recipe.cypher, run });
 	}, [deliver]);
 
-	// Explore: show the Explore tab, or open it and run its sample (one click, safe on every engine).
+	// Explore: show the Explore tab while it still holds the sample, or open one and run the sample (one click, safe on
+	// every engine). An Explore tab whose text was edited is left as it is.
 	const explore = useCallback(() => {
-		const existing = tabsNow.current.tabs.find((tab) => tab.origin === 'explore');
+		const existing = tabsNow.current.tabs.find((tab) => tab.origin === 'explore' && (texts.current.get(tab.id) ?? EXPLORE_CYPHER) === EXPLORE_CYPHER);
 		if (existing) {
 			activate(existing.id);
 			return;
@@ -243,10 +272,20 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 		if (!askOpen) setAskFocus((n) => n + 1);
 		setAskOpen(!askOpen);
 	}, [askOpen]);
+	// An answer can come long after the question. It is dropped when the tab it was asked from is gone, and it opens
+	// behind the tab shown unless that is still the tab it was asked from.
 	const onDraft = useCallback((cypher: string, question: string): boolean => {
-		const id = deliver({ kind: 'new', origin: 'ask', title: askTitle(question), text: cypher, run: false, ask: { question, from: askFrom.current ?? '' } });
+		const from = askFrom.current;
+		if (from !== null && !tabsNow.current.tabs.some((tab) => tab.id === from)) {
+			announcer.announce('The draft from Ask was dropped: the tab it was asked from is closed.');
+			return true;
+		}
+		const shown = from === null || tabsNow.current.active === from;
+		const title = askTitle(question);
+		const id = deliver({ kind: 'new', origin: 'ask', title, text: cypher, run: false, ask: { question, from: from ?? '' }, activate: shown });
 		if (id === null) return false;
 		setAskNotes((current) => ({ ...current, [id]: askDraftText(question, patternCheck(cypher)) }));
+		announcer.announce(shown ? 'The draft from Ask opened in a new tab. It has not been run.' : `The draft from Ask opened in a new tab, ${title}, behind the one shown. It has not been run.`);
 		return true;
 	}, [deliver]);
 
@@ -318,14 +357,30 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 			)}
 			{gate.mounted ? (
 				<>
-					<QueryTabs
-						tabs={[{ id: OVERVIEW_TAB, title: 'Overview', closable: false }, ...tabs.tabs.map((tab) => ({ id: tab.id, title: tab.title, closable: true }))]}
-						active={tabs.active}
-						idPrefix={idPrefix}
-						onActivate={activate}
-						onClose={close}
-						onNew={newQuery}
-					/>
+					<div style={styles.tabRow}>
+						<QueryTabs
+							tabs={[{ id: OVERVIEW_TAB, title: 'Overview', closable: false }, ...tabs.tabs.map((tab) => ({ id: tab.id, title: tab.title, closable: true }))]}
+							active={tabs.active}
+							idPrefix={idPrefix}
+							onActivate={activate}
+							onClose={close}
+							onNew={newQuery}
+						/>
+						<div ref={setBarHost} style={styles.barHost} />
+						{tabs.active === OVERVIEW_TAB && (
+							<div style={styles.overviewActions}>
+								<Button variant="primary" onClick={explore} title="Open the Explore tab and run a sample of 25 relationships with their end nodes">
+									Explore
+								</Button>
+								<Button variant="ghost" onClick={newQuery}>
+									New query
+								</Button>
+								<Button variant="ghost" onClick={refreshSchema} title="Read this connection's schema again">
+									Refresh schema
+								</Button>
+							</div>
+						)}
+					</div>
 					{tabsNotice && (
 						<div style={styles.notice}>
 							<Banner variant="warning">{tabsNotice}</Banner>
@@ -337,17 +392,6 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 					<div style={styles.body}>
 						<div style={styles.panes}>
 							<div role="tabpanel" id={panelElementId(idPrefix, OVERVIEW_TAB)} aria-labelledby={tabElementId(idPrefix, OVERVIEW_TAB)} style={tabs.active === OVERVIEW_TAB ? styles.overview : styles.hidden}>
-								<div style={styles.overviewActions}>
-									<Button variant="primary" onClick={explore} title="Open the Explore tab and run a sample of 25 relationships with their end nodes">
-										Explore
-									</Button>
-									<Button variant="ghost" onClick={newQuery}>
-										New query
-									</Button>
-									<Button variant="ghost" onClick={refreshSchema} title="Read this connection's schema again">
-										Refresh schema
-									</Button>
-								</div>
 								<div style={styles.overviewBody}>
 									<OverviewPanel endpoint={endpoint} dialect={dialect} onPreview={(kind, name) => openPreview(kind, name, true)} onNewQuery={openNewQuery} onExplore={explore} onRefreshSchema={refreshSchema} />
 								</div>
@@ -395,6 +439,8 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 												onAsk={toggleAsk}
 												askOpen={askOpen}
 												onNewQuery={openNewQuery}
+												barHost={barHost}
+												gate={requests}
 											/>
 										</div>
 									</div>
@@ -438,6 +484,20 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 							</SidePanel>
 						)}
 					</div>
+					{closing !== null && (
+						<ConfirmDialog
+							title={`Close ${tabs.tabs.find((tab) => tab.id === closing)?.title ?? 'this tab'}?`}
+							message="Its text is not kept anywhere else. History keeps only the statements that were run."
+							confirmLabel="Close tab"
+							destructive
+							onConfirm={() => {
+								const id = closing;
+								setClosing(null);
+								closeNow(id);
+							}}
+							onCancel={() => setClosing(null)}
+						/>
+					)}
 				</>
 			) : (
 				<>

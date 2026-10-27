@@ -78,7 +78,7 @@ export interface IQueryTabsState {
 
 /** What a request asks for. */
 export type TabRequest =
-	| { kind: 'new'; origin: QueryTabOrigin; title?: string; text: string; run: boolean; ask?: { question: string; from: string } }
+	| { kind: 'new'; origin: QueryTabOrigin; title?: string; text: string; run: boolean; ask?: { question: string; from: string }; activate?: boolean }
 	| { kind: 'replace'; text: string }
 	| { kind: 'insert'; text: string };
 
@@ -167,21 +167,22 @@ export function tabOrder(state: IQueryTabsState): string[] {
 }
 
 /**
- * Open a query tab and show it.
+ * Open a query tab and show it (or, with `activate: false`, open it behind the tab shown).
  *
  * @param state - The tabs.
- * @param input - Where its text came from, its title (default "Query N"), and for Ask the question.
+ * @param input - Where its text came from, its title (default "Query N"), for Ask the question, and whether to show it.
  * @returns The new state and the tab's id, or the same state and the sentence saying why it was not opened.
  */
-export function openTab(state: IQueryTabsState, input: { origin: QueryTabOrigin; title?: string; ask?: { question: string; from: string } }): { state: IQueryTabsState; id: string } | { state: IQueryTabsState; refused: string } {
+export function openTab(state: IQueryTabsState, input: { origin: QueryTabOrigin; title?: string; ask?: { question: string; from: string }; activate?: boolean }): { state: IQueryTabsState; id: string } | { state: IQueryTabsState; refused: string } {
 	const numbered = input.title === undefined;
 	const title = input.title ?? `Query ${state.nextQuery}`;
 	if (state.tabs.length >= MAX_QUERY_TABS) return { state, refused: tabsFullText(title) };
 	const id = `q${state.nextId}`;
 	const tab: IQueryTab = { id, title, origin: input.origin, ...(input.ask ? { ask: { ...input.ask } } : {}) };
+	const show = input.activate !== false;
 	return {
 		id,
-		state: { tabs: [...state.tabs, tab], active: id, lastQuery: id, nextId: state.nextId + 1, nextQuery: numbered ? state.nextQuery + 1 : state.nextQuery },
+		state: { tabs: [...state.tabs, tab], active: show ? id : state.active, lastQuery: show ? id : state.lastQuery ?? id, nextId: state.nextId + 1, nextQuery: numbered ? state.nextQuery + 1 : state.nextQuery },
 	};
 }
 
@@ -252,7 +253,7 @@ export function placeRequest(state: IQueryTabsState, request: TabRequest): { sta
 	if (request.kind !== 'new' && state.lastQuery !== null) {
 		return { state: activateTab(state, state.lastQuery), target: state.lastQuery, put: { text: request.text, run: false, insert: request.kind === 'insert' } };
 	}
-	const opened = request.kind === 'new' ? openTab(state, { origin: request.origin, ...(request.title !== undefined ? { title: request.title } : {}), ...(request.ask ? { ask: request.ask } : {}) }) : openTab(state, { origin: 'query' });
+	const opened = request.kind === 'new' ? openTab(state, { origin: request.origin, ...(request.title !== undefined ? { title: request.title } : {}), ...(request.ask ? { ask: request.ask } : {}), ...(request.activate === false ? { activate: false } : {}) }) : openTab(state, { origin: 'query' });
 	if ('refused' in opened) return opened;
 	return { state: opened.state, target: opened.id, put: { text: request.text, run: request.kind === 'new' && request.run, insert: false } };
 }

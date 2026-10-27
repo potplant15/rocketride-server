@@ -47,7 +47,7 @@ test('the graph session is built from the connection key and refs, not from obje
 });
 
 test('every open drawer and dialog goes through the shell: no graph-ui code handles Escape or swallows key events above them', () => {
-	for (const file of ['components/GraphView.tsx', 'components/InspectorPanel.tsx', 'components/CanvasMenu.tsx', 'components/CanvasSearch.tsx', 'components/GraphStatusLine.tsx', 'components/KeysPanel.tsx', 'components/LegendPanel.tsx', 'components/StyleEditor.tsx', 'components/HistoryPanel.tsx', 'components/RunSurface.tsx', 'views/ConnectionsView.tsx', 'components/ConnectionDrawer.tsx', 'views/WorkbenchView.tsx', 'views/WriteConsoleView.tsx', 'components/ConnectionDetails.tsx', 'components/ConnectionDetailsPanel.tsx', 'components/SidePanel.tsx', 'components/SavedQueriesPanel.tsx', 'components/QueryTabs.tsx', 'components/SplitPane.tsx', 'components/AskBar.tsx']) {
+	for (const file of ['components/GraphView.tsx', 'components/InspectorPanel.tsx', 'components/CanvasMenu.tsx', 'components/CanvasSearch.tsx', 'components/GraphStatusLine.tsx', 'components/KeysPanel.tsx', 'components/LegendPanel.tsx', 'components/StyleEditor.tsx', 'components/HistoryPanel.tsx', 'components/RunSurface.tsx', 'views/ConnectionsView.tsx', 'components/ConnectionDrawer.tsx', 'views/WorkbenchView.tsx', 'views/WriteConsoleView.tsx', 'components/ConnectionDetails.tsx', 'components/ConnectionDetailsPanel.tsx', 'components/SidePanel.tsx', 'components/SavedQueriesPanel.tsx', 'components/QueryTabs.tsx', 'components/SplitPane.tsx', 'components/AskBar.tsx', 'components/RowPanel.tsx']) {
 		const text = code(read(...file.split('/')));
 		assert.doesNotMatch(text, /stopPropagation/, `${file} stops event propagation`);
 		assert.doesNotMatch(text, /addEventListener\(\s*['"]key/, `${file} registers its own key listener`);
@@ -134,15 +134,41 @@ test('the results grid key includes the tab, and the graph full screen leaves wi
 	const surface = code(read('components', 'RunSurface.tsx'));
 	assert.ok(/tableKey=\{`\$\{endpoint\.key\}-\$\{tabId\}-\$\{resultKey\.current\}`\}/.test(surface), 'the tab id is part of the grid key');
 	assert.ok(/style=\{maximized \? styles\.maximized : styles\.body\}/.test(surface), 'full screen restyles the results body: the graph is not remounted');
-	assert.ok(/if \(!maximized \|\| event\.key !== 'Escape' \|\| event\.defaultPrevented \|\| !event\.currentTarget\.contains\(event\.target as Node\)\) return;/.test(surface), 'Escape that nothing inside used, on the element itself');
+	assert.ok(/if \(event\.defaultPrevented \|\| !maximized \|\| event\.key !== 'Escape' \|\| !event\.currentTarget\.contains\(event\.target as Node\)\) return;/.test(surface), 'Escape that nothing inside used (checked first), on the element itself');
 	assert.ok(/maximized=\{maximized\}/.test(surface) && /onToggleMaximized=\{toggleMaximized\}/.test(surface), 'the graph view drives it');
 	assert.doesNotMatch(surface, /requestFullscreen|fullscreenElement/, 'not the browser\'s Fullscreen API');
+});
+
+// Apache AGE's node has four database connections, and a request the user stopped waiting for keeps one until the
+// database finishes it: every read of every tab of a workbench goes through its one gate (graph/requestGate.ts).
+test('every read a workbench tab sends goes through the workbench\'s one request gate; writes and the write console do not', () => {
+	const workbench = code(read('views', 'WorkbenchView.tsx'));
+	assert.ok(/const \[requests\] = useState\(createRequestGate\);/.test(workbench), 'one gate for the life of the document');
+	const tag = workbench.slice(workbench.indexOf('<RunSurface'), workbench.indexOf('/>', workbench.indexOf('<RunSurface')));
+	assert.ok(/gate=\{requests\}/.test(tag), 'every tab\'s surface gets it');
+	const surface = code(read('components', 'RunSurface.tsx'));
+	const execute = surface.slice(surface.indexOf('execute: async'), surface.indexOf('settle:'));
+	assert.ok(/\? \(gate \? gate\.send\(TOOL\.readQuery, read\) : read\(\)\)/.test(execute), 'a statement read goes through it');
+	const factory = surface.slice(surface.indexOf('const graphSession = useMemo'), surface.indexOf('useEffect(() => () => graphSession.dispose()'));
+	assert.ok(/const through = latest\.current\.gate;\s*return through \? through\.send\(TOOL\.readQuery, read\) : read\(\);/.test(factory), 'and so does every graph action');
+	assert.doesNotMatch(code(read('views', 'WriteConsoleView.tsx')), /createRequestGate|gate=/, 'the write console has none');
+});
+
+// A hidden tab keeps its runs, result and graph session, but no canvas or grid (8 tabs x every open document).
+test('only the shown tab draws its results, puts its run bar in the tab row, and keeps a row open', () => {
+	const surface = code(read('components', 'RunSurface.tsx'));
+	assert.ok(/\{active && \(\s*<div style=\{styles\.fill\}>/.test(surface), 'the graph, the table and the raw view render only while the tab is shown');
+	assert.ok(/\{barHost !== undefined && active && barHost !== null && createPortal\(runBar, barHost\)\}/.test(surface), 'only the shown tab\'s run bar is in the tab row');
+	assert.ok(/if \(!active\) setOpenRow\(null\);/.test(surface), 'a hidden tab closes its row panel');
+	assert.doesNotMatch(surface, /RowInspector/, 'no shared row drawer (it listens for Escape on the whole page)');
+	assert.ok(/<RowPanel /.test(surface), 'the row opens inline');
+	assert.ok(/onRunFrom=\{mode === 'read' \? runFrom : undefined\}/.test(surface), 'Run from statement N only in the read workbench: a write that may have been applied is never re-sent from the banner');
 });
 
 // F3: rocket-ui keeps hidden documents mounted, so a modal drawer left open in a background document would trap Tab and
 // take Escape for the realm. History, Saved, the tab strip and the divider are part of the document's layout.
 test('History, Saved, the side panel, the tab strip and the divider are inline: no DetailPanel, no Modal', () => {
-	for (const file of ['components/HistoryPanel.tsx', 'components/SavedQueriesPanel.tsx', 'components/SidePanel.tsx', 'components/QueryTabs.tsx', 'components/SplitPane.tsx', 'views/WorkbenchView.tsx', 'views/WriteConsoleView.tsx']) {
+	for (const file of ['components/HistoryPanel.tsx', 'components/SavedQueriesPanel.tsx', 'components/SidePanel.tsx', 'components/QueryTabs.tsx', 'components/SplitPane.tsx', 'components/RowPanel.tsx', 'views/WorkbenchView.tsx', 'views/WriteConsoleView.tsx']) {
 		const text = code(read(...file.split('/')));
 		assert.doesNotMatch(text, /\bDetailPanel\b|\bModal\b/, `${file} renders a modal panel`);
 	}
@@ -212,7 +238,8 @@ test('Run is disabled for as long as a statement runs, and a run that cannot sta
 	assert.equal(buttons.length, 2, 'Run and Run all');
 	for (const button of buttons) assert.ok(button.includes('disabled={runner.running || blocked !== null}'), button);
 	const startRun = surface.slice(surface.indexOf('const startRun = useCallback'), surface.indexOf('const run = useCallback'));
-	assert.ok(/runRefusal\(\{ running: runner\.running, blocked \}\)/.test(startRun), 'startRun refuses with a sentence');
+	assert.ok(/runRefusal\(\{ running: runner\.running, blocked, busy: mode === 'read' \? gate\?\.busy\(\) \?\? null : null \}\)/.test(startRun), 'startRun refuses with a sentence, the workbench\'s busy gate included');
+	assert.ok(/setStartRefusal\(refusal\);/.test(startRun), 'and the sentence stays on screen until the next press');
 	const confirm = surface.slice(surface.indexOf('onConfirm={'), surface.indexOf('onCancel={'));
 	assert.ok(/runRefusal\(/.test(confirm), 'so does confirming a write');
 });

@@ -42,8 +42,8 @@
 /** One line of the editor (20 px lines, 10 px padding above and below). */
 export const EDITOR_MIN = 40;
 
-/** Five lines: the height a new editor opens at. */
-export const EDITOR_DEFAULT = 120;
+/** Four lines: the height a new editor opens at (small, so the results get the room). */
+export const EDITOR_DEFAULT = 100;
 
 /** What one arrow key moves the divider. */
 export const EDITOR_STEP = 24;
@@ -62,7 +62,7 @@ export interface IEditorSplit {
 	collapsed: boolean;
 }
 
-/** A new editor: five lines, shown. */
+/** A new editor: four lines, shown. */
 export const DEFAULT_SPLIT: IEditorSplit = Object.freeze({ height: EDITOR_DEFAULT, collapsed: false });
 
 /**

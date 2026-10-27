@@ -104,12 +104,14 @@ export const STILL_RUNNING_TEXT = 'Nothing was sent: a statement is still runnin
 /**
  * Why a run asked for now cannot start, in words, or null when it can.
  *
- * @param state - Whether a batch is running, and why the surface sends nothing (or null).
+ * @param state - Whether a batch is running, why the surface sends nothing (or null), and why the workbench's request
+ *   gate is busy (graph/requestGate.ts; null or absent when it is free).
  * @returns The sentence to announce, or null.
  */
-export function runRefusal(state: { running: boolean; blocked: string | null }): string | null {
+export function runRefusal(state: { running: boolean; blocked: string | null; busy?: string | null }): string | null {
 	if (state.blocked !== null) return `Nothing was sent. ${state.blocked}`;
 	if (state.running) return STILL_RUNNING_TEXT;
+	if (state.busy) return state.busy;
 	return null;
 }
 

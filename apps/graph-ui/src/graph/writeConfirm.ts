@@ -113,7 +113,7 @@ export function confirmationParagraphs(c: IWriteConfirmation): string[] {
 	const out: string[] = [];
 	out.push(`${c.mutating.length} of ${c.total} ${c.total === 1 ? 'statement' : 'statements'} ${c.mutating.length === 1 ? 'looks' : 'look'} like ${c.mutating.length === 1 ? 'it changes' : 'they change'} data or run${c.mutating.length === 1 ? 's' : ''} a command${c.reads > 0 ? ` (${c.reads} ${c.reads === 1 ? 'is a read' : 'are reads'})` : ''}.`);
 	out.push(TEXT_CHECK_SENTENCE);
-	out.push('They are sent one by one, in order, and the batch stops at the first error. Nothing is rolled back: if a statement fails, the ones before it stay applied and the console says which.');
+	out.push('They are sent one by one, in order, and the batch stops at the first error. A statement that already ran is not undone when a later one fails, and the console says which ran.');
 	out.push('Each statement that runs marks the graphs drawn from this connection out of date.');
 	return out;
 }

@@ -134,14 +134,18 @@ reload the page before working as another account.
 ## The workbench
 
 Opening a connection gives it a workbench document. It opens on **Overview**,
-beside **Query 1**, and nothing runs by itself. Overview's header has
-**Explore**, **New query** and **Refresh schema** (read the schema again).
-**Explore** opens an Explore tab and runs a sample of 25 relationships with
-their end nodes (`MATCH (a)-[r]->(b) RETURN a, r, b LIMIT 25`, a read every
-engine runs); pressing it again shows that tab without running it again.
+beside **Query 1**, and nothing runs by itself. One row holds the tabs and, on
+the right, the shown tab's run bar, or on Overview its actions: **Explore**,
+**New query** and **Refresh schema** (read the schema again). **Explore** opens
+an Explore tab and runs a sample of 25 relationships with their end nodes
+(`MATCH (a)-[r]->(b) RETURN a, r, b LIMIT 25`, a read every engine runs).
+Pressing it again shows that tab without running it again; once you have
+edited that tab's text, Explore opens a new one and runs the sample there.
 
 - **Query tabs.** Each query tab has its own editor, row limit, runs, results
-  and graph, and a tab you are not looking at keeps them. **+ New query** opens
+  and graph, and a tab you are not looking at keeps them; only the tab shown
+  draws its results, so when you come back to a tab its graph is laid out
+  again (nodes you moved go back to a computed place). **+ New query** opens
   an empty tab. Text that comes from elsewhere opens a tab of its own, so the
   text in your other tabs is never replaced:
   - a label or relationship type clicked in the sidebar: its 25-row preview,
@@ -153,23 +157,29 @@ engine runs); pressing it again shows that tab without running it again.
   Only History's **Load into editor** and Saved's **Insert** change a tab you
   already have: the query tab you were in last. In the code editor that is an
   edit, so Ctrl/Cmd+Z brings the previous text back. Arrow keys move between
-  tabs and Delete closes the focused query tab. A workbench holds at most 8
-  query tabs; past that, a line says to close one, and nothing is opened or
-  closed for you. Query 1 keeps the draft the workbench has always kept for the
-  connection; the text of the other tabs lasts until the tab or the document is
-  closed. Tabs are not restored when the document opens again.
-- **Room for the results.** The divider under the run bar sets the editor's
-  height: drag it, or reach it with Tab and use ArrowUp and ArrowDown (24 px at
-  a time), Home to hide the editor and End to show it again; a double click
-  hides or shows it, and so does **Hide editor** in the run bar. A hidden
-  editor leaves the run bar, with the statement's first line (click it to show
-  the editor again). While you drag, only the divider's line moves; the editor
-  and the results change size when you let go. The height is kept in your
-  preferences (`graph.editorHeight`).
-- **Full screen.** The graph's full-screen button fills the document with the
-  graph: the header, the tabs, the editor and the run bar are covered, and the
-  inspector stays. It is not the browser's full screen, so it works the same in
-  VS Code and in the RocketRide workspace. **Exit full screen** leaves it, and
+  tabs and Delete closes the focused query tab; closing a tab whose text you
+  edited asks first. A workbench holds at most 8 query tabs; past that, a line
+  says to close one, and nothing is opened or closed for you. Query 1 keeps the
+  draft the workbench has always kept for the connection; the text of the other
+  tabs lasts until the tab or the document is closed. Tabs are not restored
+  when the document opens again.
+- **One request at a time.** A workbench sends one request at a time across
+  all its tabs: statements and the graph's actions alike. One asked for while
+  another is still on the database is not sent, and says so. A statement you
+  stopped waiting for counts until the database finishes it, because it still
+  holds a connection there (Apache AGE's node has four).
+- **Room for the results.** The divider under the editor sets its height: drag
+  it, or reach it with Tab and use ArrowUp and ArrowDown (24 px at a time) or
+  Home to hide the editor; a double click hides it too, and so does **Hide
+  editor** in the run bar. A hidden editor leaves the run bar, with the
+  statement's first line: click it, or **Show editor**, to bring the editor
+  back. While you drag, only the divider's line moves; the editor and the
+  results change size when you let go. The height is kept in your preferences
+  (`graph.editorHeight`).
+- **Full screen.** The graph's **Full screen** button fills the document with
+  the graph: the header, the tabs, the editor and the run bar are covered, and
+  the inspector stays. It is not the browser's full screen, so it works the same
+  in VS Code and in the RocketRide workspace. **Exit full screen** leaves it, and
   so does Escape when nothing inside the graph used it; a new result that opens
   as a table, or another tab, leaves it too.
 - **Notes.** What is worth knowing about a result besides its rows (integers
@@ -566,7 +576,9 @@ offers **Back to** the tab you asked from, whose text and results are as they
 were. You read the draft, edit it, and press Run. The node has already checked
 that it reads only, and the text check runs on it again. When all 8 query tabs
 are in use, the draft waits in the Ask box, with **Open the draft** for once a
-tab is closed. An answer in words is shown as an answer. A pipeline
+tab is closed. An answer that arrives after you closed the tab you asked from
+is dropped, and one that arrives after you moved to another tab opens behind
+it. An answer in words is shown as an answer. A pipeline
 with no language model gets a note that says so instead of an error. Any other
 failure is shown as an error or a warning. An error leads with the text it came
 with: the node's (a model that returned nothing, or the node's refusal of what
@@ -747,9 +759,9 @@ and it always says what it is:
   again** only put the statement in the editor; nothing is sent until you press
   Execute.
 - Each statement is its own request, sent one by one. A batch stops at the
-  first error; statements that ran are not undone. The strip says how many ran
-  and how many were not run, and the confirmation says so before anything is
-  sent.
+  first error; a statement that already ran is not undone when a later one
+  fails. The strip says how many ran and how many were not run, and the
+  confirmation says so before anything is sent.
 - A write is never sent again by the app: no automatic retry.
 - A failure that can come after the database ran the statement (the node could
   not return its answer, the answer was not understood, or the app stopped

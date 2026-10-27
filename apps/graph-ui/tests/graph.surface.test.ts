@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { entrySummary, historyEmptyText } from '../src/components/HistoryPanel';
 import { createLoadSlot } from '../src/graph/loadSlot';
+import { GATE_BUSY_TEXT } from '../src/graph/requestGate';
 import { STILL_RUNNING_TEXT, affectedNotReported, historySummaryOf, limitPatch, runRefusal, settleRun, toHistoryEntry } from '../src/graph/runConfig';
 import type { IResultSummary } from '../src/graph/results';
 import type { GraphValue, ReadQueryResult } from '../src/graph/types';
@@ -103,6 +104,8 @@ test('a run asked for while a statement is still running, or while the surface i
 	assert.equal(runRefusal({ running: true, blocked: null }), STILL_RUNNING_TEXT);
 	assert.match(STILL_RUNNING_TEXT, /^Nothing was sent: a statement is still running\./);
 	assert.equal(runRefusal({ running: true, blocked: 'Checking this connection again.' }), 'Nothing was sent. Checking this connection again.');
+	assert.equal(runRefusal({ running: false, blocked: null, busy: GATE_BUSY_TEXT }), GATE_BUSY_TEXT, 'another tab\'s request still on the database');
+	assert.equal(runRefusal({ running: false, blocked: null, busy: null }), null);
 });
 
 // -----------------------------------------------------------------------------

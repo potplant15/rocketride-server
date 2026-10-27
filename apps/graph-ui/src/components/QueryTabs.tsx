@@ -28,7 +28,8 @@
 // to the next tab and show it (wrapping), Home and End go to the first and the
 // last, Delete closes a query tab. Only the shown tab is in the Tab order. Each
 // query tab has a close button for the mouse (out of the Tab order; Delete is
-// its key), and "New query" opens a tab at the end.
+// its key), and "New query" opens a tab at the end. The strip is the left part
+// of the workbench's tab row; the shown tab's run bar takes the rest.
 //
 // Keys are the tab list's own onKeyDown: no document or window listener.
 // =============================================================================
@@ -80,7 +81,7 @@ export function panelElementId(prefix: string, id: string): string {
 }
 
 const styles = {
-	strip: { flex: '0 0 auto', display: 'flex', alignItems: 'flex-end', gap: 8, padding: '6px 24px 0', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
+	strip: { flex: '1 1 220px', minWidth: 160, display: 'flex', alignItems: 'flex-end', gap: 8, alignSelf: 'stretch' } as CSSProperties,
 	list: { display: 'flex', alignItems: 'flex-end', gap: 2, minWidth: 0, overflowX: 'auto' } as CSSProperties,
 	tab: (selected: boolean): CSSProperties => ({
 		display: 'flex',
@@ -105,7 +106,7 @@ const styles = {
 		color: selected ? 'var(--rr-text-primary)' : 'var(--rr-text-secondary)',
 	}),
 	close: { display: 'inline-flex', alignItems: 'center', padding: 2, marginRight: 4, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--rr-text-secondary)', borderRadius: 3 } as CSSProperties,
-	add: { flexShrink: 0, paddingBottom: 4 } as CSSProperties,
+	add: { flexShrink: 0, alignSelf: 'center' } as CSSProperties,
 };
 
 /**

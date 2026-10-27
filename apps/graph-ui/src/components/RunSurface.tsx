@@ -34,16 +34,25 @@
 // graph session and load slot); the write console mounts one.
 //
 // The room the results get:
+//   - in the workbench the run bar sits in the tab row (the host hands a
+//     `barHost` and the bar is portalled there), so a query tab adds only its
+//     editor above the results;
 //   - a divider (SplitPane.tsx) sets the editor's height, kept in the prefs
-//     (graph.editorHeight), and can hide the editor down to the run bar, which
-//     then shows the statement's first line;
+//     (graph.editorHeight), and can hide the editor, leaving the run bar with
+//     the statement's first line;
 //   - the graph can fill the whole document (an in-document full screen, not the
 //     browser's Fullscreen API, which VS Code panels and dev-tool frames may not
 //     allow): its area is positioned over the document, nothing remounts, and
-//     Escape (that nothing inside used) or "Exit full screen" leaves it.
+//     Escape (that nothing inside used) or the graph's own button leaves it;
+//   - only the shown tab draws its results: a hidden tab keeps its runs, result
+//     and graph session, and draws the canvas or the grid again when shown.
 //
-// The statement runner, strip and row inspector are the shared Explorer ones;
-// this file only configures them for Cypher.
+// In the workbench every read goes through the workbench's gate
+// (graph/requestGate.ts): one request at a time across its tabs.
+//
+// The statement runner and strip are the shared Explorer ones; this file only
+// configures them for Cypher. A row opens in an inline panel (RowPanel), not the
+// shared row drawer, which listens for Escape on the whole page.
 //
 // Everything engine-facing comes from the GraphEnv (env.ts): the session (the
 // store's own in the full app, a remote one over controller ops in a dev-tool
@@ -52,13 +61,13 @@
 // search and the editor stay HERE in every mount.
 // =============================================================================
 
-import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { Banner, Button, EmptyState, StatusBadge, TabControl, ToggleGroup } from 'shell';
 import type { ViewMenu } from 'shell';
 import { ExplorerToolError, clock, createGeneration, formatBatchOutcome, formatPriorStatements, formatRunLabel, useStatementRunner } from 'shared/explorer';
 import type { IExplorerEndpoint, IRunTarget, IStatementRunBase } from 'shared/explorer';
-import RowInspector from 'shared/explorer/components/RowInspector';
 import StatementStrip from 'shared/explorer/components/StatementStrip';
 import { CAPTIONS_PREF_KEY, DRAFTS_PREF_KEY, TOOL, announcer } from '../adapters/explorer';
 import { useDataVersion, useGraphEndpoints, useGraphEnv, useSchemaLabels, useSchemaView } from '../env';
@@ -77,6 +86,7 @@ import { GRAPH_BATCH_WORDS, affectedNotReported, historySummaryOf, limitPatch, p
 import { chooseTab, summarizeResult } from '../graph/results';
 import type { ResultTab } from '../graph/results';
 import type { ILoadSlot } from '../graph/loadSlot';
+import type { IRequestGate } from '../graph/requestGate';
 import { inspectorTextOfRow } from '../graph/rowInspect';
 import { EDITOR_HEIGHT_PREF_KEY, clampEditorHeight, splitToggled, storedEditorHeight } from '../graph/splitPane';
 import type { IEditorSplit } from '../graph/splitPane';
@@ -88,6 +98,7 @@ import { GraphView } from './GraphView';
 import QueryEditor from './QueryEditor';
 import type { IQueryEditorHandle } from './QueryEditor';
 import { RawView, ResultTable } from './ResultViews';
+import RowPanel from './RowPanel';
 import { SplitDivider } from './SplitPane';
 import { WriteConfirmDialog } from './WriteConfirmDialog';
 import { GraphIcon } from '../icons';
@@ -136,25 +147,33 @@ export interface IRunSurfaceProps {
 	askOpen?: boolean;
 	/** Open a new query tab with this text, not run (the workbench only). */
 	onNewQuery?(cypher: string, title: string): void;
+	/**
+	 * Where the run bar goes: an element in the host's tab row (the workbench), or null while it is not there yet.
+	 * Absent: the bar sits under the editor (the write console).
+	 */
+	barHost?: HTMLElement | null;
+	/** The host's gate for reads: one request at a time across its tabs (the workbench). */
+	gate?: IRequestGate;
 }
 
-/** The space the run bar, the divider and the paddings take from the surface; the editor and the results share the rest. */
-const SURFACE_CHROME = 64;
+/** The space the divider and the paddings take from the surface; the editor and the results share the rest. */
+const SURFACE_CHROME = 48;
 
 const styles = {
 	root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 } as CSSProperties,
-	editorRegion: { flex: '0 0 auto', padding: '10px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
+	editorRegion: (hidden: boolean): CSSProperties => ({ flex: '0 0 auto', padding: '6px 24px 0', display: hidden ? 'none' : 'flex', flexDirection: 'column', gap: 6 }),
 	editorBox: (height: number, hidden: boolean): CSSProperties => ({ flex: '0 0 auto', height, display: hidden ? 'none' : undefined }),
 	runBar: { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' } as CSSProperties,
+	// In the tab row: the same controls, right of the tabs, wrapping only when the row is too narrow.
+	runBarInRow: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end', minWidth: 0 } as CSSProperties,
 	firstLine: { maxWidth: '40%', minWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--rr-font-mono, monospace)', fontSize: 12, padding: '4px 8px', border: '1px solid var(--rr-border)', borderRadius: 4, background: 'var(--rr-bg-paper)', color: 'var(--rr-text-primary)', cursor: 'pointer', textAlign: 'left' } as CSSProperties,
-	willRun: { fontSize: 12, color: 'var(--rr-text-secondary)' } as CSSProperties,
-	end: { marginLeft: 'auto' } as CSSProperties,
+	willRun: { fontSize: 12, color: 'var(--rr-text-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as CSSProperties,
 	notices: { padding: '6px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
-	results: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '6px 24px 12px' } as CSSProperties,
+	resultsRow: { flex: 1, minHeight: 0, display: 'flex' } as CSSProperties,
+	results: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '2px 24px 6px' } as CSSProperties,
 	body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', outline: 'none' } as CSSProperties,
 	// Full screen: the graph's area covers the whole document (the host document root is the positioned ancestor).
 	maximized: { position: 'absolute', inset: 0, zIndex: 20, display: 'flex', flexDirection: 'column', background: 'var(--rr-bg-default)', outline: 'none' } as CSSProperties,
-	maxBar: { flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 10, padding: '4px 12px', fontSize: 12, color: 'var(--rr-text-secondary)', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
 	fill: { flex: 1, minHeight: 0 } as CSSProperties,
 	footer: { display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 4 } as CSSProperties,
 	notes: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } as CSSProperties,
@@ -165,7 +184,7 @@ const styles = {
 /** The row-limit choices as the toggle shows them. */
 const LIMIT_OPTIONS = ROW_LIMIT_CHOICES.map((choice) => ({ id: choice === null ? 'all' : String(choice), label: choice === null ? 'All' : choice.toLocaleString('en-US') }));
 
-/** What the full-screen bar says. */
+/** What is announced when the graph fills the document. */
 export const FULL_SCREEN_TEXT = 'Full screen · Esc to exit · the inspector stays open';
 
 /**
@@ -249,7 +268,7 @@ const NotesLine: React.FC<{ notes: readonly IResultNote[] }> = ({ notes }) => {
  * @param props - See {@link IRunSurfaceProps}.
  * @returns The surface.
  */
-export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused = null, loadSlot, loadSeq, tabId = 'main', draftKey: draftKeyProp, defaultText, active = true, onTextChange, onOpenHistory, historyOpen, onOpenSaved, savedOpen, onAsk, askOpen, onNewQuery }) => {
+export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused = null, loadSlot, loadSeq, tabId = 'main', draftKey: draftKeyProp, defaultText, active = true, onTextChange, onOpenHistory, historyOpen, onOpenSaved, savedOpen, onAsk, askOpen, onNewQuery, barHost, gate }) => {
 	const env = useGraphEnv();
 	const prefs = env.prefs;
 	const { probes } = useGraphEndpoints();
@@ -375,8 +394,9 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		},
 		execute: async (_run, send, ticket) => {
 			if (!session) throw new ExplorerToolError({ kind: 'unavailable', tool: mode === 'read' ? TOOL.readQuery : TOOL.execute, message: 'This connection is not available.' });
+			const read = (): Promise<ReadQueryResult> => session.invoke<ReadQueryResult>(TOOL.readQuery, { cypher: send.cypher, params: {}, limit: send.limit }, { generation: ticket });
 			return mode === 'read'
-				? session.invoke<ReadQueryResult>(TOOL.readQuery, { cypher: send.cypher, params: {}, limit: send.limit }, { generation: ticket })
+				? (gate ? gate.send(TOOL.readQuery, read) : read())
 				// Counted in the call (the dev-tool controller counts it itself), so a write that lands after this console
 				// closed still marks drawn graphs out of date.
 				: env.countWrite(endpoint.key, () => session.invoke<ReadQueryResult>(TOOL.execute, { query: send.cypher, shape: 'graph' }, { generation: ticket }));
@@ -425,15 +445,17 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	// merely re-probes the node, refreshes discovery or re-renders this component may rebuild it, because that would
 	// silently drop the selection, the inspector, every expansion and the stale marks. What changes over time is read
 	// through refs.
-	const latest = useRef({ dialect, writable, session, announce, blocked });
-	latest.current = { dialect, writable, session, announce, blocked };
+	const latest = useRef({ dialect, writable, session, announce, blocked, gate });
+	latest.current = { dialect, writable, session, announce, blocked, gate };
 	// `endpoint.key` is the whole dependency on purpose: one graph session per connection.
 	const graphSession = useMemo<IGraphSession>(() => createGraphSession({
 		engine: () => (latest.current.dialect ? { dialect: latest.current.dialect.dialect, version: latest.current.dialect.engineVersion } : null),
 		invoke: (recipe) => {
 			const current = latest.current.session;
 			if (!current) throw new ExplorerToolError({ kind: 'unavailable', tool: TOOL.readQuery, message: 'This connection is not available.' });
-			return current.invoke<ReadQueryResult>(TOOL.readQuery, { cypher: recipe.cypher, params: recipe.params, limit: recipe.limit }, { generation: recipeGeneration.current.next() });
+			const read = (): Promise<ReadQueryResult> => current.invoke<ReadQueryResult>(TOOL.readQuery, { cypher: recipe.cypher, params: recipe.params, limit: recipe.limit }, { generation: recipeGeneration.current.next() });
+			const through = latest.current.gate;
+			return through ? through.send(TOOL.readQuery, read) : read();
 		},
 		describe: (error) => describeFailureOf(error instanceof Error ? error.message : String(error), error, latest.current.writable),
 		announce: (text) => latest.current.announce(text),
@@ -457,7 +479,6 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	useEffect(() => {
 		if (version !== drawnAt.current) graphSession.markStale();
 	}, [version, graphSession]);
-	const graphState = useSyncExternalStore(graphSession.subscribe, graphSession.getState, graphSession.getState);
 
 	// ── Captions per connection (persisted, view state only) ─────────────────
 	const [captions, setCaptions] = useState<ReadonlyMap<string, string>>(() => {
@@ -482,9 +503,13 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	// ── Running ──────────────────────────────────────────────────────────────
 	// How the last batch was taken: the whole editor (Run all), part of it, or text from elsewhere (a rerun).
 	const lastBatch = useRef<'all' | 'editor' | 'other'>('other');
+	// Why the last press sent nothing, shown until the next one starts.
+	const [startRefusal, setStartRefusal] = useState<string | null>(null);
 	const startRun = useCallback((targets: IRunTarget[], fromEditor: boolean) => {
-		// A press while a batch runs (keyboard, History) or while the surface is paused is refused out loud, never dropped.
-		const refusal = runRefusal({ running: runner.running, blocked });
+		// A press while a batch runs (keyboard, History), while the surface is paused, or while another request of the
+		// workbench is still on the database is refused out loud, never dropped.
+		const refusal = runRefusal({ running: runner.running, blocked, busy: mode === 'read' ? gate?.busy() ?? null : null });
+		setStartRefusal(refusal);
 		if (refusal !== null) {
 			announce(refusal);
 			return;
@@ -501,7 +526,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 			}
 		}
 		void runner.runTargets(targets, { fromEditor });
-	}, [mode, runner, announce, blocked]);
+	}, [mode, runner, announce, blocked, gate]);
 
 	// Run reads the buffer, the selection and the caret from the LIVE editor in one call. The `text` state is a copy that
 	// lags a render behind fast typing; a caret taken from the editor against that copy points past its end and the run
@@ -562,7 +587,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	useEffect(() => {
 		if (maximized === wasMaximized.current) return;
 		wasMaximized.current = maximized;
-		announce(maximized ? 'Full screen. Escape or Exit full screen leaves it.' : 'Left full screen.');
+		announce(maximized ? FULL_SCREEN_TEXT : 'Left full screen.');
 		// The Exit button goes away with full screen: keep the focus in the results rather than lose it to the page.
 		const focused = document.activeElement;
 		if (!maximized && (focused === null || focused === document.body)) bodyRef.current?.focus();
@@ -572,6 +597,9 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	// ── Row inspector (Table) ────────────────────────────────────────────────
 	const [openRow, setOpenRow] = useState<number | null>(null);
 	useEffect(() => setOpenRow(null), [result]);
+	useEffect(() => {
+		if (!active) setOpenRow(null);
+	}, [active]);
 	const rowView = result && openRow !== null && result.rows[openRow] ? inspectorTextOfRow(result.columns, result.rows[openRow]) : null;
 
 	// ── Meta line ────────────────────────────────────────────────────────────
@@ -580,7 +608,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const metaLine = `${metaText}${truncation ? ` · ${truncation}` : ''}`;
 	const willRun = describeSnapshot(view ?? { text, start: 0, end: 0, caret: 0 });
 	const strip = runner.runs.length > 1;
-	const showNotices = blocked !== null || runner.refusal !== null || runner.failure !== null || runner.abandonNotice !== null || strip;
+	const showNotices = blocked !== null || startRefusal !== null || runner.refusal !== null || runner.failure !== null || runner.abandonNotice !== null || strip;
 
 	const menu: ViewMenu = useMemo(() => ({
 		entries: [
@@ -605,117 +633,118 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		changeSplit(splitToggled(split));
 	};
 
+	const runBar = (
+		<div style={barHost === undefined ? styles.runBar : styles.runBarInRow}>
+			{split.collapsed && (
+				<button type="button" style={styles.firstLine} title="Show the editor" onClick={showEditor}>
+					{firstLineOf(text) || '(empty)'}
+				</button>
+			)}
+			<Button variant="primary" disabled={runner.running || blocked !== null} onClick={() => run(false)} title="Run the selection or the statement at the caret (Ctrl/Cmd+Enter)">
+				{mode === 'read' ? 'Run' : 'Execute'}
+			</Button>
+			<Button variant="ghost" disabled={runner.running || blocked !== null} onClick={() => run(true)} title="Run every statement in order (Ctrl/Cmd+Shift+Enter)">
+				{mode === 'read' ? 'Run all' : 'Execute all'}
+			</Button>
+			{mode === 'read' && (
+				<ToggleGroup
+					options={LIMIT_OPTIONS}
+					value={limitId}
+					onChange={(id) => setLimitId(id)}
+					aria-label="Row limit"
+				/>
+			)}
+			{runner.canStop && <Button variant="ghost" title={STOP_WAITING_NOTE} onClick={() => runner.stopWaiting()}>Stop waiting</Button>}
+			{onOpenHistory && <Button variant="ghost" ariaExpanded={historyOpen === true} onClick={onOpenHistory}>History</Button>}
+			{onOpenSaved && <Button variant="ghost" ariaExpanded={savedOpen === true} onClick={onOpenSaved}>Saved</Button>}
+			{onAsk && <Button variant="ghost" ariaExpanded={askOpen === true} title="Ask the node's language model to draft Cypher; the draft opens in a new tab, not run" onClick={onAsk}>Ask</Button>}
+			{mode === 'read' && dialect && (() => {
+				const chip = rowLimitChip(limitChoice, dialect);
+				return <span title={chip.title ?? undefined}><StatusBadge variant="muted">{chip.text}</StatusBadge></span>;
+			})()}
+			<span style={styles.willRun}>{runner.running ? 'Running…' : willRun}</span>
+			<Button variant="ghost" small ariaExpanded={!split.collapsed} title={split.collapsed ? 'Show the editor' : 'Hide the editor; the run bar stays'} onClick={() => (split.collapsed ? showEditor() : changeSplit(splitToggled(split)))}>
+				{split.collapsed ? 'Show editor' : 'Hide editor'}
+			</Button>
+		</div>
+	);
+
 	return (
 		<div ref={rootRef} style={styles.root}>
-			<div style={styles.editorRegion}>
+			{/* In the tab row while this tab is shown (the workbench); under the editor otherwise (the write console). */}
+			{barHost !== undefined && active && barHost !== null && createPortal(runBar, barHost)}
+			<div style={styles.editorRegion(split.collapsed && barHost !== undefined)}>
 				<div style={styles.editorBox(editorHeight, split.collapsed)}>
 					<QueryEditor ref={editor} value={text} onChange={changeText} onRun={() => run(false)} onRunAll={() => run(true)} onCursorChange={syncCursor} label={mode === 'read' ? 'Cypher query' : 'Cypher statements to execute'} completion={completion} />
 				</div>
-				<div style={styles.runBar}>
-					{split.collapsed && (
-						<button type="button" style={styles.firstLine} title="Show the editor" onClick={showEditor}>
-							{firstLineOf(text) || '(empty)'}
-						</button>
-					)}
-					<Button variant="primary" disabled={runner.running || blocked !== null} onClick={() => run(false)} title="Run the selection or the statement at the caret (Ctrl/Cmd+Enter)">
-						{mode === 'read' ? 'Run' : 'Execute'}
-					</Button>
-					<Button variant="ghost" disabled={runner.running || blocked !== null} onClick={() => run(true)} title="Run every statement in order (Ctrl/Cmd+Shift+Enter)">
-						{mode === 'read' ? 'Run all' : 'Execute all'}
-					</Button>
-					{mode === 'read' && (
-						<ToggleGroup
-							options={LIMIT_OPTIONS}
-							value={limitId}
-							onChange={(id) => setLimitId(id)}
-							aria-label="Row limit"
-						/>
-					)}
-					{runner.canStop && <Button variant="ghost" title={STOP_WAITING_NOTE} onClick={() => runner.stopWaiting()}>Stop waiting</Button>}
-					{onOpenHistory && <Button variant="ghost" ariaExpanded={historyOpen === true} onClick={onOpenHistory}>History</Button>}
-					{onOpenSaved && <Button variant="ghost" ariaExpanded={savedOpen === true} onClick={onOpenSaved}>Saved</Button>}
-					{onAsk && <Button variant="ghost" ariaExpanded={askOpen === true} title="Ask the node's language model to draft Cypher; the draft opens in a new tab, not run" onClick={onAsk}>Ask</Button>}
-					{mode === 'read' && dialect && (() => {
-						const chip = rowLimitChip(limitChoice, dialect);
-						return <span title={chip.title ?? undefined}><StatusBadge variant="muted">{chip.text}</StatusBadge></span>;
-					})()}
-					<span style={styles.willRun}>{runner.running ? 'Running…' : willRun}</span>
-					<span style={styles.end}>
-						<Button variant="ghost" small ariaExpanded={!split.collapsed} title={split.collapsed ? 'Show the editor' : 'Hide the editor; the run bar stays'} onClick={() => (split.collapsed ? showEditor() : changeSplit(splitToggled(split)))}>
-							{split.collapsed ? 'Show editor' : 'Hide editor'}
-						</Button>
-					</span>
-				</div>
+				{barHost === undefined && runBar}
 			</div>
-			<SplitDivider split={{ height: editorHeight, collapsed: split.collapsed }} available={available} onChange={changeSplit} label="Editor and results" />
+			{!split.collapsed && <SplitDivider split={{ height: editorHeight, collapsed: false }} available={available} onChange={changeSplit} label="Editor and results" />}
 
 			{showNotices && (
 				<div style={styles.notices}>
 					{blocked && <NoticeBanner variant="warning" text={blocked} />}
+					{startRefusal && <NoticeBanner key={startRefusal} variant="warning" text={startRefusal} />}
 					{runner.refusal && <NoticeBanner key={runner.refusal} variant="warning" text={runner.refusal} />}
-					{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} onRunFrom={runFrom} />}
+					{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} onRunFrom={mode === 'read' ? runFrom : undefined} />}
 					{runner.abandonNotice && <NoticeBanner key={runner.abandonNotice} variant="warning" text={runner.abandonNotice} />}
 					{strip && <StatementStrip runs={runner.runs} selected={runner.selectedRun} onSelect={(i) => runner.setSelectedRun(i)} labelOf={(r) => formatRunLabel(r)} ariaLabel="Statements in the last run" />}
 					{strip && !runner.running && <div style={styles.willRun}>{formatBatchOutcome(runner.runs, GRAPH_BATCH_WORDS)}</div>}
 				</div>
 			)}
 
-			<div style={styles.results}>
-				<TabControl menu={menu} activeId={tab} onSelect={(id) => setTab(id as ResultTab)} />
-				<div
-					ref={bodyRef}
-					tabIndex={-1}
-					style={maximized ? styles.maximized : styles.body}
-					onKeyDown={(event) => {
-						// Escape that nothing inside used (the inspector, a menu, the canvas's own selection) leaves full screen.
-						if (!maximized || event.key !== 'Escape' || event.defaultPrevented || !event.currentTarget.contains(event.target as Node)) return;
-						event.preventDefault();
-						setMaximizeWanted(false);
-					}}
-				>
-					{maximized && (
-						<div style={styles.maxBar}>
-							<span>{FULL_SCREEN_TEXT}</span>
-							<Button variant="ghost" small title="Exit full screen (Esc)" onClick={() => setMaximizeWanted(false)}>
-								Exit full screen
-							</Button>
-						</div>
-					)}
-					<div style={styles.fill}>
-						{!result ? (
-							<EmptyState icon={<GraphIcon />} title={emptyTitle} description={emptyText} />
-						) : tab === 'graph' ? (
-							<GraphView
-								session={graphSession}
-								schemaLabels={schemaLabels}
-								captions={captions}
-								onCaption={setCaption}
-								onInspect={(id) => graphSession.inspect({ kind: 'node', id })}
-								seedKey={`${endpoint.key}:${resultKey.current}`}
-								announce={announce}
-								endpointKey={endpoint.key}
-								meta={metaLine}
-								onRerun={rerun}
-								onNewQuery={onNewQuery}
-								maximized={maximized}
-								onToggleMaximized={toggleMaximized}
-							/>
-						) : tab === 'table' ? (
-							<ResultTable result={result} tableKey={`${endpoint.key}-${tabId}-${resultKey.current}`} onRowOpen={setOpenRow} meta={<>{metaText}{truncation && <StatusBadge variant="warning">{truncation}</StatusBadge>}</>} />
-						) : (
-							<RawView result={result} announce={announce} />
+			<div style={styles.resultsRow}>
+				<div style={styles.results}>
+					<TabControl menu={menu} activeId={tab} onSelect={(id) => setTab(id as ResultTab)} />
+					<div
+						ref={bodyRef}
+						tabIndex={-1}
+						style={maximized ? styles.maximized : styles.body}
+						onKeyDown={(event) => {
+							// Escape that nothing inside used (the inspector, a menu, the canvas's own selection) leaves full screen.
+							if (event.defaultPrevented || !maximized || event.key !== 'Escape' || !event.currentTarget.contains(event.target as Node)) return;
+							event.preventDefault();
+							setMaximizeWanted(false);
+						}}
+					>
+						{/* Only the shown tab draws: a hidden tab keeps its result and graph session, not a canvas or a grid. */}
+						{active && (
+							<div style={styles.fill}>
+								{!result ? (
+									<EmptyState icon={<GraphIcon />} title={emptyTitle} description={emptyText} />
+								) : tab === 'graph' ? (
+									<GraphView
+										session={graphSession}
+										schemaLabels={schemaLabels}
+										captions={captions}
+										onCaption={setCaption}
+										onInspect={(id) => graphSession.inspect({ kind: 'node', id })}
+										seedKey={`${endpoint.key}:${resultKey.current}`}
+										announce={announce}
+										endpointKey={endpoint.key}
+										meta={metaLine}
+										onRerun={rerun}
+										onNewQuery={onNewQuery}
+										maximized={maximized}
+										onToggleMaximized={toggleMaximized}
+									/>
+								) : tab === 'table' ? (
+									<ResultTable result={result} tableKey={`${endpoint.key}-${tabId}-${resultKey.current}`} onRowOpen={setOpenRow} meta={<>{metaText}{truncation && <StatusBadge variant="warning">{truncation}</StatusBadge>}</>} />
+								) : (
+									<RawView result={result} announce={announce} />
+								)}
+							</div>
 						)}
 					</div>
+					{(result && tab === 'raw') || notes.length > 0 ? (
+						<div style={styles.footer}>
+							{result && tab === 'raw' && <div style={styles.willRun}>{metaLine}</div>}
+							{notes.length > 0 && <NotesLine key={resultKey.current} notes={notes} />}
+						</div>
+					) : null}
 				</div>
-				{(result && tab === 'raw') || notes.length > 0 ? (
-					<div style={styles.footer}>
-						{result && tab === 'raw' && <div style={styles.willRun}>{metaLine}</div>}
-						{notes.length > 0 && <NotesLine key={resultKey.current} notes={notes} />}
-					</div>
-				) : null}
+				{rowView && <RowPanel title={`Row ${(openRow ?? 0) + 1} of ${result?.rows.length ?? 0}`} subtitle={displayed ? `statement ${displayed.index + 1}${displayed.ms !== undefined ? ` · ${clock(Date.now() - displayed.ms)}` : ''}` : ''} view={rowView} announce={announce} onClose={() => setOpenRow(null)} />}
 			</div>
-
-			{rowView && <RowInspector open title={`Row ${(openRow ?? 0) + 1} of ${result?.rows.length ?? 0}`} subtitle={displayed ? `statement ${displayed.index + 1}${displayed.ms !== undefined ? ` · ${clock(Date.now() - displayed.ms)}` : ''}` : ''} fields={rowView.fields} json={rowView.json} note={rowView.note} nullText="null" announce={announce} onClose={() => setOpenRow(null)} />}
 
 			{confirm && (
 				<WriteConfirmDialog
@@ -723,7 +752,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 					onConfirm={() => {
 						const targets = confirm.targets;
 						setConfirm(null);
-						const refusal = runRefusal({ running: runner.running, blocked });
+						const refusal = runRefusal({ running: runner.running, blocked, busy: null });
 						if (refusal !== null) {
 							announce(refusal);
 							return;
