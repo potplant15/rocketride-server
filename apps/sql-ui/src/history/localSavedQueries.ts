@@ -26,10 +26,18 @@
 //
 // The full app keeps saved queries in the shell's workspace preferences, key
 // `sql.savedQueries`, through the same stable accessor history uses
-// (SqlApp.tsx over `usePrefs`). Those preferences are the signed-in user's,
-// so nothing is held here: every read goes to the accessor, and the parsed
-// bag is cached only for as long as the account and the stored value are the
-// same. While nobody is signed in nothing is read or written.
+// (SqlApp.tsx over `usePrefs`). Nothing is held here: every read goes to the
+// accessor, and the parsed bag is cached only for as long as the account and
+// the stored value are the same. While nobody is signed in nothing is read
+// or written.
+//
+// THE ACCOUNT IS PINNED. The shell reads the workspace from disk once per
+// page, so after another account signs in without a reload the preferences
+// still hold the first account's bag (and a write would land in the next
+// account's file). So the first account seen is the only one served: any
+// other is served nothing and saves nothing, with a sentence saying to
+// reload, until the page reloads (or the first account is back). One view
+// per engine core (localEnv.ts), so the pin outlives an env rebuild.
 //
 // Dev-tool frames never import this module (localEnv.ts is the full app's).
 // =============================================================================
@@ -44,6 +52,12 @@ import type { SqlEndpoint } from '../connect';
 /** Shared empty list, so an unknown connection keeps a stable snapshot. */
 const NO_QUERIES: SavedQuery[] = [];
 
+/** The full app's saved queries, with a read outside React (tests, diagnostics). */
+export interface LocalSavedQueries extends SqlSavedQueriesApi {
+	/** One connection's saved queries for the account signed in now (outside React). */
+	entriesOf(endpoint: SqlEndpoint): SavedQuery[];
+}
+
 /**
  * The full app's saved queries over its workspace preferences.
  *
@@ -51,7 +65,7 @@ const NO_QUERIES: SavedQuery[] = [];
  * @param ownerNow - Who is signed in now (the identity fingerprint), or null.
  * @returns The views' API.
  */
-export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => string | null): SqlSavedQueriesApi {
+export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => string | null): LocalSavedQueries {
 	const listeners = new Set<() => void>();
 	const subscribe = (listener: () => void): (() => void) => {
 		listeners.add(listener);
@@ -59,14 +73,28 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 	};
 	/** The last bag parsed, with what it was parsed from (a new object with the same text is the same bag). */
 	let cache: { owner: string; raw: unknown; text: string; bag: SavedQueriesBag } | null = null;
+	/** The account these preferences were first read for (see the header). */
+	let pinned: string | null = null;
 
 	/**
-	 * The signed-in account's bag (empty while nobody is signed in).
+	 * The account signed in now, when it is the one these preferences belong to.
+	 *
+	 * @returns Its fingerprint, or null (nobody, or another account).
+	 */
+	const owned = (): string | null => {
+		const owner = ownerNow();
+		if (owner === null) return null;
+		pinned ??= owner;
+		return owner === pinned ? owner : null;
+	};
+
+	/**
+	 * The signed-in account's bag (empty while nobody, or another account, is signed in).
 	 *
 	 * @returns The bag; the same object until the account or the stored value changes.
 	 */
 	const bag = (): SavedQueriesBag => {
-		const owner = ownerNow();
+		const owner = owned();
 		if (owner === null) return {};
 		const raw = prefs.getPref(SAVED_QUERIES_PREF);
 		if (cache !== null && cache.owner === owner && cache.raw === raw) return cache.bag;
@@ -85,6 +113,10 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 	 */
 	const edit = async (endpoint: SqlEndpoint, change: SavedQueryEdit, verb: string): Promise<void> => {
 		if (ownerNow() === null) throw new ExplorerToolError({ kind: 'unavailable', tool: 'savedQueryEdit', message: `Not signed in to a RocketRide server, so nothing was ${verb}.` });
+		// Checked right before the write: nothing awaits between it and the write.
+		if (owned() === null) {
+			throw new ExplorerToolError({ kind: 'stale', tool: 'savedQueryEdit', message: `Another account signed in after this page read its saved queries, so nothing was ${verb}. Reload the page to see and change this account's saved queries.` });
+		}
 		editSavedQueriesIn(prefs, endpoint.key, change);
 		listeners.forEach((listener) => listener());
 	};
@@ -97,5 +129,6 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 		save: (endpoint, query) => edit(endpoint, { action: 'add', query }, 'saved'),
 		rename: (endpoint, id, name) => edit(endpoint, { action: 'rename', id, name }, 'renamed'),
 		remove: (endpoint, id) => edit(endpoint, { action: 'remove', id }, 'deleted'),
+		entriesOf: (endpoint) => bag()[endpoint.key] ?? NO_QUERIES,
 	};
 }

@@ -40,6 +40,7 @@ import type { SqlHistoryApi } from './history/api';
 import { clearForKey, removeEntry, setNote, setRecording, togglePin, useHistory, useRecording } from './history/historyStore';
 import { emitRun } from './history/runEvents';
 import { createLocalSavedQueries } from './history/localSavedQueries';
+import type { LocalSavedQueries } from './history/localSavedQueries';
 import { getActiveConnection, subscribeActiveConnection } from './navigation';
 import type { SqlSidebarBridge } from './sidebarBridge';
 import type { SqlCore } from './sqlCore';
@@ -65,6 +66,12 @@ export const LOCAL_HISTORY: SqlHistoryApi = {
  * (shared/explorer/devtool/gridPersistence). The channel is made on first use.
  */
 const APP_GRIDS: IDataGridPersistence = createCopyingGridPersistence(() => createMessageGridPersistence());
+
+/**
+ * The full app's saved queries, one per engine core: the env is rebuilt on a
+ * reconnect, and the account pin (history/localSavedQueries.ts) must outlive it.
+ */
+const LOCAL_SAVED = new WeakMap<SqlCore, LocalSavedQueries>();
 
 /**
  * The core-backed environment (the full app).
@@ -101,12 +108,28 @@ export function createLocalSqlEnv(core: SqlCore, isConnected: boolean, serviceTi
 		serviceTitle,
 		gridPersistence: APP_GRIDS,
 		// Beside history, in the same workspace preferences, for the account
-		// the core vouches for now.
-		savedQueries: createLocalSavedQueries(prefs, () => {
+		// the core vouches for now (and only the one they were read for).
+		savedQueries: savedQueriesFor(core, prefs),
+	};
+}
+
+/**
+ * The full app's saved queries for one engine core (made on first use).
+ *
+ * @param core - The full app's engine core.
+ * @param prefs - The shell's workspace preferences (a stable accessor).
+ * @returns The core's saved queries.
+ */
+function savedQueriesFor(core: SqlCore, prefs: IPrefsAccessor): LocalSavedQueries {
+	let saved = LOCAL_SAVED.get(core);
+	if (!saved) {
+		saved = createLocalSavedQueries(prefs, () => {
 			const now = core.identity.get();
 			return now.known ? now.fingerprint : null;
-		}),
-	};
+		});
+		LOCAL_SAVED.set(core, saved);
+	}
+	return saved;
 }
 
 /**

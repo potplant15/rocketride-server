@@ -49,6 +49,7 @@ import { MAX_SAVED_QUERIES, SAVED_QUERIES_PATH, SAVED_QUERIES_PREF, APP_SAVED_QU
 import type { SavedQuery } from '../src/history/savedQueries';
 import { createRemoteSavedQueries } from '../src/history/remoteSavedQueries';
 import { createLocalSqlEnv } from '../src/localEnv';
+import { createLocalSavedQueries } from '../src/history/localSavedQueries';
 import type { SavedQueriesState } from '../src/ops';
 import { attachSqlController } from '../src/sqlController';
 import type { SqlControllerMount } from '../src/sqlController';
@@ -520,6 +521,40 @@ describe('saved queries in the full app: the workspace preferences, through the 
 		}
 	});
 
+	it('pins the account the page\'s preferences were read for: another account signing in without a reload is served nothing and saves nothing (review I2, CE2)', async () => {
+		// The shell reads the workspace once per page, so after a switch the
+		// preferences still hold the first account's bag.
+		const bag = { [KEY]: [saved('a1')] };
+		const values = new Map<string, unknown>([[SAVED_QUERIES_PREF, bag]]);
+		const prefs: IPrefsAccessor = { getPref: (key) => values.get(key), setPref: (key, value) => { values.set(key, value); } };
+		let owner: string | null = FP_A;
+		const view = createLocalSavedQueries(prefs, () => owner);
+		assert.deepEqual(view.entriesOf(ENDPOINT).map((q) => q.id), ['a1'], 'A reads A\'s');
+		owner = FP_B;
+		assert.deepEqual(view.entriesOf(ENDPOINT), [], 'B is not served A\'s');
+		await assert.rejects(view.save(ENDPOINT, saved('from-b')), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale' && /Reload/.test(error.message));
+		await assert.rejects(view.remove(ENDPOINT, 'a1'), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
+		assert.equal(values.get(SAVED_QUERIES_PREF), bag, 'nothing was written for B');
+		owner = null;
+		assert.deepEqual(view.entriesOf(ENDPOINT), []);
+		owner = FP_A;
+		assert.deepEqual(view.entriesOf(ENDPOINT).map((q) => q.id), ['a1'], 'A again: A\'s own');
+		await view.save(ENDPOINT, saved('a2'));
+		assert.deepEqual(view.entriesOf(ENDPOINT).map((q) => q.id), ['a2', 'a1']);
+	});
+
+	it('the pin outlives the env being rebuilt (a reconnect): one view per engine core', async () => {
+		resetSavedConnections({ force: true });
+		const engine = scriptedClientRealm(engineScript([PIPELINE], [taskRow('p1')], postgres));
+		const core = createSqlCore({ cm: engine.cm, appId: SQL_APP_ID, mode: 'app', focusTarget: null });
+		const prefs: IPrefsAccessor = { getPref: () => undefined, setPref: () => undefined };
+		try {
+			assert.equal(createLocalSqlEnv(core, true, () => undefined, prefs).savedQueries, createLocalSqlEnv(core, false, () => undefined, prefs).savedQueries);
+		} finally {
+			core.dispose();
+		}
+	});
+
 	it('says where each mount keeps them, and that the last window to save wins in a dev tool', () => {
 		assert.match(APP_SAVED_QUERIES_NOTICE, /workspace file on the server/);
 		assert.match(devToolSavedQueriesNotice('file'), /rocketride\.sql\.queries\.json/);
@@ -555,5 +590,6 @@ describe('saved queries: the README says what the code does', () => {
 		assert.match(prose, /so the last one to save wins\. Saved queries belong to the account that saved them/);
 		assert.match(prose, new RegExp(`A connection keeps up to ${MAX_SAVED_QUERIES} saved queries; a saved query holds up to ${MAX_SAVED_SQL_CHARS.toLocaleString('en-US')} characters of statement and ${MAX_SAVED_NAME_CHARS} of name; and all saved queries together stay within ${MAX_SAVED_BAG_CHARS / 1024} KB\\.`));
 		assert.match(prose, /\*\*Open\*\* puts the statement into a new query and runs nothing/);
+		assert.match(prose, /another account signing in without a reload sees no saved queries and can save none until the page is reloaded/);
 	});
 });
