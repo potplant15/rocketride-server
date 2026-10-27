@@ -187,6 +187,13 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 		setVisited((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
 	}, []);
 
+	// Bumped after a write on the Query page (a History rerun included) or a
+	// designer Apply. The Data page takes it as `countEpoch` and forgets the
+	// totals it counted, which that write may have changed. Its own Apply
+	// keeps its own epoch.
+	const [writeEpoch, setWriteEpoch] = useState(0);
+	const noteWrite = useCallback((): void => { setWriteEpoch((n) => n + 1); }, []);
+
 	// The QUERY page is permanent and holds any number of query INSTANCES —
 	// each keeps its own editor/results state (all stay mounted; the strip
 	// switches which is visible). Opening a query adds an instance instead of
@@ -444,6 +451,7 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 														label={q.label}
 														{...(q.seed.sql !== undefined ? { initialSql: q.seed.sql } : {})}
 														{...(q.seed.origin !== undefined ? { origin: q.seed.origin } : {})}
+														onWrite={noteWrite}
 													/>
 												</div>
 											))}
@@ -451,8 +459,8 @@ export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
 									),
 								},
 							} : {}),
-							...(dataSeed ? { data: { content: <TableDataView key={dataSeed.seq} endpoint={endpoint} table={dataSeed.table} presetFilters={dataSeed.chips} onOpenTable={pageNav.openTableData} /> } } : {}),
-							...(designSeed ? { design: { content: <TableDesignView key={designSeed.seq} endpoint={endpoint} table={designSeed.table} /> } } : {}),
+							...(dataSeed ? { data: { content: <TableDataView key={dataSeed.seq} endpoint={endpoint} table={dataSeed.table} presetFilters={dataSeed.chips} countEpoch={writeEpoch} onOpenTable={pageNav.openTableData} /> } } : {}),
+							...(designSeed ? { design: { content: <TableDesignView key={designSeed.seq} endpoint={endpoint} table={designSeed.table} onWrite={noteWrite} /> } } : {}),
 						}}
 					/>
 				</SqlPageNavProvider>

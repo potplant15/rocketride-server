@@ -77,6 +77,21 @@ export interface StatementRun extends IStatementRunBase {
 	limitState?: LimitState;
 }
 
+/**
+ * Whether a finished statement may have changed rows, so another page's
+ * cached row count may be out of date: anything but a read (a schema change
+ * or a CALL can change rows too) that ran, returned rows (`RETURNING`), or
+ * was not waited for (the node may still commit it). A failed statement
+ * committed nothing on its own.
+ *
+ * @param run - The finished statement.
+ * @returns True when it may have changed rows.
+ */
+export function mayHaveChangedRows(run: Pick<StatementRun, 'kind' | 'outcome'>): boolean {
+	if (run.kind === 'read' || run.kind === 'tx') return false;
+	return run.outcome === 'affected' || run.outcome === 'rows' || run.outcome === 'abandoned';
+}
+
 // =============================================================================
 // WORDING
 // =============================================================================

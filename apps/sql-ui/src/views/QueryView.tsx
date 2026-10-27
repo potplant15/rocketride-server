@@ -79,7 +79,7 @@ import type { RowEstimate } from '../sql/safety';
 import { safetyLevelOf } from '../connect/savedConnections';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { useConnectionRecord } from '../connectionRecord';
-import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, settleStatement } from '../sql/batch';
+import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
 import {
 	ALLOW_EXECUTE_OFF_TEXT,
@@ -111,6 +111,11 @@ export interface QueryViewProps {
 	initialSql?: string;
 	/** `generated` marks SQL the app wrote, which is previewed before it runs. */
 	origin?: 'generated';
+	/**
+	 * Told once a batch (or a History rerun) ends that may have changed rows,
+	 * so the workbench's other pages stop trusting what they counted.
+	 */
+	onWrite?: () => void;
 }
 
 /**
@@ -304,7 +309,7 @@ function toHistoryEntry(run: StatementRun): HistoryEntry {
  * @param props - {@link QueryViewProps}.
  * @returns The query document element.
  */
-export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSql, origin }) => {
+export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSql, origin, onWrite }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 	// What asks before it runs is the saved connection's safety level: the
@@ -362,6 +367,16 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// that text.
 	const editorRunTextRef = useRef<string | null>(null);
 	const startedRunTextRef = useRef<string | null>(null);
+	// Set when a statement of the running batch may have changed rows;
+	// reported (and cleared) when the batch ends.
+	const wroteRef = useRef(false);
+	const onWriteRef = useRef(onWrite);
+	onWriteRef.current = onWrite;
+	const reportWrite = useCallback((): void => {
+		if (!wroteRef.current) return;
+		wroteRef.current = false;
+		onWriteRef.current?.();
+	}, []);
 
 	const dialect = snapshot.dialect;
 	const statements = useMemo(() => splitStatements(sql, dialect), [sql, dialect]);
@@ -446,7 +461,13 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		// sentence that stops a reader assuming the batch rolled back.
 		formatPrior: (list, failedIndex) => formatPriorStatements(list, failedIndex),
 		// The runner records only while this document is mounted.
-		record: (run) => env.history.record(endpoint, toHistoryEntry(run)),
+		// A statement that may have changed rows is noted here, and reported
+		// once when the batch ends (finished, or Stop waiting), so the
+		// workbench's Data page counts again.
+		record: (run) => {
+			if (mayHaveChangedRows(run)) wroteRef.current = true;
+			env.history.record(endpoint, toHistoryEntry(run));
+		},
 		onFailure: (notice) => noteExecuteFailure(endpoint.key, notice.verbatim),
 		onStart: () => {
 			startedRunTextRef.current = editorRunTextRef.current;
@@ -464,6 +485,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			// A statement that actually ran is the only proof the node's execute
 			// gate is open again, so a successful run retires the warning.
 			if (info.resolved) noteExecuteSuccess(endpoint.key);
+			reportWrite();
 		},
 		// Only outcomes that have NO live region of their own are announced. A
 		// failure is not one: the error Banner is an assertive alert already
@@ -476,7 +498,10 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		},
 		announce,
 		// The warning Banner carries the notice; it is a live region already.
-		onStopped: () => editorRef.current?.focus(),
+		onStopped: () => {
+			reportWrite();
+			editorRef.current?.focus();
+		},
 	});
 
 	// ── The write confirmation's row estimate ────────────────────────────────

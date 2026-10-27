@@ -68,6 +68,11 @@ export interface TableDesignViewProps {
 	endpoint: SqlEndpoint;
 	/** The table being altered, or null for create-table mode. */
 	table: string | null;
+	/**
+	 * Told after an Apply that may have changed the database (it ran, or may
+	 * have), so the workbench's other pages stop trusting what they counted.
+	 */
+	onWrite?: () => void;
 }
 
 /** The banner shown after an Apply, composed once the snapshot has landed. */
@@ -593,7 +598,7 @@ function effectiveColumns(base: SqlSchemaColumn[], pk: string[], ops: AlterOp[])
  * column and FK operations against the schema snapshot; create mode drafts a
  * column list for a new table. The DDL page previews exactly what Apply runs.
  */
-export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, table }) => {
+export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, table, onWrite }) => {
 	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 	const createMode = table === null;
@@ -809,12 +814,14 @@ export const TableDesignView: React.FC<TableDesignViewProps> = ({ endpoint, tabl
 					await refreshSchema(env.getSession(endpoint), { fresh: true }).catch(() => undefined);
 				}
 			}
+			// Anything that ran, or may have, changed the table.
+			if (failure === null || failure.committed > 0 || failure.unknown) onWrite?.();
 			setPendingApply({ at: Date.now(), transactional, failure });
 		} finally {
 			setApplying(false);
 			setConfirmOpen(false);
 		}
-	}, [env, statements, endpoint, createMode, createName, table, ops, snapshot.refreshedAt, snapshot.dialect, applyGate]);
+	}, [env, statements, endpoint, createMode, createName, table, ops, snapshot.refreshedAt, snapshot.dialect, applyGate, onWrite]);
 
 	// ── Outcome banner (composed against the post-refresh snapshot) ──────────
 

@@ -118,7 +118,7 @@ describe('Data page wiring in ConnectionView', () => {
 		// The seed carries the chips; openTableData asks first while edits are staged (P4 R2-M2), then seeds.
 		assert.match(connection, /const openData = useCallback\(\(table: string, chips: FilterChip\[\]\) => \{\s*setDataSeed\(\{ table, chips, seq: \+\+seedSeqRef\.current \}\);/);
 		assert.match(connection, /openTableData: \(table: string, chips\?: FilterChip\[\]\) => \{[\s\S]*?openData\(table, chips \?\? \[\]\);/);
-		assert.match(connection, /<TableDataView key=\{dataSeed\.seq\} endpoint=\{endpoint\} table=\{dataSeed\.table\} presetFilters=\{dataSeed\.chips\} onOpenTable=\{pageNav\.openTableData\} \/>/);
+		assert.match(connection, /<TableDataView key=\{dataSeed\.seq\} endpoint=\{endpoint\} table=\{dataSeed\.table\} presetFilters=\{dataSeed\.chips\} countEpoch=\{writeEpoch\} onOpenTable=\{pageNav\.openTableData\} \/>/);
 	});
 
 	it('stops statements once the node is known to be schema only, from the one execute state', () => {

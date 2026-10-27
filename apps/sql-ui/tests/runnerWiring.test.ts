@@ -50,7 +50,7 @@ describe('QueryView on the shared runner', () => {
 		assert.match(view, /useStatementRunner<StatementRun, \{ sql: string \}, SqlExecuteResult, FailureNotice>\(\{/);
 		assert.match(view, /refuse: \(list\) => \(list\.some\(\(run\) => run\.kind === 'tx'\) \? TRANSACTION_REFUSAL_TEXT : null\)/);
 		assert.match(view, /prepare: \(run\) => \{\s*const prepared = applyRowLimit\(run\.sql, limit, dialect\);/);
-		assert.match(view, /record: \(run\) => env\.history\.record\(endpoint, toHistoryEntry\(run\)\)/);
+		assert.match(view, /record: \(run\) => \{[\s\S]*?env\.history\.record\(endpoint, toHistoryEntry\(run\)\);\s*\},/);
 	});
 
 	it('sends each statement on the session SqlEnv gives the document (the remote proxy in a frame), repeatable only for a read', () => {
