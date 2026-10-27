@@ -30,6 +30,18 @@
 // database or graph, whether `execute` is allowed) plus the endpoint's own
 // pipeline, run kind and owner.
 //
+// CHIPS AND COUNTS (cards, the drawer and the details panel)
+// The chips come from the node's own `dialect` answer: "Supported (Cypher)"
+// when it has read_query, "Writes allowed" or "Read-only" from canWrite, and
+// "Empty graph" only when a FRESH schema read lists no label and no
+// relationship type (never for `unknown` evidence, which proves nothing). The
+// counts come only from a schema already read in this session: nothing here
+// asks the node for them. Relationship counts add up (each relationship has
+// one type); per-label counts do not on engines where a node can have several
+// labels, so the total says "(per label)". An estimate says "about", and a
+// part with a count missing (AGE before its tables were analysed) is left out:
+// the drawer then says the size is not reported.
+//
 // WHAT AN EMPTY LIST CAN SAY
 // A graph node that fails to START never appears in the task list at all, so an
 // empty list is NOT evidence that a graph was never provisioned, and this app
@@ -55,6 +67,7 @@
 
 import type { IExplorerEndpoint, IProbeResult } from 'shared/explorer';
 import { canWrite, engineText, parseDialect, readBoundaryText, supportsReadQuery, targetText } from './dialect';
+import type { ISchemaView } from './schema';
 
 // =============================================================================
 // TYPES
@@ -142,6 +155,17 @@ export function ownerText(endpoint: IExplorerEndpoint): string {
  * @returns The view.
  */
 export function connectionView(endpoint: IExplorerEndpoint, probe: IProbeResult | undefined): IConnectionView {
+	return describe(endpoint, probe).view;
+}
+
+/**
+ * The view, with the parsed dialect it was made from (the chips and the row tooltip need both).
+ *
+ * @param endpoint - The endpoint (token-free).
+ * @param probe - Its probe result, when one exists.
+ * @returns The view and the dialect (null before the node answered, or for an engine the app does not speak).
+ */
+function describe(endpoint: IExplorerEndpoint, probe: IProbeResult | undefined): { view: IConnectionView; dialect: ReturnType<typeof parseDialect> } {
 	const dialect = probe?.ok ? parseDialect(probe.info) : null;
 	const details: IDetailRow[] = [
 		{ label: 'Pipeline', value: endpoint.pipelineName || '(unnamed)' },
@@ -170,15 +194,148 @@ export function connectionView(endpoint: IExplorerEndpoint, probe: IProbeResult 
 	}
 
 	const badge = endpoint.state === 'ready' && dialect && !supportsReadQuery(dialect) ? { variant: 'warning' as const, label: 'Needs upgrade' } : STATE_BADGE[endpoint.state];
-	return {
+	const engine = dialect ? ` \u00b7 ${engineText(dialect)}` : '';
+	const view: IConnectionView = {
 		title: endpoint.nodeName || endpoint.nodeId,
-		address: `${endpoint.provider} · ${endpoint.pipelineName}${endpoint.runKind === 'deploy' ? ' (deployment)' : ''}`,
+		address: `${endpoint.provider}${engine} \u00b7 ${endpoint.pipelineName}${endpoint.runKind === 'deploy' ? ' (deployment)' : ''}`,
 		badge,
 		details,
 		notes,
 		openable: blocked === null && endpoint.state === 'ready',
 		blocked,
 	};
+	return { view, dialect };
+}
+
+// =============================================================================
+// CHIPS AND COUNTS
+// =============================================================================
+
+/** A chip on a card or in the drawer: the label carries the whole message. */
+export interface IChip {
+	id: 'supported' | 'writes' | 'read-only' | 'empty';
+	label: string;
+	variant: IBadge['variant'] | 'info';
+}
+
+/**
+ * Whether a node can write, in the words a chip and a row tooltip use.
+ *
+ * @param dialect - The parsed dialect.
+ * @returns `Writes allowed` or `Read-only`.
+ */
+function writesText(dialect: NonNullable<ReturnType<typeof parseDialect>>): string {
+	return canWrite(dialect) ? 'Writes allowed' : 'Read-only';
+}
+
+/**
+ * The chips for a connection. An old node (no read_query) gets none: its badge says it needs an upgrade.
+ *
+ * @param endpoint - The endpoint (token-free).
+ * @param probe - Its probe result, when one exists.
+ * @param schema - Its schema, when it was read in this session (else null).
+ * @returns The chips, in order.
+ */
+export function connectionChips(endpoint: IExplorerEndpoint, probe: IProbeResult | undefined, schema: ISchemaView | null): IChip[] {
+	const { dialect } = describe(endpoint, probe);
+	if (!dialect || !supportsReadQuery(dialect)) return [];
+	const chips: IChip[] = [{ id: 'supported', label: 'Supported (Cypher)', variant: 'info' }];
+	chips.push(canWrite(dialect) ? { id: 'writes', label: writesText(dialect), variant: 'warning' } : { id: 'read-only', label: writesText(dialect), variant: 'muted' });
+	if (schema && schema.evidence === 'fresh' && schema.labels.length === 0 && schema.relationshipTypes.length === 0) chips.push({ id: 'empty', label: 'Empty graph', variant: 'muted' });
+	return chips;
+}
+
+/**
+ * A total of counts, or null when any item has none.
+ *
+ * @param items - Labels or relationship types.
+ * @returns The sum and whether any count is an estimate.
+ */
+function total(items: ReadonlyArray<{ count: number | null; countEstimated: boolean }>): { sum: number; estimated: boolean } | null {
+	if (items.length === 0 || items.some((item) => item.count === null)) return null;
+	return { sum: items.reduce((sum, item) => sum + (item.count ?? 0), 0), estimated: items.some((item) => item.countEstimated) };
+}
+
+/**
+ * One counted quantity in words.
+ *
+ * @param value - The total.
+ * @param one - The singular noun.
+ * @param many - The plural noun.
+ * @returns `about 1,200 nodes`, `1 relationship`.
+ */
+function counted(value: { sum: number; estimated: boolean }, one: string, many: string): string {
+	return `${value.estimated ? 'about ' : ''}${value.sum.toLocaleString('en-US')} ${value.sum === 1 ? one : many}`;
+}
+
+/**
+ * A connection's size from the schema read in this session: `60 nodes (per label) · 92 relationships`. A part whose
+ * counts are not all reported is left out.
+ *
+ * @param schema - The schema, or null when it was not read.
+ * @returns The text, or '' when nothing is reported.
+ */
+export function countsText(schema: ISchemaView | null): string {
+	if (!schema) return '';
+	const nodes = total(schema.labels);
+	const relationships = total(schema.relationshipTypes);
+	return [nodes ? `${counted(nodes, 'node', 'nodes')} (per label)` : null, relationships ? counted(relationships, 'relationship', 'relationships') : null].filter(Boolean).join(' \u00b7 ');
+}
+
+/** The drawer's and the details panel's rows: the summary first, the plumbing behind a disclosure. */
+export interface IDetailSections {
+	/** Engine, database or graph, size and schema (size and schema only once the schema was read in this session). */
+	summary: IDetailRow[];
+	/** Pipeline, node, run and writes. */
+	plumbing: IDetailRow[];
+}
+
+/**
+ * The details, split into what a person looks for first and how the connection is wired.
+ *
+ * @param endpoint - The endpoint (token-free).
+ * @param probe - Its probe result, when one exists.
+ * @param schema - Its schema, when it was read in this session (else null).
+ * @returns The two lists.
+ */
+export function detailSections(endpoint: IExplorerEndpoint, probe: IProbeResult | undefined, schema: ISchemaView | null): IDetailSections {
+	const { view, dialect } = describe(endpoint, probe);
+	const summary: IDetailRow[] = [];
+	if (dialect) {
+		summary.push({ label: 'Engine', value: engineText(dialect) });
+		if (dialect.graph) summary.push({ label: 'Graph', value: dialect.graph });
+		else if (dialect.database) summary.push({ label: 'Database', value: dialect.database });
+	}
+	if (schema) {
+		summary.push({ label: 'Size', value: sizeText(schema) });
+		summary.push({ label: 'Schema', value: schemaSummaryText(schema) });
+	}
+	const plumbing = view.details.filter((row) => row.label !== 'Engine' && row.label !== 'Target');
+	return { summary, plumbing };
+}
+
+/**
+ * The drawer's Size line.
+ *
+ * @param schema - The schema that was read.
+ * @returns The counts; `Empty` for a fresh read that lists nothing; else `Not reported`.
+ */
+export function sizeText(schema: ISchemaView): string {
+	if (schema.evidence === 'fresh' && schema.labels.length === 0 && schema.relationshipTypes.length === 0) return 'Empty';
+	return countsText(schema) || 'Not reported';
+}
+
+/**
+ * The drawer's Schema line: `5 labels · 7 relationship types · 21 property keys (sampled)`.
+ *
+ * @param schema - The schema that was read.
+ * @returns The text.
+ */
+export function schemaSummaryText(schema: ISchemaView): string {
+	const keys = new Set<string>();
+	for (const item of [...schema.labels, ...schema.relationshipTypes]) for (const property of item.properties) keys.add(property.name);
+	const n = (count: number, one: string, many: string): string => `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`;
+	return `${n(schema.labels.length, 'label', 'labels')} \u00b7 ${n(schema.relationshipTypes.length, 'relationship type', 'relationship types')} \u00b7 ${n(keys.size, 'property key', 'property keys')}${schema.sampled ? ' (sampled)' : ''}`;
 }
 
 // =============================================================================
@@ -224,8 +381,10 @@ export function rowStatusText(endpoint: IExplorerEndpoint, probe: IProbeResult |
  * @returns The row.
  */
 export function connectionRow(endpoint: IExplorerEndpoint, probe: IProbeResult | undefined): IConnectionRow {
-	const view = connectionView(endpoint, probe);
-	const summary = `${view.title} \u2014 ${view.address} \u00b7 ${view.badge.label}`;
+	const { view, dialect } = describe(endpoint, probe);
+	// The dev tool has no cards: the row's tooltip also names the engine (in the address) and whether it writes.
+	const writes = dialect && supportsReadQuery(dialect) ? ` \u00b7 ${writesText(dialect)}` : '';
+	const summary = `${view.title} \u2014 ${view.address} \u00b7 ${view.badge.label}${writes}`;
 	return {
 		label: view.title,
 		status: rowStatusText(endpoint, probe),
