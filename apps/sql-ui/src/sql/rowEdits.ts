@@ -42,6 +42,15 @@
 //   than risked. Every statement expects to change exactly one row, which is
 //   what catches a key that matched nothing, or more than one row.
 //
+//   CONFLICTS. An edit also matches the old value of every column it changes,
+//   and a delete the old value of every column, null-safe (PostgreSQL
+//   `IS NOT DISTINCT FROM`, MySQL `<=>`), so a row someone else changed since
+//   it was read matches no row and the apply stops instead of overwriting
+//   their change. Only values that come back exactly are compared: whole
+//   numbers, decimals up to 15 digits, text, booleans. Floats, timestamps,
+//   JSON, binary values and longer decimals are matched by key only
+//   (uncheckedColumns names them, so Review SQL can say so).
+//
 //   TYPED VALUES. A form gives text; the reflected column type decides what
 //   is bound: a number when a JavaScript number holds it exactly, else the
 //   typed text (an integer beyond 2^53, a long decimal, any exponent form),
@@ -89,8 +98,8 @@ export type RowEdit =
 	| { kind: 'update'; key: string; pk: RowValues; changes: RowValues; was: RowValues }
 	/** A new row (`key` is local: `new:<n>`). */
 	| { kind: 'insert'; key: string; values: RowValues }
-	/** An existing row to delete. */
-	| { kind: 'delete'; key: string; pk: RowValues };
+	/** An existing row to delete (`original`: its values as read, for the conflict check). */
+	| { kind: 'delete'; key: string; pk: RowValues; original: RowValues };
 
 /** The staged changes of one table, in staging order. */
 export interface RowEdits {
@@ -143,6 +152,25 @@ const WIDE_INTEGER = /\b(?:bigint|int8|bigserial|serial8|u?int(?:64|128|256))\b/
 const TRUE_TEXT = /^(?:true|t|yes|y|on|1)$/i;
 const FALSE_TEXT = /^(?:false|f|no|n|off|0)$/i;
 
+/** Text-type tokens whose values come back exactly (compared for conflicts). */
+const TEXT_TOKENS = /^(?:char|character|varchar|nchar|nvarchar|bpchar|text|tinytext|mediumtext|longtext|citext|name|uuid|enum|string)$/i;
+
+/** Exact decimal types (compared for conflicts when the value has at most 15 digits). */
+const DECIMAL_TOKENS = /^(?:decimal|dec|numeric|fixed)$/i;
+
+/** Boolean types (compared for conflicts). */
+const BOOLEAN_TOKENS = /^(?:bool|boolean)$/i;
+
+/**
+ * A type name's tokens, quoted runs removed (`ENUM('int','x')` is `ENUM`).
+ *
+ * @param sqlType - The reflected type.
+ * @returns The tokens.
+ */
+function typeTokens(sqlType: string): string[] {
+	return sqlType.replace(/'[^']*'|"[^"]*"/g, ' ').split(/[^A-Za-z0-9]+/).filter((token) => token !== '');
+}
+
 /**
  * Whether a column type holds whole numbers only.
  *
@@ -150,11 +178,34 @@ const FALSE_TEXT = /^(?:false|f|no|n|off|0)$/i;
  * @returns True for the integer types.
  */
 function isWholeNumberType(sqlType: string): boolean {
-	return sqlType
-		.replace(/'[^']*'|"[^"]*"/g, ' ')
-		.split(/[^A-Za-z0-9]+/)
-		.some((token) => INTEGER_TOKENS.test(token));
+	return typeTokens(sqlType).some((token) => INTEGER_TOKENS.test(token));
 }
+
+/**
+ * Whether a value read from a column comes back exactly, so the database can
+ * be asked whether the column still holds it (the conflict check).
+ *
+ * @param sqlType - The column's reflected type.
+ * @param value - The value as read (undefined: the row did not carry the column).
+ * @returns True for whole numbers, decimals up to 15 digits, text and booleans (and NULL in any of them).
+ */
+function comparesExactly(sqlType: string, value: unknown): boolean {
+	if (value === undefined) return false;
+	const tokens = typeTokens(sqlType);
+	const is = (pattern: RegExp): boolean => tokens.some((token) => pattern.test(token));
+	if (is(INTEGER_TOKENS)) return value === null || (typeof value === 'number' && Number.isSafeInteger(value)) || (typeof value === 'string' && INTEGER_TEXT.test(value));
+	if (is(DECIMAL_TOKENS)) {
+		if (value === null) return true;
+		const text = typeof value === 'number' && Number.isFinite(value) ? String(value) : typeof value === 'string' ? value : '';
+		return DECIMAL_TEXT.test(text) && !/[eE]/.test(text) && text.replace(/^[+-]/, '').replace('.', '').replace(/^0+/, '').length <= EXACT_DIGITS;
+	}
+	if (is(BOOLEAN_TOKENS)) return value === null || typeof value === 'boolean';
+	if (is(TEXT_TOKENS)) return value === null || typeof value === 'string';
+	return false;
+}
+
+/** What the apply says when an edit or a delete matched no row (review P4 R2-I2). */
+export const ROW_CONFLICT_TEXT = 'This row was changed by someone else since you loaded it. Reload, then edit again.';
 
 /**
  * A number from text: a JavaScript number when that holds it exactly, else
@@ -514,7 +565,8 @@ export function stageDelete(edits: RowEdits, target: RowEditTarget, row: RowValu
 		return put(edits, row, null);
 	}
 	const key = rowKey(target, row);
-	return put(edits, key, { kind: 'delete', key, pk: keyValues(target, row) });
+	const original = Object.fromEntries(target.def.columns.filter((c) => Object.prototype.hasOwnProperty.call(row, c.column)).map((c) => [c.column, row[c.column]]));
+	return put(edits, key, { kind: 'delete', key, pk: keyValues(target, row), original });
 }
 
 /**
@@ -736,13 +788,21 @@ export function buildRowStatements(edits: RowEdits, target: RowEditTarget): SqlA
 			params.push(value);
 			return `$${params.length}`;
 		};
-		const where = (keys: RowValues): string => pk.map((column) => `${q(column)} = ${bind(keys[column])}`).join(' AND ');
+		// The key, then the old value of each column that compares exactly
+		// (null-safe), so a row changed since it was read matches nothing.
+		const sameAs = target.dialect === 'mysql' ? '<=>' : 'IS NOT DISTINCT FROM';
+		const where = (keys: RowValues, old: RowValues, columns: string[]): string => [
+			...pk.map((column) => `${q(column)} = ${bind(keys[column])}`),
+			...columns.filter((column) => comparesExactly(typeOf(target, column), old[column])).map((column) => `${q(column)} ${sameAs} ${bind(old[column])}`),
+		].join(' AND ');
 		if (edit.kind === 'update') {
-			const set = inTableOrder(target, edit.changes).map((column) => `${q(column)} = ${bind(edit.changes[column])}`).join(', ');
-			return { sql: `UPDATE ${table} SET ${set} WHERE ${where(edit.pk)}`, params, expect: 1 };
+			const changed = inTableOrder(target, edit.changes);
+			const set = changed.map((column) => `${q(column)} = ${bind(edit.changes[column])}`).join(', ');
+			return { sql: `UPDATE ${table} SET ${set} WHERE ${where(edit.pk, edit.was, changed)}`, params, expect: 1 };
 		}
 		if (edit.kind === 'delete') {
-			return { sql: `DELETE FROM ${table} WHERE ${where(edit.pk)}`, params, expect: 1 };
+			const others = inTableOrder(target, edit.original).filter((column) => !pk.includes(column));
+			return { sql: `DELETE FROM ${table} WHERE ${where(edit.pk, edit.original, others)}`, params, expect: 1 };
 		}
 		const columns = inTableOrder(target, edit.values);
 		if (columns.length === 0) {
@@ -753,6 +813,27 @@ export function buildRowStatements(edits: RowEdits, target: RowEditTarget): SqlA
 		const values = columns.map((column) => bind(edit.values[column])).join(', ');
 		return { sql: `INSERT INTO ${table} (${columns.map(q).join(', ')}) VALUES (${values})`, params, expect: 1 };
 	});
+}
+
+/**
+ * The changed columns of staged edits whose old values cannot be compared
+ * exactly, so those rows are matched by key only for them (Review SQL says
+ * so).
+ *
+ * @param edits - The staged changes.
+ * @param target - The table.
+ * @returns The columns, once each, in table order.
+ */
+export function uncheckedColumns(edits: RowEdits, target: RowEditTarget): string[] {
+	const unchecked = new Set<string>();
+	for (const edit of edits.entries) {
+		if (edit.kind !== 'update') continue;
+		for (const column of Object.keys(edit.changes)) {
+			const found = target.def.columns.find((c) => c.column === column);
+			if (found && !comparesExactly(found.type, edit.was[column])) unchecked.add(column);
+		}
+	}
+	return target.def.columns.map((c) => c.column).filter((column) => unchecked.has(column));
 }
 
 // =============================================================================

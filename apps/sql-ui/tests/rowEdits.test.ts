@@ -43,6 +43,7 @@ import {
 	pendingCell,
 	rowEditGate,
 	settledCount,
+	uncheckedColumns,
 	valuesFromForm,
 	emptyRowEdits,
 	pendingOf,
@@ -140,9 +141,9 @@ describe('statements: quoted identifiers, bound values, one row each', () => {
 		edits = stageInsert(edits, pg(), { customer_id: '3', status: 'pending' });
 		edits = stageDelete(edits, pg(), { ...ROW, order_id: 14 });
 		assert.deepEqual(buildRowStatements(edits, pg()), [
-			{ sql: 'UPDATE "orders" SET "status" = $1 WHERE "order_id" = $2', params: ['paid', 5], expect: 1 },
+			{ sql: 'UPDATE "orders" SET "status" = $1 WHERE "order_id" = $2 AND "status" IS NOT DISTINCT FROM $3', params: ['paid', 5, 'pending'], expect: 1 },
 			{ sql: 'INSERT INTO "orders" ("customer_id", "status") VALUES ($1, $2)', params: [3, 'pending'], expect: 1 },
-			{ sql: 'DELETE FROM "orders" WHERE "order_id" = $1', params: [14], expect: 1 },
+			{ sql: 'DELETE FROM "orders" WHERE "order_id" = $1 AND "customer_id" IS NOT DISTINCT FROM $2 AND "quantity" IS NOT DISTINCT FROM $3 AND "total" IS NOT DISTINCT FROM $4 AND "status" IS NOT DISTINCT FROM $5 AND "paid" IS NOT DISTINCT FROM $6', params: [14, 3, 1, 96.5, 'pending', false], expect: 1 },
 		]);
 	});
 
@@ -151,35 +152,35 @@ describe('statements: quoted identifiers, bound values, one row each', () => {
 		edits = stageInsert(edits, my(), { customer_id: '3' });
 		edits = stageDelete(edits, my(), { ...ROW, order_id: 14 });
 		assert.deepEqual(buildRowStatements(edits, my()).map((statement) => statement.sql), [
-			'UPDATE `orders` SET `status` = $1 WHERE `order_id` = $2',
+			'UPDATE `orders` SET `status` = $1 WHERE `order_id` = $2 AND `status` <=> $3',
 			'INSERT INTO `orders` (`customer_id`) VALUES ($1)',
-			'DELETE FROM `orders` WHERE `order_id` = $1',
+			'DELETE FROM `orders` WHERE `order_id` = $1 AND `customer_id` <=> $2 AND `quantity` <=> $3 AND `total` <=> $4 AND `status` <=> $5 AND `paid` <=> $6',
 		]);
 	});
 
 	it('a name that holds the quote character is escaped by doubling it, never left to end the identifier', () => {
 		const def: SqlSchemaTable = { columns: [{ column: 'id', type: 'INT' }, { column: 'we"ird`', type: 'TEXT' }], primary_key: ['id'] };
 		const pgEdits = stageUpdate(emptyRowEdits(), pg(def, 'my"table'), { id: 1, 'we"ird`': 'a' }, { 'we"ird`': 'b' });
-		assert.equal(buildRowStatements(pgEdits, pg(def, 'my"table'))[0]!.sql, 'UPDATE "my""table" SET "we""ird`" = $1 WHERE "id" = $2');
+		assert.equal(buildRowStatements(pgEdits, pg(def, 'my"table'))[0]!.sql, 'UPDATE "my""table" SET "we""ird`" = $1 WHERE "id" = $2 AND "we""ird`" IS NOT DISTINCT FROM $3');
 		const myEdits = stageUpdate(emptyRowEdits(), my(def, 'my`table'), { id: 1, 'we"ird`': 'a' }, { 'we"ird`': 'b' });
-		assert.equal(buildRowStatements(myEdits, my(def, 'my`table'))[0]!.sql, 'UPDATE `my``table` SET `we"ird``` = $1 WHERE `id` = $2');
+		assert.equal(buildRowStatements(myEdits, my(def, 'my`table'))[0]!.sql, 'UPDATE `my``table` SET `we"ird``` = $1 WHERE `id` = $2 AND `we"ird``` <=> $3');
 	});
 
 	it('values never reach the statement text, however they look', () => {
 		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: "x'; DROP TABLE orders; --" });
 		const [statement] = buildRowStatements(edits, pg());
-		assert.equal(statement!.sql, 'UPDATE "orders" SET "status" = $1 WHERE "order_id" = $2');
-		assert.deepEqual(statement!.params, ["x'; DROP TABLE orders; --", 5]);
+		assert.equal(statement!.sql, 'UPDATE "orders" SET "status" = $1 WHERE "order_id" = $2 AND "status" IS NOT DISTINCT FROM $3');
+		assert.deepEqual(statement!.params, ["x'; DROP TABLE orders; --", 5, 'pending']);
 	});
 
 	it('a composite key matches on every part, in key order', () => {
 		const edits = stageUpdate(emptyRowEdits(), pg(LINES, 'order_lines'), { order_id: 7, line: 2, note: 'a' }, { note: 'b' });
 		assert.deepEqual(buildRowStatements(edits, pg(LINES, 'order_lines')), [
-			{ sql: 'UPDATE "order_lines" SET "note" = $1 WHERE "order_id" = $2 AND "line" = $3', params: ['b', '7', 2], expect: 1 },
+			{ sql: 'UPDATE "order_lines" SET "note" = $1 WHERE "order_id" = $2 AND "line" = $3 AND "note" IS NOT DISTINCT FROM $4', params: ['b', '7', 2, 'a'], expect: 1 },
 		]);
 		const deleted = stageDelete(emptyRowEdits(), my(LINES, 'order_lines'), { order_id: '9007199254740993', line: 1, note: null });
 		assert.deepEqual(buildRowStatements(deleted, my(LINES, 'order_lines')), [
-			{ sql: 'DELETE FROM `order_lines` WHERE `order_id` = $1 AND `line` = $2', params: ['9007199254740993', 1], expect: 1 },
+			{ sql: 'DELETE FROM `order_lines` WHERE `order_id` = $1 AND `line` = $2 AND `note` <=> $3', params: ['9007199254740993', 1, null], expect: 1 },
 		]);
 	});
 
@@ -187,7 +188,7 @@ describe('statements: quoted identifiers, bound values, one row each', () => {
 		let edits = stageUpdate(emptyRowEdits(), pg(), ROW, { status: null, quantity: null });
 		edits = stageInsert(edits, pg(), { customer_id: null, status: '', quantity: undefined });
 		assert.deepEqual(buildRowStatements(edits, pg()), [
-			{ sql: 'UPDATE "orders" SET "quantity" = $1, "status" = $2 WHERE "order_id" = $3', params: [null, null, 5], expect: 1 },
+			{ sql: 'UPDATE "orders" SET "quantity" = $1, "status" = $2 WHERE "order_id" = $3 AND "quantity" IS NOT DISTINCT FROM $4 AND "status" IS NOT DISTINCT FROM $5', params: [null, null, 5, 1, 'pending'], expect: 1 },
 			{ sql: 'INSERT INTO "orders" ("customer_id") VALUES ($1)', params: [null], expect: 1 },
 		]);
 	});
@@ -276,7 +277,7 @@ describe('values are typed by the reflected column type', () => {
 
 	it('staging coerces: a typed number goes out as a number, and a bad value is refused with its reason', () => {
 		const edits = stageUpdate(emptyRowEdits(), pg(), ROW, { quantity: '3', paid: 'true' });
-		assert.deepEqual(buildRowStatements(edits, pg())[0]!.params, [3, true, 5]);
+		assert.deepEqual(buildRowStatements(edits, pg())[0]!.params, [3, true, 5, 1, false]);
 		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { quantity: 'three' }), /quantity needs a whole number/);
 		refuses(() => stageInsert(emptyRowEdits(), pg(), { paid: 'maybe' }), /paid needs true or false/);
 		refuses(() => stageUpdate(emptyRowEdits(), pg(), ROW, { nope: 1 }), /orders has no column nope/);
@@ -293,9 +294,9 @@ describe('the pending model: keyed by primary key, in staging order', () => {
 		let edits = stageUpdate(emptyRowEdits(), target, ROW, { status: 'paid' });
 		edits = stageUpdate(edits, target, ROW, { quantity: '2' });
 		assert.equal(rowEditCounts(edits).edited, 1);
-		assert.deepEqual(buildRowStatements(edits, target)[0]!.sql, 'UPDATE "orders" SET "quantity" = $1, "status" = $2 WHERE "order_id" = $3');
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.sql, 'UPDATE "orders" SET "quantity" = $1, "status" = $2 WHERE "order_id" = $3 AND "quantity" IS NOT DISTINCT FROM $4 AND "status" IS NOT DISTINCT FROM $5');
 		edits = stageUpdate(edits, target, ROW, { quantity: '1' });
-		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, ['paid', 5]);
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, ['paid', 5, 'pending']);
 		edits = stageUpdate(edits, target, ROW, { status: 'pending' });
 		assert.deepEqual(edits.entries, []);
 	});
@@ -342,7 +343,7 @@ describe('the pending model: keyed by primary key, in staging order', () => {
 		edits = stageDelete(edits, target, { ...ROW, order_id: 14 });
 		assert.deepEqual(dropApplied(edits, 0), edits);
 		assert.deepEqual(dropApplied(edits, 2).entries.map((edit) => edit.kind), ['delete']);
-		assert.deepEqual(buildRowStatements(dropApplied(edits, 2), target).map((statement) => statement.sql), ['DELETE FROM "orders" WHERE "order_id" = $1']);
+		assert.deepEqual(buildRowStatements(dropApplied(edits, 2), target).map((statement) => statement.sql), ['DELETE FROM "orders" WHERE "order_id" = $1 AND "customer_id" IS NOT DISTINCT FROM $2 AND "quantity" IS NOT DISTINCT FROM $3 AND "total" IS NOT DISTINCT FROM $4 AND "status" IS NOT DISTINCT FROM $5 AND "paid" IS NOT DISTINCT FROM $6']);
 	});
 
 	it('every function returns a new value and leaves its input alone', () => {
@@ -502,7 +503,7 @@ describe('the record drawer\'s form: fields in table order, NULL as its own togg
 		const after = before.map((f) => (f.column === 'status' ? { ...f, text: 'paid' } : f.column === 'total' ? { ...f, isNull: true } : f.column === 'order_id' ? { ...f, text: '99' } : f));
 		assert.deepEqual(changesFromForm(before, after), { total: null, status: 'paid' });
 		const edits = stageUpdate(emptyRowEdits(), target, ROW, changesFromForm(before, after));
-		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, [null, 'paid', 5]);
+		assert.deepEqual(buildRowStatements(edits, target)[0]!.params, [null, 'paid', 5, 96.5, 'pending']);
 	});
 
 	it('a new row: an empty form; empty fields are left to the default, NULL is sent only when toggled', () => {
@@ -511,5 +512,55 @@ describe('the record drawer\'s form: fields in table order, NULL as its own togg
 		const filled = fields.map((f) => (f.column === 'status' ? { ...f, text: 'new' } : f.column === 'customer_id' ? { ...f, isNull: true } : f));
 		const edits = stageInsert(emptyRowEdits(), target, valuesFromForm(filled));
 		assert.deepEqual(buildRowStatements(edits, target)[0], { sql: 'INSERT INTO "orders" ("customer_id", "status") VALUES ($1, $2)', params: [null, 'new'], expect: 1 });
+	});
+});
+
+// =============================================================================
+// R2-I2: A ROW SOMEONE ELSE CHANGED IS NOT OVERWRITTEN
+// =============================================================================
+
+describe('R2-I2: an edit or a delete also matches the old values it read, so a row changed since then matches nothing', () => {
+	it('postgres: each changed column\'s old value, null-safe (IS NOT DISTINCT FROM), bound', () => {
+		const edits = stageUpdate(emptyRowEdits(), pg(), { ...ROW, quantity: null }, { quantity: '2', status: 'paid' });
+		assert.deepEqual(buildRowStatements(edits, pg())[0], {
+			sql: 'UPDATE "orders" SET "quantity" = $1, "status" = $2 WHERE "order_id" = $3 AND "quantity" IS NOT DISTINCT FROM $4 AND "status" IS NOT DISTINCT FROM $5',
+			params: [2, 'paid', 5, null, 'pending'],
+			expect: 1,
+		});
+	});
+
+	it('mysql: the same with the null-safe <=>', () => {
+		const edits = stageUpdate(emptyRowEdits(), my(), ROW, { paid: 'true' });
+		assert.deepEqual(buildRowStatements(edits, my())[0], { sql: 'UPDATE `orders` SET `paid` = $1 WHERE `order_id` = $2 AND `paid` <=> $3', params: [true, 5, false], expect: 1 });
+	});
+
+	it('a delete matches every column it can compare exactly; a timestamp is matched by key only', () => {
+		const edits = stageDelete(emptyRowEdits(), pg(), ROW);
+		const [statement] = buildRowStatements(edits, pg());
+		assert.doesNotMatch(statement!.sql, /ordered_at/);
+		assert.deepEqual(statement!.params, [5, 3, 1, 96.5, 'pending', false]);
+	});
+
+	it('values that may not come back exactly are not compared: floats, timestamps, JSON, binary, long decimals, keys already rounded', () => {
+		const def: SqlSchemaTable = {
+			columns: [
+				{ column: 'id', type: 'INTEGER' },
+				{ column: 'ratio', type: 'DOUBLE PRECISION' },
+				{ column: 'seen', type: 'TIMESTAMP WITH TIME ZONE' },
+				{ column: 'meta', type: 'JSONB' },
+				{ column: 'blob', type: 'BYTEA' },
+				{ column: 'amount', type: 'NUMERIC(30,10)' },
+				{ column: 'big', type: 'BIGINT' },
+				{ column: 'label', type: 'TEXT' },
+			],
+			primary_key: ['id'],
+		};
+		const target = pg(def, 'readings');
+		const row = { id: 1, ratio: 0.1, seen: '2026-01-01T00:00:00+00:00', meta: '{"a":1}', blob: 'xyz', amount: 1234567890123.457, big: Number.MAX_SAFE_INTEGER + 2, label: 'x' };
+		const edits = stageUpdate(emptyRowEdits(), target, row, { ratio: '0.2', seen: '2026-01-02', meta: '{}', blob: 'abc', amount: '1', big: '7', label: 'y' });
+		const [statement] = buildRowStatements(edits, target);
+		assert.match(statement!.sql, /WHERE "id" = \$8 AND "label" IS NOT DISTINCT FROM \$9$/);
+		assert.deepEqual(uncheckedColumns(edits, target), ['ratio', 'seen', 'meta', 'blob', 'amount', 'big']);
+		assert.deepEqual(uncheckedColumns(stageUpdate(emptyRowEdits(), pg(), ROW, { status: 'paid' }), pg()), []);
 	});
 });

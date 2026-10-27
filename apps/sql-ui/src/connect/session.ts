@@ -216,7 +216,8 @@ function expectMismatch(statement: SqlApplyStatement, affected: number | null): 
 	if (statement.expect === undefined || affected === statement.expect) return null;
 	const want = `${statement.expect} row${statement.expect === 1 ? '' : 's'}`;
 	if (affected === null) return `The database did not say how many rows the statement changed; it must change exactly ${want}.`;
-	return `The statement changed ${affected} row${affected === 1 ? '' : 's'}; it must change exactly ${want}. The row may have changed or gone since it was read.`;
+	const why = affected < statement.expect ? 'The row may have changed or gone since it was read.' : 'Its key matched more rows than it names.';
+	return `The statement changed ${affected} row${affected === 1 ? '' : 's'}; it must change exactly ${want}. ${why}`;
 }
 
 /**

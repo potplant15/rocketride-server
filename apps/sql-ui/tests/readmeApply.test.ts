@@ -37,7 +37,7 @@ import { APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS } from '../src/connect/tools';
 import { designApplyMode } from '../src/views/TableDesignView';
 import { rowApplyMode } from '../src/sql/applyMode';
 import { pendingCountText, pendingDetailText } from '../src/components/PendingChangesBar';
-import { coerceValue, rowEditGate } from '../src/sql/rowEdits';
+import { ROW_CONFLICT_TEXT, coerceValue, rowEditGate } from '../src/sql/rowEdits';
 
 const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
 
@@ -54,6 +54,12 @@ describe('README claims: Changing rows', () => {
 		assert.notEqual(rowEditGate({ dialect: 'postgres', def, table: 't', executeState: 'on', ready: true }), null, 'no primary key');
 		assert.notEqual(rowEditGate({ dialect: 'clickhouse', def: { ...def, primary_key: ['id'] }, table: 't', executeState: 'on', ready: true }), null, 'ClickHouse');
 		assert.match(prose, /Rows cannot be changed in a table without a primary key, on ClickHouse/);
+	});
+
+	it('says exactly what the conflict check compares, in the words the apply uses (R2-I2)', () => {
+		assert.ok(prose.includes(`\`${ROW_CONFLICT_TEXT}\``));
+		assert.match(prose, /for an edit, by the old values of the columns you changed \(for a delete, of every column\)/);
+		assert.match(prose, /Floating-point, date and time, JSON and binary columns, and longer decimals, are matched by key only/);
 	});
 
 	it('says an unknown outcome is never sent again, and when locks may stay', () => {

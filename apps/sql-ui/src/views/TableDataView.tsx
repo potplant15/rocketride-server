@@ -91,6 +91,7 @@ import {
 	stageDelete,
 	stageInsert,
 	stageUpdate,
+	uncheckedColumns,
 	unstage,
 	valuesFromForm,
 } from '../sql/rowEdits';
@@ -948,6 +949,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 					wording={review.mode.wording}
 					busy={applying}
 					applyDisabledReason={editGate}
+					uncheckedColumns={editTarget ? uncheckedColumns(edits, editTarget) : []}
 					onClose={() => setReview(null)}
 					onApply={() => { void askApply(); }}
 					onDiscardAll={askDiscard}

@@ -50,6 +50,7 @@ import type { SqlApplyResult, SqlApplyStatement, SqlDialect } from '../connect';
 import { EACH_COMMITS_TEXT } from '../sql/applyMode';
 import { previewSql } from '../sql/preview';
 import type { ApplyWording } from '../sql/applyMode';
+import { ROW_CONFLICT_TEXT } from '../sql/rowEdits';
 import type { RowEdits } from '../sql/rowEdits';
 import { applyButtonLabel, pendingCountText } from './PendingChangesBar';
 
@@ -95,6 +96,20 @@ export function reviewSummaryText(statements: readonly SqlApplyStatement[]): str
 	if (!statements.every((statement) => statement.expect !== undefined)) return head;
 	const rows = statements.reduce((sum, statement) => sum + (statement.expect ?? 0), 0);
 	return `${head} · ${count(rows, 'row', 'rows')}`;
+}
+
+/**
+ * Review SQL's note on changed columns matched by key only (their old values
+ * may not come back exactly, so a change by someone else is not detected).
+ *
+ * @param columns - The columns (sql/rowEdits.ts uncheckedColumns).
+ * @returns The note, or null when every change is checked.
+ */
+export function conflictCheckNote(columns: readonly string[]): string | null {
+	if (columns.length === 0) return null;
+	if (columns.length === 1) return `Changes to ${columns[0]} can't be checked for conflicts: its value may not come back exactly, so that row is matched by its key only.`;
+	const list = `${columns.slice(0, -1).join(', ')} and ${columns[columns.length - 1]}`;
+	return `Changes to ${list} can't be checked for conflicts: their values may not come back exactly, so those rows are matched by their keys only.`;
 }
 
 /**
@@ -237,8 +252,10 @@ export function applyResultText(result: SqlApplyResult, facts: { total: number; 
 			message: null,
 		};
 	}
-	// A row count that did not match is the app's sentence, not the database's.
-	const own = failure.stage === 'expect' ? ` ${failure.message}` : '';
+	// A row count that did not match is the app's sentence, not the database's;
+	// no row at all is a row someone else changed (or deleted) since it was read.
+	const conflict = failure.stage === 'expect' && result.results[failure.index]?.affected_rows === 0;
+	const own = failure.stage === 'expect' ? ` ${conflict ? ROW_CONFLICT_TEXT : failure.message}` : '';
 	const message = failure.stage === 'expect' ? null : failure.message;
 	const locks = failure.rollbackConfirmed ? '' : ` The rollback was not confirmed; the database may hold locks on ${table} for up to 5 minutes.`;
 	if (result.transactional) {
@@ -380,6 +397,8 @@ export interface ReviewSqlDialogProps {
 	busy?: boolean;
 	/** Why Apply cannot run now, or null. */
 	applyDisabledReason?: string | null;
+	/** Changed columns matched by key only (sql/rowEdits.ts uncheckedColumns). */
+	uncheckedColumns?: readonly string[];
 	/** Back to editing (also the ✕ and Escape). */
 	onClose: () => void;
 	/** Apply was chosen (the parent confirms first). */
@@ -400,7 +419,8 @@ export interface ReviewSqlDialogProps {
  * @returns The dialog.
  */
 export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
-	const { table, connectionName, dialect, statements, labels = [], wording, busy = false, applyDisabledReason = null, onClose, onApply, onDiscardAll, onCopySql, onOpenInQuery } = props;
+	const { table, connectionName, dialect, statements, labels = [], wording, busy = false, applyDisabledReason = null, uncheckedColumns = [], onClose, onApply, onDiscardAll, onCopySql, onOpenInQuery } = props;
+	const unchecked = conflictCheckNote(uncheckedColumns);
 	const script = reviewScript(statements, dialect, wording);
 	const framed = wording !== 'each';
 	const footer = (
@@ -447,7 +467,8 @@ export const ReviewSqlDialog: React.FC<ReviewSqlDialogProps> = (props) => {
 					</div>
 				)}
 			</div>
-			<div style={styles.bindNote}>Values are shown in place to be read. Apply sends them separately, bound, never as part of the statement text.</div>
+			<div style={styles.bindNote}>Values are shown in place to be read. Apply sends them separately, bound, never as part of the statement text. Each edit and delete also checks the row's old values, so a row someone else changed since you loaded it is not overwritten.</div>
+			{unchecked && <div style={styles.bindNote}>{unchecked}</div>}
 		</Modal>
 	);
 };

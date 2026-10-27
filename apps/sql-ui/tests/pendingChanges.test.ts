@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { SqlApplyResult, SqlApplyStatement } from '../src/connect';
 import { applyButtonLabel, discardConfirmText, discardNeedsConfirm, pendingCountText, pendingDetailText } from '../src/components/PendingChangesBar';
-import { applyConfirmText, applyConfirmTitle, applyResultText, previewSql, reviewIntroText, reviewScript, reviewSummaryText, rowStatementLabels, sqlLiteral } from '../src/components/ReviewSqlDialog';
+import { applyConfirmText, applyConfirmTitle, applyResultText, conflictCheckNote, previewSql, reviewIntroText, reviewScript, reviewSummaryText, rowStatementLabels, sqlLiteral } from '../src/components/ReviewSqlDialog';
 import { EACH_COMMITS_TEXT, perStatementConfirmText, rowApplyMode } from '../src/sql/applyMode';
 import { emptyRowEdits, stageDelete, stageInsert, stageUpdate } from '../src/sql/rowEdits';
 import type { RowEditTarget } from '../src/sql/rowEdits';
@@ -190,8 +190,8 @@ describe('the Apply result says what is saved', () => {
 	});
 
 	it('a row count that did not match is the app\'s own sentence, not the database\'s', () => {
-		const sentence = 'The statement changed 0 rows; it must change exactly 1 row. The row may have changed or gone since it was read.';
-		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 0 }], failure: { index: 0, stage: 'expect', message: sentence, committed: 0, unknown: false, rollbackConfirmed: true } };
+		const sentence = 'The statement changed 2 rows; it must change exactly 1 row. Its key matched more rows than it names.';
+		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 2 }], failure: { index: 0, stage: 'expect', message: sentence, committed: 0, unknown: false, rollbackConfirmed: true } };
 		const text = applyResultText(result, { total: 1, table: 'orders', at });
 		assert.equal(text.detail, `Change 1 of 1 failed. ${sentence} Your edits are still staged.`);
 		assert.equal(text.message, null);
@@ -229,5 +229,18 @@ describe('the Apply result says what is saved', () => {
 		assert.deepEqual(applyResultText(result, { total: 3, table: 'events', at }), { variant: 'error', title: 'Apply stopped at change 2 of 3. 1 of 3 applied.', detail: 'Change 3 was not run.', message: 'denied' });
 		const unknown: SqlApplyResult = { transactional: false, results: [], failure: { index: 0, stage: 'statement', message: 'Stopped waiting', committed: 0, unknown: true, rollbackConfirmed: true } };
 		assert.equal(applyResultText(unknown, { total: 3, table: 'events', at }).detail, 'Change 1 may have been saved: its answer did not arrive. It is no longer staged; check the data. Changes 2–3 were not run.');
+	});
+});
+
+describe('R2-I2: a row changed by someone else is a conflict, said plainly; what cannot be checked is named', () => {
+	it('a change that matched no row reads as a conflict', () => {
+		const result: SqlApplyResult = { transactional: true, results: [{ affected_rows: 0 }], failure: { index: 0, stage: 'expect', message: 'The statement changed 0 rows; it must change exactly 1 row.', committed: 0, unknown: false, rollbackConfirmed: true } };
+		assert.equal(applyResultText(result, { total: 1, table: 'orders', at: 0 }).detail, 'Change 1 of 1 failed. This row was changed by someone else since you loaded it. Reload, then edit again. Your edits are still staged.');
+	});
+
+	it('Review names the changed columns matched by key only', () => {
+		assert.equal(conflictCheckNote([]), null);
+		assert.equal(conflictCheckNote(['price']), 'Changes to price can\'t be checked for conflicts: its value may not come back exactly, so that row is matched by its key only.');
+		assert.equal(conflictCheckNote(['price', 'seen_at']), 'Changes to price and seen_at can\'t be checked for conflicts: their values may not come back exactly, so those rows are matched by their keys only.');
 	});
 });

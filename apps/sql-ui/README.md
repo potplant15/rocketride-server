@@ -247,9 +247,16 @@ row, 1 deleted row. Nothing is saved yet.` **Discard** drops them all (it
 asks first when there are two or more), **Review SQL** shows the exact
 statements, and **Apply** asks first, then sends them.
 
-Each change is one statement that must change exactly one row, picked out by
-its full primary key. A change that touches no row (it was changed or deleted
-since you read it), or more than one, stops the apply. On PostgreSQL, and on
+Each change is one statement that must change exactly one row. It names the
+row by its full primary key and, for an edit, by the old values of the
+columns you changed (for a delete, of every column). So a row someone else
+changed or deleted since you loaded it matches no row, and the apply stops:
+`This row was changed by someone else since you loaded it. Reload, then edit
+again.` Only values that come back exactly are compared: whole numbers,
+decimals of up to 15 digits, text and booleans. Floating-point, date and
+time, JSON and binary columns, and longer decimals, are matched by key only,
+so a change someone else made to them is not detected; Review SQL names
+those columns (`Changes to price can't be checked for conflicts`). On PostgreSQL, and on
 a MySQL table whose storage engine keeps transactions (InnoDB), the changes
 run as one transaction: all are saved, or none, and the confirmation says so.
 On a MySQL table whose engine keeps none (MyISAM, for one) each change
