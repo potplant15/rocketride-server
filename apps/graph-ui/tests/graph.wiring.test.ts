@@ -232,6 +232,12 @@ test('the surface and the workbench hand the other parts what they need, and onl
 	// Captions are part of the connection's style (P5's store): the surface neither reads nor writes graph.captions.
 	assert.doesNotMatch(surface, /CAPTIONS_PREF_KEY|graph\.captions|onCaption=/, 'no caption prefs of its own');
 	assert.ok(/const styleView = useConnectionStyle\(endpoint\.key\);/.test(surface) && /style\.caption/.test(surface), 'the session\'s captions come from the style');
+	// One source: what the session says out loud and what the graph view draws are the same captions, so Reset clears both.
+	const captionsBlock = surface.slice(surface.indexOf('const styleView = useConnectionStyle'), surface.indexOf('captionsRef.current = captions;'));
+	assert.ok(/for \(const \[label, style\] of Object\.entries\(styleView\.style\.labels\)\) if \(style\.caption\) out\.set\(label, style\.caption\);/.test(captionsBlock), 'built from the style alone');
+	assert.ok(/const captionsRef = useRef\(captions\);/.test(captionsBlock) && /captionChoice: \(label\) => captionsRef\.current\.get\(label\)/.test(surface), 'the session reads those');
+	assert.ok(/<GraphView[\s\S]*?captions=\{captions\}/.test(surface), 'and the graph view gets the same map, so no other caption can win over the style\'s');
+	assert.doesNotMatch(surface, /prefs\.(get|set)Pref\(\s*['"]graph\.captions/, 'no caption prefs read or written');
 	const workbench = code(read('views', 'WorkbenchView.tsx'));
 	assert.ok(/const \{ recipe, run \} = previewStatement\(engine, request\);/.test(workbench), 'every preview kind is decided by previewStatement: a "New query" request is never run');
 	assert.doesNotMatch(workbench, /request\.action === 'type-preview' \?/, 'no two-way guess at the kind');

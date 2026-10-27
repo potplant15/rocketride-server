@@ -241,6 +241,11 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const matches = useMemo(() => searchNodes(nodes, query, (n) => captionOf(n, captions.get(n.labels[0] ?? ''))), [nodes, query, captions]);
 	const matchIds = useMemo(() => (matches === null ? null : new Set(matches)), [matches]);
 	// The list of matches changes under the search after an expand, a collapse or a dismiss: start again from the first, and never read past the end.
+	const matchKey = matches === null ? null : matches.join('\u0000');
+	useEffect(() => {
+		setCurrent(0);
+	}, [matchKey]);
+	const at = matches === null ? 0 : Math.min(current, Math.max(0, matches.length - 1));
 	// The canvas no longer refits when its size changes, so a change of full screen asks for it.
 	const wasMaximized = useRef(maximized);
 	useEffect(() => {
@@ -250,11 +255,6 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		const timer = window.setTimeout(() => handle.current?.fit(), 60);
 		return () => window.clearTimeout(timer);
 	}, [maximized]);
-	const matchKey = matches === null ? null : matches.join('\u0000');
-	useEffect(() => {
-		setCurrent(0);
-	}, [matchKey]);
-	const at = matches === null ? 0 : Math.min(current, Math.max(0, matches.length - 1));
 
 	const budget = canvasBudgetText(state.model);
 	const focused = state.focusedId !== null ? state.model.nodes.get(state.focusedId) : undefined;
