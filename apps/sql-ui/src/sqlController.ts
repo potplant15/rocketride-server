@@ -495,11 +495,14 @@ export function attachSqlController(opts: SqlControllerOptions): SqlControllerMo
 		},
 		'sql.refreshSchema': ({ connId }) => core.withSession(connId, (session) => session.refreshSchema(), 'refresh_schema'),
 		'sql.dialect': ({ connId }) => core.withSession(connId, (session) => session.dialect(), 'dialect'),
-		'sql.applyBatch': ({ connId, statements, atomic }) => {
+		'sql.applyBatch': ({ connId, statements, atomic, owner }) => {
+			requireOwner(owner, 'apply');
 			checkApplyInput({ statements, atomic });
 			// The core gates the list with the node's dialect and keeps the
 			// session id: the frame gets the outcome only. Never repeated (T10).
-			return core.applyBatch(connId, statements, atomic);
+			// The account is checked again once the connection is resolved,
+			// right before anything is sent.
+			return core.applyBatch(connId, statements, atomic, () => requireOwner(owner, 'apply'));
 		},
 		'sql.getService': async ({ provider }) => {
 			if (typeof provider !== 'string' || provider === '') throw invalidInput('get_service', 'The provider must be a name.');

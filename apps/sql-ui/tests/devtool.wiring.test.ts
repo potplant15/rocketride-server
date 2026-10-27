@@ -298,7 +298,7 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			await fails('sql.getSchema', 'get_schema');
 			await fails('sql.refreshSchema', 'refresh_schema');
 			await fails('sql.dialect', 'dialect');
-			await fails('sql.applyBatch', 'apply', { statements: [{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], atomic: true });
+			await fails('sql.applyBatch', 'apply', { owner: r.frame.owner(), statements: [{ sql: 'DELETE FROM "orders" WHERE "id" = $1', params: [1], expect: 1 }], atomic: true });
 		} finally {
 			r.dispose();
 		}
@@ -882,7 +882,7 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 		} });
 		try {
 			await r.env.resolveEndpoint(PIPELINE);
-			const apply = (sqls: string[], atomic = true) => r.frame.caller.callReply('sql.applyBatch', { connId: 'c-pipe', statements: sqls.map((sql) => ({ sql, expect: 1 })), atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] });
+			const apply = (sqls: string[], atomic = true) => r.frame.caller.callReply('sql.applyBatch', { connId: 'c-pipe', owner: r.frame.owner(), statements: sqls.map((sql) => ({ sql, expect: 1 })), atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] });
 			const EDIT = 'UPDATE "orders" SET "name" = \'x\' WHERE "id" = 1';
 			for (const list of [[EDIT, 'COMMIT'], ['BEGIN', EDIT], [EDIT, 'SAVEPOINT s1'], [`${EDIT}; ROLLBACK`]]) {
 				for (const atomic of [true, false]) {
@@ -964,7 +964,7 @@ describe('T10 — write gates hold in the controller even when a frame calls the
 			await r.env.resolveEndpoint(PIPELINE);
 			const before = r.engine.requests.length;
 			type Checked = 'sql.execute' | 'sql.getSchema' | 'sql.getService' | 'sql.validate' | 'sql.releaseEndpoint' | 'sql.applyBatch';
-			const call = (op: Checked, params: Record<string, unknown>) => r.frame.caller.callReply(op, { connId: 'c-pipe', ...params } as never, { timeoutMs: SQL_OP_TIMEOUT_MS[op] });
+			const call = (op: Checked, params: Record<string, unknown>) => r.frame.caller.callReply(op, { connId: 'c-pipe', ...(op === 'sql.applyBatch' ? { owner: r.frame.owner() } : {}), ...params } as never, { timeoutMs: SQL_OP_TIMEOUT_MS[op] });
 			const bad: Array<[Checked, Record<string, unknown>]> = [
 				['sql.releaseEndpoint', { key: 42 }],
 				['sql.getService', { provider: 42 }],

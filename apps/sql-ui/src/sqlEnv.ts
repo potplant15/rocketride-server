@@ -200,9 +200,10 @@ async function underTicket<T>(ticket: IGenerationTicket | undefined, tool: strin
  *
  * @param caller - The frame's caller.
  * @param endpoint - The endpoint to bind (carrying its connId).
+ * @param owner - The identity fingerprint the frame belongs to (sent with an apply, which writes).
  * @returns The proxy session.
  */
-function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint): SqlSession {
+function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint, owner: () => string | null): SqlSession {
 	const connId = connIdOf(endpoint);
 	return {
 		endpoint,
@@ -221,6 +222,7 @@ function remoteSession(caller: IFrameCaller<SqlOps>, endpoint: SqlEndpoint): Sql
 		// gets the outcome, never a session id.
 		applyBatch: (statements: SqlApplyStatement[], opts: { atomic: boolean }): Promise<SqlApplyResult> => caller.callReply('sql.applyBatch', {
 			connId,
+			owner: owner(),
 			statements: statements.map((statement) => ({
 				sql: statement.sql,
 				...(statement.params ? { params: statement.params as JsonValue[] } : {}),
@@ -248,7 +250,7 @@ export function createRemoteSqlEnv(caller: IFrameCaller<SqlOps>, ready: boolean,
 		prefs: SESSION_PREFS,
 		gridPersistence: SESSION_GRIDS,
 		ready,
-		getSession: (endpoint) => remoteSession(caller, endpoint),
+		getSession: (endpoint) => remoteSession(caller, endpoint, owner),
 		resolveEndpoint: (conn) => caller.callReply('sql.resolveEndpoint', { connId: conn.id }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.resolveEndpoint'] }),
 		releaseEndpoint: (connId, key) => {
 			// Fire-and-forget: a late or lost reply is fine — the TTL reaps.

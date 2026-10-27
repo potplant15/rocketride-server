@@ -110,10 +110,29 @@ describe('the engine core decides the transaction with the node\'s dialect', () 
 		const r = await rig({ tool: nodeOf(() => { throw new Error('connection refused'); }) });
 		try {
 			await r.env.resolveEndpoint(PIPELINE);
-			const apply = (atomic: boolean) => r.frame.caller.callReply('sql.applyBatch', { connId: 'c-pipe', statements: EDITS, atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] });
+			const apply = (atomic: boolean) => r.frame.caller.callReply('sql.applyBatch', { connId: 'c-pipe', owner: r.frame.owner(), statements: EDITS, atomic }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] });
 			await assert.rejects(apply(true), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'invalid' && error.message === APPLY_UNKNOWN_DIALECT_TEXT);
 			assert.equal(toolRequests(r.engine, 'begin').length + toolRequests(r.engine, 'execute').length, 0, 'nothing was sent');
 			assert.deepEqual(await apply(false), { transactional: false, results: [{ affected_rows: 1 }, { affected_rows: 1 }], failure: null });
+		} finally {
+			r.dispose();
+		}
+	});
+});
+
+describe('M-7: an apply writes, so a frame of another account is refused', () => {
+	it('an apply sent for another account (or none) is refused before anything is resolved or sent', async () => {
+		const r = await rig({ tool: nodeOf('postgres') });
+		try {
+			await r.env.resolveEndpoint(PIPELINE);
+			const before = r.engine.requests.length;
+			for (const owner of ['someone-else', null]) {
+				await assert.rejects(
+					r.frame.caller.callReply('sql.applyBatch', { connId: 'c-pipe', owner, statements: EDITS, atomic: true }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.applyBatch'] }),
+					(error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale' && /nothing was changed/.test(error.message),
+				);
+			}
+			assert.deepEqual(r.engine.requests.slice(before).map((q) => q.op), [], 'nothing reached the engine');
 		} finally {
 			r.dispose();
 		}

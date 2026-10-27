@@ -195,10 +195,11 @@ export interface SqlCore {
 	 * @param connId - The connection.
 	 * @param statements - The statements, in order.
 	 * @param atomic - Run them as one transaction where the engine has one.
+	 * @param stillAllowed - Throws when the apply is no longer allowed; run once the connection is resolved, right before anything is sent (default: nothing to check).
 	 * @returns What ran (a failure once statements are sent is data).
-	 * @throws ExplorerToolError `invalid` (the list was refused), `unavailable`, or `begin`'s refusal: nothing was applied.
+	 * @throws ExplorerToolError `invalid` (the list was refused), `unavailable`, `transactions-unavailable`, or `begin`'s refusal: nothing was applied.
 	 */
-	applyBatch(connId: string, statements: SqlApplyStatement[], atomic: boolean): Promise<SqlApplyResult>;
+	applyBatch(connId: string, statements: SqlApplyStatement[], atomic: boolean, stillAllowed?: () => void): Promise<SqlApplyResult>;
 	/**
 	 * Stop a direct connection's temp pipeline, best effort (a no-op for a
 	 * pipeline connection).
@@ -533,8 +534,9 @@ export function createSqlCore(opts: SqlCoreOptions): SqlCore {
 		return fn(session, { dialect });
 	};
 
-	const applyBatch = (connId: string, statements: SqlApplyStatement[], atomic: boolean): Promise<SqlApplyResult> => withSession(connId, async (session, ctx) => {
+	const applyBatch = (connId: string, statements: SqlApplyStatement[], atomic: boolean, stillAllowed: () => void = () => undefined): Promise<SqlApplyResult> => withSession(connId, async (session, ctx) => {
 		const dialect = await ctx.dialect();
+		stillAllowed();
 		const refusal = gateApplyStatements(statements.map((statement) => statement.sql), dialect, atomic);
 		if (refusal !== null) throw new ExplorerToolError({ kind: 'invalid', tool: 'apply', message: refusal });
 		// A ClickHouse `begin` reserves a connection but opens no transaction
