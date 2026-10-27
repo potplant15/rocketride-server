@@ -34,6 +34,7 @@ import type { SchemaState } from '../schema/schemaStore';
 import { refreshSchema, useExecuteState } from '../schema/schemaStore';
 import { executeGateReason } from '../executeGate';
 import { useSqlEnv } from '../sqlEnv';
+import { guardLayouts, layoutRulesFor } from '../sql/gridLayout';
 import { useTableRecordRequest } from '../navigation';
 import { useSqlPageNav } from '../pageNav';
 import TableRecordPanel from '../components/TableRecordPanel';
@@ -154,6 +155,8 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 					rrDefault: true,
 					rrDefaultSort: 'asc',
 					rrDescription: 'Table name as reflected from the database.',
+					// Fills what the sized columns leave, never so narrow a name is cut to a stub.
+					minWidth: 160,
 					headerSort: true,
 					formatter: (cell: GridCellComponent) => monoEl(String(cell.getValue() ?? '')),
 				},
@@ -192,15 +195,23 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 					headerSort: true,
 					sorter: 'number',
 				},
-				// A row click opens the table's data; this opens its details.
-				createActionsColumn<TableRow>({
-					actions: [{ key: 'details', label: 'Details' }],
-					onAction: (_key, row) => setStack([row.name]),
-					width: 110,
-				}),
+				// A row click opens the table's data; this opens its details. Part of
+				// the default view: the shell hides a column without rrDefault once
+				// any column declares it, and this one has no header menu to show it.
+				{
+					...createActionsColumn<TableRow>({
+						actions: [{ key: 'details', label: 'Details' }],
+						onAction: (_key, row) => setStack([row.name]),
+						width: 110,
+					}),
+					rrDefault: true,
+				},
 			] satisfies GridColumnDefinition[],
 		[],
 	);
+	// Saved layouts keep no width for a flexible column (sql/gridLayout.ts), so a
+	// grid built while hidden can never freeze one at 40 px.
+	const gridLayouts = useMemo(() => guardLayouts(env.gridPersistence, layoutRulesFor(columns)), [env.gridPersistence, columns]);
 
 	// ── Loading / error framing ──────────────────────────────────────────────
 
@@ -266,7 +277,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 						columns={columns}
 						data={rows}
 						tableId="sql-overview-tables"
-						persistence={env.gridPersistence}
+						persistence={gridLayouts}
 						paginate={false}
 						height="100%"
 						onRowClick={(row) => (gateReason ? setStack([row.name]) : pageNav.openTableData(row.name))}

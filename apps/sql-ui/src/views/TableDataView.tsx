@@ -74,6 +74,7 @@ import type { ApplyResultText } from '../components/ReviewSqlDialog';
 import { knownNoTransactions, noteNoTransactions, perStatementConfirmText, readTableEngine, rowApplyMode, thrownApplyMayHaveRun } from '../sql/applyMode';
 import type { RowApplyMode } from '../sql/applyMode';
 import { applyHistoryEntries } from '../sql/applyHistory';
+import { guardLayouts, layoutRulesFor } from '../sql/gridLayout';
 import { registerStagedCount } from '../sql/stagedGuard';
 import {
 	RowEditError,
@@ -461,6 +462,9 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 			} satisfies GridColumnDefinition;
 		});
 	}, [tableDef, graph, table, markCell]);
+	// Saved layouts keep no width for a flexible column (sql/gridLayout.ts), so a
+	// grid built while hidden can never freeze one at 40 px.
+	const gridLayouts = useMemo(() => guardLayouts(env.gridPersistence, layoutRulesFor(columns)), [env.gridPersistence, columns]);
 
 	/**
 	 * Run a bound SELECT for the row drawer's foreign-key links, on the
@@ -945,7 +949,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 						onRowClick={handleRowClick}
 						onLoadError={handleLoadError}
 						tableId={`sql-data-${endpoint.provider}`}
-						persistence={env.gridPersistence}
+						persistence={gridLayouts}
 						height="100%"
 						emptyTitle="No rows"
 						emptyDescription="The table is empty (or nothing matches the current search/filters)."

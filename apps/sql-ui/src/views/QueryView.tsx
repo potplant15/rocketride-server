@@ -81,6 +81,7 @@ import type { SafetyLevel } from '../connect/savedConnections';
 import { useConnectionRecord } from '../connectionRecord';
 import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
+import { guardLayouts, layoutRulesFor } from '../sql/gridLayout';
 import {
 	ALLOW_EXECUTE_OFF_TEXT,
 	GENERIC_ERROR_TEXT,
@@ -797,6 +798,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			} satisfies GridColumnDefinition;
 		});
 	}, [rows, resultCols, columnTypes]);
+	// Saved layouts keep no width for a flexible column (sql/gridLayout.ts), so a
+	// grid built while hidden can never freeze one at 40 px.
+	const gridLayouts = useMemo(() => guardLayouts(env.gridPersistence, layoutRulesFor(columns)), [env.gridPersistence, columns]);
 
 	// The precision note, only when a value could have lost digits on the way
 	// (a DECIMAL/NUMERIC column, a long float, an integer beyond 2^53).
@@ -1059,7 +1063,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 								columns={columns}
 								data={gridRows}
 								tableId="sql-query-results"
-								persistence={env.gridPersistence}
+								persistence={gridLayouts}
 								paginate={false}
 								height="100%"
 								emptyTitle="No rows"

@@ -813,7 +813,9 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 		assert.ok(persisted.length >= 4, persisted.join(', '));
 		for (const rel of persisted) {
 			const text = source(rel);
-			assert.equal((text.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length, (text.match(/tableId=/g) ?? []).length, `${rel}: every persisted grid`);
+			// Through the layout guard (sql/gridLayout.ts), over the env's persistence.
+			assert.equal((text.match(/persistence=\{gridLayouts\}/g) ?? []).length, (text.match(/tableId=/g) ?? []).length, `${rel}: every persisted grid`);
+			assert.match(text, /guardLayouts\(env\.gridPersistence, layoutRulesFor\(columns\)\)/, rel);
 		}
 		assert.match(source('sqlEnv.ts'), /gridPersistence: SESSION_GRIDS,/);
 	});
