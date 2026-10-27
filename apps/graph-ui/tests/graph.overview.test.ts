@@ -22,7 +22,9 @@ const NOW = Date.parse('2026-10-04T15:04:00Z');
 const view = parseSchema(fixture('schema_v2'));
 const dialect = parseDialect(fixture('dialect_neo4j'));
 const endpoint = { nodeName: 'Neo4j', pipelineName: 'Customer Graph' };
-const input = (over: Partial<IOverviewInput> = {}): IOverviewInput => ({ view, dialect, style: EMPTY_STYLE, endpoint, now: NOW, ...over });
+/** What the realm that owns the schema stored: slots for the labels, by name. */
+const STYLE = { ...EMPTY_STYLE, assigned: { Company: 0, Person: 1 } };
+const input = (over: Partial<IOverviewInput> = {}): IOverviewInput => ({ view, dialect, style: STYLE, ready: true, chipLabels: [], endpoint, now: NOW, ...over });
 
 /** A v2 schema block with the given labels and relationship types. */
 function schemaOf(labels: Array<Record<string, unknown>>, types: Array<Record<string, unknown>> = [], over: Record<string, unknown> = {}) {
@@ -114,7 +116,7 @@ test('parallel patterns between the same two labels take different paths', () =>
 });
 
 test('colours are the connection\'s stored ones: a label keeps its slot when another is added', () => {
-	const style = { ...EMPTY_STYLE, assigned: { Person: 3 } };
+	const style = { ...EMPTY_STYLE, assigned: { Person: 3, Company: 0 } };
 	const g = buildOverview(input({ style })).graph;
 	assert.ok(g && g.kind === 'drawn');
 	assert.equal(g.nodes.find((n) => n.label === 'Person')?.fill, 'var(--rr-chart-orange)');
@@ -159,6 +161,29 @@ test('the empty wording needs fresh evidence: unknown evidence with nothing list
 	assert.doesNotMatch(unknown.headline, /empty/);
 });
 
+test('labels are drawn neutral until the style is ready', () => {
+	const g = buildOverview(input({ ready: false })).graph;
+	assert.ok(g && g.kind === 'drawn');
+	assert.ok(g.nodes.every((n) => n.fill === 'var(--rr-grey-400)'));
+	assert.ok(buildOverview(input({ ready: false })).labels.every((l) => l.fill === 'var(--rr-grey-400)'));
+});
+
+test('a truncated listing gives lower bounds, and the size line is the cards\' words', () => {
+	const cut = schemaOf([{ name: 'A', properties: [], count: 5, count_estimated: false }], [], { truncated: true });
+	const m = buildOverview(input({ view: cut }));
+	assert.equal(m.tiles.find((t) => t.id === 'nodes')?.value, 'at least 5');
+	assert.equal(m.size, 'At least 5 nodes (per label)');
+	assert.equal(buildOverview(input()).size, 'About 3 nodes (per label) · some relationship counts not reported');
+});
+
+test('a read that lists nothing and proves nothing never reads as zero', () => {
+	assert.equal(buildOverview(input({ view: parseSchema(null) })).headline, 'Could not be read', 'a load that failed outright');
+	assert.equal(buildOverview(input({ view: parseSchema({ labels: [], nodes: {}, relationships: [] }) })).headline, 'Not reported by this node', 'an old node\'s empty answer');
+	const incapable = buildOverview(input({ view: schemaOf([], [], { capable: false }) }));
+	assert.equal(incapable.state, 'unavailable');
+	assert.equal(incapable.headline, 'Not reported by this node');
+});
+
 test('the heading line names the engine, the database or graph, the route and the schema\'s age', () => {
 	const m = buildOverview(input());
 	assert.match(m.subtitle, /^Neo4j 5\.26\.31 Community · database neo4j · via Customer Graph \/ Neo4j · schema refreshed 4 minutes ago/);
@@ -166,7 +191,7 @@ test('the heading line names the engine, the database or graph, the route and th
 
 test('the chips say what the counts are and that property keys are sampled', () => {
 	const chips = buildOverview(input()).chips;
-	assert.ok(chips.includes('Writes allowed') === parseDialect(fixture('dialect_neo4j'))?.allowExecute);
+	assert.deepEqual(buildOverview(input({ chipLabels: ['Supported (Cypher)', 'Read-only'] })).chips.slice(0, 2), ['Supported (Cypher)', 'Read-only'], 'the cards\' chips come first, in their words');
 	const caption = chips[chips.length - 1];
 	assert.match(caption, /counts are estimates/i);
 	assert.match(caption, /property keys are sampled/);

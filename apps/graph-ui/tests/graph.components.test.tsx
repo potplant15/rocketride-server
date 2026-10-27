@@ -34,7 +34,8 @@ import type { IGraphEnv } from '../src/env';
 import { parseDialect } from '../src/graph/dialect';
 import { parseSchema } from '../src/graph/schema';
 import type { ISchemaView } from '../src/graph/schema';
-import { createMemoryUserData } from '../src/graph/userData';
+import { EMPTY_STYLE, createMemoryUserData } from '../src/graph/userData';
+import type { IGraphUserData } from '../src/graph/userData';
 import type { ReadQueryResult } from '../src/graph/types';
 import { fixture } from './support/builders';
 
@@ -84,22 +85,27 @@ test('the export menu says Download in a browser and Copy in VS Code, with the r
 });
 
 /** An env that has only what the Overview reads: any other reach into it throws, so a request cannot go unnoticed. */
-function envWith(view: ISchemaView | null): IGraphEnv {
-	const only = { schemaView: { get: () => view, subscribe: () => () => undefined }, userData: createMemoryUserData('test') };
+function envWith(view: ISchemaView | null, styled?: IGraphUserData): IGraphEnv {
+	const probes = { k1: { ok: true, info: fixture<Record<string, unknown>>('dialect_neo4j'), dialect: 'neo4j' } };
+	const only = { schemaView: { get: () => view, subscribe: () => () => undefined }, endpoints: { get: () => ({ probes }), subscribe: () => () => undefined }, userData: styled ?? createMemoryUserData('test') };
 	return new Proxy(only, { get: (target, prop) => { if (prop in target) return (target as Record<string | symbol, unknown>)[prop]; throw new Error(`the Overview touched env.${String(prop)}`); } }) as unknown as IGraphEnv;
 }
 
 const endpoint = { key: 'k1', nodeName: 'Neo4j', pipelineName: 'Customer Graph' } as never;
 const noop = (): void => undefined;
 
+/** User data whose style is loaded and holds the slots the schema's own realm gave. */
+const styled = (): IGraphUserData => ({ ...createMemoryUserData('test'), style: () => ({ get: () => ({ ready: true, style: { ...EMPTY_STYLE, assigned: { Company: 0, Person: 1 } } }), subscribe: () => () => undefined }) });
+
 test('the Overview from the schema fixture: about, not reported, colours, patterns, and nothing requested', () => {
 	const dialect = parseDialect(fixture('dialect_neo4j'));
 	const html = renderToStaticMarkup(
-		<GraphEnvProvider value={envWith(parseSchema(fixture('schema_v2')))}>
+		<GraphEnvProvider value={envWith(parseSchema(fixture('schema_v2')), styled())}>
 			<OverviewPanel endpoint={endpoint} dialect={dialect} onPreview={noop} onNewQuery={noop} onExplore={noop} onRefreshSchema={noop} />
 		</GraphEnvProvider>
 	);
 	assert.match(html, /about 3/);
+	assert.match(html, /Supported \(Cypher\)/, 'the chips are the cards\'');
 	assert.match(html, /not reported/);
 	assert.match(html, /var\(--rr-chart-blue\)/);
 	assert.match(html, /Person → Company/);

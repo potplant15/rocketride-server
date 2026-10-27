@@ -38,6 +38,7 @@ import { labelPreview } from '../cypher/recipes';
 import { engineText } from './dialect';
 import type { IGraphDialect } from './dialect';
 import { labelColors } from './colors';
+import { sizeText, unreadSchemaText } from './connections';
 import { ageText, schemaStatusText } from './schema';
 import type { ISchemaEndpoint, ISchemaProperty, ISchemaView } from './schema';
 import type { IConnectionStyle } from './userData';
@@ -56,6 +57,10 @@ export interface IOverviewInput {
 	dialect: IGraphDialect | null;
 	/** The connection's stored colours. */
 	style: IConnectionStyle;
+	/** False until the style has loaded: labels are then drawn in a neutral colour, so none shows a default and then shifts. */
+	ready: boolean;
+	/** The connection's chips, in the words the cards use (graph/connections.ts `connectionChips`). */
+	chipLabels: readonly string[];
 	endpoint: { nodeName: string; pipelineName: string };
 	/** The current time (ms since the epoch), for the schema's age. */
 	now: number;
@@ -150,6 +155,8 @@ export interface IOverviewModel {
 	detail: string;
 	/** `Neo4j 5.26.31 Community · database neo4j · via ... · schema refreshed 4 minutes ago`. */
 	subtitle: string;
+	/** The size line, in the words the cards and the drawer use (`60 nodes (per label) · 92 relationships`), or ''. */
+	size: string;
 	tiles: IOverviewTile[];
 	chips: string[];
 	graph: OverviewGraph | null;
@@ -182,10 +189,11 @@ export function countLabel(count: number | null, estimated: boolean): string {
  * @param items - Counts and whether each is an estimate.
  * @returns The text for a tile.
  */
-function total(items: ReadonlyArray<{ count: number | null; countEstimated: boolean }>): string {
+function total(items: ReadonlyArray<{ count: number | null; countEstimated: boolean }>, truncated: boolean): string {
 	if (items.some((item) => item.count === null)) return 'not reported';
 	const sum = items.reduce((acc, item) => acc + (item.count ?? 0), 0);
-	return countLabel(sum, items.some((item) => item.countEstimated));
+	// A listing the node cut short gives lower bounds.
+	return `${truncated ? 'at least ' : ''}${countLabel(sum, items.some((item) => item.countEstimated))}`;
 }
 
 /**
@@ -225,6 +233,9 @@ function caption(view: ISchemaView): string {
 // =============================================================================
 // THE SCHEMA GRAPH
 // =============================================================================
+
+/** A label's colour before its connection's style has loaded. */
+const NEUTRAL_FILL = 'var(--rr-grey-400)';
 
 const WIDTH = 560;
 const HEIGHT = 380;
@@ -347,14 +358,14 @@ function drawGraph(view: ISchemaView, fills: ReadonlyMap<string, string>): Overv
  */
 export function buildOverview(input: IOverviewInput): IOverviewModel {
 	const { view, dialect, endpoint } = input;
-	const base: IOverviewModel = { state: 'loading', headline: 'The schema has not been loaded', notice: 'Refresh the schema to read it.', detail: '', subtitle: '', tiles: [], chips: [], graph: null, labels: [], types: [] };
+	const base: IOverviewModel = { state: 'loading', headline: 'The schema has not been loaded', notice: 'Refresh the schema to read it.', detail: '', subtitle: '', size: '', tiles: [], chips: [], graph: null, labels: [], types: [] };
 	const where = dialect ? (dialect.graph ? `graph ${dialect.graph}` : dialect.database ? `database ${dialect.database}` : '') : '';
 	const subtitle = [dialect ? engineText(dialect) : '', where, `via ${endpoint.pipelineName} / ${endpoint.nodeName}`, view?.refreshedAt ? `schema ${ageText(view.refreshedAt, input.now)}` : ''].filter((part) => part !== '').join(' · ');
 	if (view === null) return { ...base, subtitle };
 
 	const status = schemaStatusText(view, input.now);
 	if (view.evidence === 'incapable' || view.evidence === 'error') {
-		return { ...base, state: 'unavailable', headline: 'The schema is not available', notice: status, detail: view.error ? [view.error.headline, view.error.detail].filter((part) => part !== '').join('\n') : '', subtitle };
+		return { ...base, state: 'unavailable', headline: unreadSchemaText(view) ?? 'The schema is not available', notice: status, detail: view.error ? [view.error.headline, view.error.detail].filter((part) => part !== '').join('\n') : '', subtitle };
 	}
 	const nothing = view.labels.length === 0 && view.relationshipTypes.length === 0;
 	if (nothing && view.evidence === 'fresh') {
@@ -362,26 +373,26 @@ export function buildOverview(input: IOverviewInput): IOverviewModel {
 		return { ...base, state: 'empty', headline: 'This graph is empty', notice: `${who} reports no labels and no relationship types for ${dialect?.graph ?? dialect?.database ?? endpoint.nodeName}. This is an empty graph, not a failed schema read.`, subtitle };
 	}
 	if (nothing && view.evidence === 'unknown') {
-		return { ...base, state: 'unknown', headline: 'The node does not say what the graph holds', notice: status, subtitle };
+		return { ...base, state: 'unknown', headline: unreadSchemaText(view) ?? 'The node does not say what the graph holds', notice: status, subtitle };
 	}
 
 	const colors = labelColors(input.style, view.labels.map((l) => l.name));
-	const fills = new Map([...colors].map(([name, color]) => [name, color.fill]));
+	// Neutral until the style is ready, as the sidebar's dots are.
+	const fills = new Map([...colors].map(([name, color]) => [name, input.ready ? color.fill : NEUTRAL_FILL]));
 	const engine = dialect ? { dialect: dialect.dialect, version: dialect.engineVersion } : null;
 	const keys = new Set<string>();
 	for (const item of [...view.labels, ...view.relationshipTypes]) for (const p of item.properties) keys.add(p.name);
 	const labelNames = new Set(view.labels.map((l) => l.name));
 
 	const tiles: IOverviewTile[] = [];
-	const nodesTotal = total(view.labels);
+	const nodesTotal = total(view.labels, view.truncated);
 	tiles.push({ id: 'nodes', label: 'Nodes', value: nodesTotal, note: nodesTotal === 'not reported' || dialect?.dialect === 'age' || view.labels.length === 0 ? '' : 'per label; a node with two labels counts twice' });
-	tiles.push({ id: 'relationships', label: 'Relationships', value: total(view.relationshipTypes), note: '' });
+	tiles.push({ id: 'relationships', label: 'Relationships', value: total(view.relationshipTypes, view.truncated), note: '' });
 	tiles.push({ id: 'labels', label: 'Labels', value: view.labels.length.toLocaleString('en-US'), note: view.truncated ? 'the list was cut' : '' });
 	tiles.push({ id: 'types', label: 'Relationship types', value: view.relationshipTypes.length.toLocaleString('en-US'), note: view.truncated ? 'the list was cut' : '' });
 	tiles.push({ id: 'keys', label: 'Property keys', value: keys.size.toLocaleString('en-US'), note: view.sampled ? 'sampled' : '' });
 
-	const chips: string[] = [];
-	if (dialect) chips.push(dialect.allowExecute ? 'Writes allowed' : 'Writes are off on this node');
+	const chips: string[] = [...input.chipLabels];
 	const sentence = caption(view);
 	if (sentence) chips.push(sentence);
 
@@ -391,6 +402,7 @@ export function buildOverview(input: IOverviewInput): IOverviewModel {
 		notice: view.evidence === 'stale' || view.evidence === 'unknown' ? status : '',
 		detail: '',
 		subtitle,
+		size: sizeText(view),
 		tiles,
 		chips,
 		graph: view.labels.length === 0 ? null : view.labels.length > MAX_DRAWN_LABELS ? { kind: 'list', labels: view.labels.length } : drawGraph(view, fills),

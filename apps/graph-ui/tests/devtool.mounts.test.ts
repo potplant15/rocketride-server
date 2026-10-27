@@ -547,9 +547,18 @@ describe('grid layouts are copies everywhere: a frame keeps them in the session,
 		assert.ok(persisted.includes(path.join('components', 'ResultViews.tsx')), persisted.join(', '));
 		for (const rel of persisted) {
 			const text = read(rel);
-			// Directly, or through the layout guard (graph/gridLayout.ts), which wraps the env's persistence and nothing else.
-			const taken = (text.match(/persistence=\{env\.gridPersistence\}/g) ?? []).length + (/guardLayouts\(env\.gridPersistence,/.test(text) ? (text.match(/persistence=\{persistence\}/g) ?? []).length : 0);
-			assert.equal(taken, (text.match(/tableId=/g) ?? []).length, `${rel}: every persisted grid`);
+			// Each grid element, not just the file: the element holding a tableId also holds its persistence, which is the env's
+			// directly or, through graph/gridLayout.ts, the env's wrapped by the layout guard (and nothing else).
+			let at = text.indexOf('tableId=');
+			while (at !== -1) {
+				const start = Math.max(text.lastIndexOf('<CardDataGrid', at), text.lastIndexOf('<DataGrid', at));
+				const element = text.slice(start, text.indexOf('/>', at));
+				assert.ok(start !== -1, `${rel}: a tableId outside a grid`);
+				const direct = /persistence=\{env\.gridPersistence\}/.test(element);
+				const guarded = /persistence=\{persistence\}/.test(element) && /guardLayouts\(env\.gridPersistence,/.test(text);
+				assert.ok(direct || guarded, `${rel}: this grid does not take the env's persistence`);
+				at = text.indexOf('tableId=', at + 1);
+			}
 		}
 		assert.match(read('devtool/frame.ts'), /gridPersistence: SESSION_GRIDS,/);
 	});

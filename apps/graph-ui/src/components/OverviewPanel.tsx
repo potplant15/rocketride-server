@@ -40,7 +40,8 @@ import React, { useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { Banner, Button } from 'shell';
 import type { IExplorerEndpoint } from 'shared/explorer';
-import { useConnectionStyle, useSchemaView } from '../env';
+import { connectionChips } from '../graph/connections';
+import { useConnectionStyle, useGraphEndpoints, useSchemaView } from '../env';
 import type { IGraphDialect } from '../graph/dialect';
 import { buildOverview } from '../graph/overview';
 import type { IOverviewLabel, IOverviewType } from '../graph/overview';
@@ -143,10 +144,11 @@ const TypeRow: React.FC<{ row: IOverviewType; onPreview: IOverviewPanelProps['on
  */
 export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, dialect, onPreview, onNewQuery, onExplore, onRefreshSchema }) => {
 	const view = useSchemaView(endpoint.key);
-	const style = useConnectionStyle(endpoint.key);
+	const { ready, style } = useConnectionStyle(endpoint.key);
+	const probe = useGraphEndpoints().probes[endpoint.key];
 	// The schema's age is said in minutes, so a new minute is a new model.
 	const minute = Math.floor(Date.now() / 60000);
-	const model = useMemo(() => buildOverview({ view, dialect, style, endpoint: { nodeName: endpoint.nodeName, pipelineName: endpoint.pipelineName }, now: minute * 60000 }), [view, dialect, style, endpoint.nodeName, endpoint.pipelineName, minute]);
+	const model = useMemo(() => buildOverview({ view, dialect, style, ready, chipLabels: connectionChips(endpoint, probe, view).map((chip) => chip.label), endpoint: { nodeName: endpoint.nodeName, pipelineName: endpoint.pipelineName }, now: minute * 60000 }), [view, dialect, style, ready, endpoint, probe, minute]);
 
 	return (
 		<div style={styles.page} aria-label="Overview">
@@ -170,6 +172,7 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, dialect
 			) : (
 				<>
 					{model.notice && <Banner variant="warning">{model.notice}</Banner>}
+					{model.size && <p style={styles.hint}>{`Size: ${model.size}`}</p>}
 					<div style={styles.tiles}>
 						{model.tiles.map((tile) => (
 							<div key={tile.id} style={styles.tile}>
