@@ -84,6 +84,19 @@ const styles = {
 };
 
 /**
+ * How a found path was found, in words.
+ *
+ * @param path - The shown path.
+ * @returns A sentence.
+ */
+function pathHow(path: IGraphState['path']): string {
+	if (!path) return '';
+	return path.method === 'shortest-path'
+		? 'Found with one shortestPath call (Neo4j only; FalkorDB and Apache AGE try depth 1 to N, one call each).'
+		: `Found by trying depth 1 to ${path.relationships.length}, one call each (FalkorDB and Apache AGE always do; Neo4j does when shortestPath cannot answer).`;
+}
+
+/**
  * One label or type pill.
  *
  * @param props.label - The text.
@@ -167,7 +180,11 @@ export const InspectorPanel: React.FC<IInspectorPanelProps> = ({ state, session,
 					<Button variant="ghost" small title="Close (Esc)" onClick={close}>Close</Button>
 				</div>
 				<div style={styles.subtitle}>{`${p.steps.length} nodes`}</div>
+				<div style={{ ...styles.none, fontSize: 12, margin: '0 0 8px' }}>{pathHow(state.path)}</div>
 				<div style={styles.actions}>
+					{onNewQuery && state.path && session.queryTextFor({ kind: 'path' }) !== null && (
+						<Button variant="ghost" small onClick={() => { const text = session.queryTextFor({ kind: 'path' }); if (text !== null) onNewQuery(text, 'Path'); }}>Open as query</Button>
+					)}
 					<Button variant="ghost" small onClick={() => session.clearPath()}>Clear path</Button>
 					<Button variant="ghost" small onClick={() => void copy()}>Copy JSON</Button>
 				</div>

@@ -202,6 +202,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const searchInput = useRef<HTMLInputElement>(null);
 	const triggers = useRef<Record<ToolMenu, HTMLSpanElement | null>>({ layout: null, export: null });
 	const keysAnchor = useRef<HTMLSpanElement>(null);
+	const toolbar = useRef<HTMLDivElement>(null);
 
 	// An informational notice leaves by itself; a warning or an error stays until the next action.
 	const [expiredNotice, setExpiredNotice] = useState<unknown>(null);
@@ -228,12 +229,20 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const matches = useMemo(() => searchNodes(nodes, query, (n) => captionOf(n, captions.get(n.labels[0] ?? ''))), [nodes, query, captions]);
 	const matchIds = useMemo(() => (matches === null ? null : new Set(matches)), [matches]);
 	// The list of matches changes under the search after an expand, a collapse or a dismiss: start again from the first, and never read past the end.
+	// The canvas no longer refits when its size changes, so a change of full screen asks for it.
+	const wasMaximized = useRef(maximized);
+	useEffect(() => {
+		if (wasMaximized.current === maximized) return;
+		wasMaximized.current = maximized;
+		// After the resize has reached the canvas.
+		const timer = window.setTimeout(() => handle.current?.fit(), 60);
+		return () => window.clearTimeout(timer);
+	}, [maximized]);
 	const matchKey = matches === null ? null : matches.join('\u0000');
 	useEffect(() => {
 		setCurrent(0);
 	}, [matchKey]);
 	const at = matches === null ? 0 : Math.min(current, Math.max(0, matches.length - 1));
-	const pathFocus = useMemo(() => (state.path ? { nodes: new Set(state.path.nodes), relationships: new Set(state.path.relationships) } : null), [state.path]);
 
 	const budget = canvasBudgetText(state.model);
 	const focused = state.focusedId !== null ? state.model.nodes.get(state.focusedId) : undefined;
@@ -257,18 +266,11 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	// actions
 	// ---------------------------------------------------------------------
 
-	/** Put focus back on the node (or the canvas) a menu came from. */
+	/** Put focus back on the node a menu or panel was about; when the canvas cannot (not drawn, off screen), on the toolbar. */
 	const restoreFocus = (nodeId?: string): void => {
-		const box = canvasBox.current;
-		if (!box) return;
 		const id = nodeId ?? state.focusedId;
-		let el: HTMLElement | null = id !== null && id !== undefined ? box.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`) : null;
-		if (!el) el = box.querySelector<HTMLElement>('.react-flow__node[tabindex="0"]');
-		if (!el) {
-			el = box.querySelector<HTMLElement>('[role="group"][aria-roledescription="graph"]');
-			if (el && !el.hasAttribute('tabindex')) el.tabIndex = -1;
-		}
-		el?.focus({ preventScroll: true });
+		if (id !== null && id !== undefined && handle.current?.focusNode(id)) return;
+		toolbar.current?.querySelector('button')?.focus();
 	};
 	const restoreToolFocus = (which: ToolMenu): void => triggers.current[which]?.querySelector('button')?.focus();
 
@@ -325,7 +327,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 		const format = what === 'png' ? 'png' : 'svg';
 		const blob = (await handle.current?.exportImage(format)) ?? null;
 		if (blob === null) {
-			announce('The image could not be made.');
+			announce(format === 'png' ? 'Too large for a PNG; save the SVG instead.' : 'The image could not be made.');
 			return;
 		}
 		if (what === 'copy-svg') await say('Copied the SVG.', await copyText(await blob.text()));
@@ -456,17 +458,6 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 			setPickFrom(null);
 		}
 	};
-	const onCanvasKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-		const opens = event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey);
-		if (!opens || event.defaultPrevented) return;
-		const el = event.target as HTMLElement;
-		if (!el.classList?.contains('react-flow__node')) return;
-		const id = el.getAttribute('data-id');
-		if (id === null) return;
-		event.preventDefault();
-		const rect = el.getBoundingClientRect();
-		openMenu({ kind: 'node', id }, { x: rect.left + rect.width / 2, y: rect.bottom });
-	};
 	const onPointerDownCapture = (event: React.PointerEvent<HTMLDivElement>): void => {
 		if (menu === null && toolMenu === null) return;
 		const el = event.target as HTMLElement;
@@ -543,7 +534,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	return (
 		<div style={styles.root} onKeyDown={onRootKeyDown} onPointerDownCapture={onPointerDownCapture}>
 			<div style={styles.main}>
-				<div style={styles.toolbar} role="toolbar" aria-label="Graph actions">
+				<div ref={toolbar} style={styles.toolbar} role="toolbar" aria-label="Graph actions">
 					<span style={styles.focused} title={focusedCaption ?? ''}>{focusedCaption ? `Focused: ${focusedCaption}` : 'No node focused'}</span>
 					<Button variant="ghost" small disabled={!focused || busy || focusedStale} title="Fetch up to 100 new neighbours (E)" onClick={() => focused && void session.expand(focused.id)}>Expand</Button>
 					<Button variant="ghost" small disabled={!focused} title="Remove what hangs only from this node (C)" onClick={() => focused && session.collapse(focused.id)}>Collapse</Button>
@@ -579,7 +570,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 					</span>
 				</div>
 
-				<div ref={canvasBox} style={styles.canvas} onKeyDown={onCanvasKeyDown} onWheel={() => menu !== null && setMenu(null)}>
+				<div ref={canvasBox} style={styles.canvas} onWheel={() => menu !== null && setMenu(null)}>
 					<CanvasBoundary>
 						<Suspense fallback={<EmptyState icon={<GraphIcon />} title="Loading the graph view" description="The canvas loads on first use." />}>
 							<GraphCanvas
@@ -596,7 +587,8 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 								highlighted={state.highlight}
 								selectedRelationshipId={state.selectedRelationship}
 								matchIds={matchIds}
-								focusIds={pathFocus}
+								path={state.path}
+								onClearPath={() => session.clearPath()}
 								looks={looks}
 								typeColors={typeColors}
 								layoutMode={layoutMode}
@@ -647,9 +639,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 							captions={captions}
 							nodes={nodes}
 							onSelectLabel={(label) => {
-								session.clearSelection();
-								// TODO(selectMany): one session call instead of a notification per node, once the session has selectMany.
-								for (const id of nodeIdsOfLabel(state.model, label)) session.toggleSelect(id);
+								session.selectMany(nodeIdsOfLabel(state.model, label), 'only');
 							}}
 							onCaption={onCaption}
 							onEdit={(edit) => env.userData.editStyle(key, edit)}

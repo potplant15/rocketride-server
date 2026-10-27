@@ -399,7 +399,7 @@ is "integer" because JSON does not tell 1 from 1.0, and a null shows the schema'
 sampled type as a sample) and the relationships drawn for
 it ("N drawn"; the database's own count of relationships is not known to the
 app); a relationship shows its type, ends and properties, with Select start and
-Select end; a found path lists its steps with Clear path and Copy JSON.
+Select end; a found path lists its steps and says how it was found (one shortestPath call on Neo4j only; FalkorDB and Apache AGE try depth 1 to N, one call each), with Open as query, Clear path and Copy JSON.
 **New query from here** opens a new query tab when the workbench offers one.
 
 **Right-click menus.** A node, a relationship and the empty canvas each have a
@@ -424,7 +424,7 @@ centres it, Down and Up step to the next and previous.
 Re-run layout, and whether nodes you dragged stay pinned. Export offers PNG and
 SVG images and the drawn graph as JSON. Where the host cannot download files
 (VS Code), it offers Copy SVG and Copy as JSON instead and says why PNG is not
-there. Fit and Full screen sit beside them.
+there. A PNG that would be too large to make says so and points at the SVG. Fit and Full screen sit beside them; the canvas does not refit when the inspector opens or the window resizes, only on Fit, a new layout and full screen.
 
 **Status line.** One line under the graph replaces the notices that floated over
 it. It is one fixed line high (long text is cut with an ellipsis, so a notice never resizes the canvas) and holds at most one item of each kind: out of date, the session's notice,
