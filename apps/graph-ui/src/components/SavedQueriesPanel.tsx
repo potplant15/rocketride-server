@@ -28,8 +28,9 @@
 // it inline: no drawer, see there). Two lists:
 //
 //   Saved queries      this connection's, through env.userData: "Save current
-//                      query" names the text of the query tab shown last and
-//                      keeps it; each one opens in a new tab (not run), is
+//                      query" names the text of the query tab shown last (read
+//                      when it is pressed: a tab's text re-renders nothing up
+//                      here) and keeps it; each one opens in a new tab (not run), is
 //                      inserted at the caret, renamed or deleted. A save the
 //                      store refuses (a bound, nobody signed in) shows the
 //                      store's own sentence and keeps nothing.
@@ -89,6 +90,25 @@ const styles = {
  */
 function excerpt(cypher: string): string {
 	return cypher.split('\n').slice(0, 3).join('\n');
+}
+
+/** Said when Save current query is pressed with no query tab open. */
+export const NO_QUERY_TAB_TEXT = 'Nothing was saved: no query tab is open. Open one and write the query first.';
+
+/** Said when Save current query is pressed on an empty tab. */
+export const EMPTY_QUERY_TAB_TEXT = 'Nothing was saved: the query tab is empty.';
+
+/**
+ * What pressing Save current query starts: the name form for the tab's text as it is NOW, or why nothing can be saved.
+ *
+ * @param readTab - Reads the query tab shown last (its title and text), or null when there is none.
+ * @returns The form's starting name and the text it saves, or the refusal.
+ */
+export function saveStart(readTab: () => { title: string; text: string } | null): { name: string; text: string } | { refusal: string } {
+	const tab = readTab();
+	if (tab === null) return { refusal: NO_QUERY_TAB_TEXT };
+	if (tab.text.trim() === '') return { refusal: EMPTY_QUERY_TAB_TEXT };
+	return { name: suggestedName(tab), text: tab.text };
 }
 
 /**
@@ -151,7 +171,6 @@ export const SavedQueriesPanel: React.FC<ISavedQueriesPanelProps> = ({ endpointK
 		);
 	};
 
-	const tab = current();
 	return (
 		<>
 			<div>
@@ -159,12 +178,17 @@ export const SavedQueriesPanel: React.FC<ISavedQueriesPanelProps> = ({ endpointK
 					<Button
 						variant="secondary"
 						small
-						disabled={tab === null || tab.text.trim() === ''}
-						title={tab === null ? 'Open a query tab to save its query.' : tab.text.trim() === '' ? 'The query tab is empty.' : `Keep the query in ${tab.title} under a name, for this connection`}
+						title="Keep the query in the query tab you were in last, under a name, for this connection"
 						onClick={() => {
-							if (tab === null) return;
+							const start = saveStart(current);
+							if ('refusal' in start) {
+								setSaving(null);
+								setError(start.refusal);
+								announce(start.refusal);
+								return;
+							}
 							setError('');
-							setSaving({ name: suggestedName(tab), text: tab.text });
+							setSaving(start);
 						}}
 					>
 						Save current query

@@ -145,7 +145,8 @@ edited that tab's text, Explore opens a new one and runs the sample there.
 - **Query tabs.** Each query tab has its own editor, row limit, runs, results
   and graph, and a tab you are not looking at keeps them; only the tab shown
   draws its results, so when you come back to a tab its graph is laid out
-  again (nodes you moved go back to a computed place). **+ New query** opens
+  again: nodes you moved go back to a computed place, and the graph's layout
+  choice and canvas search start over. **+ New query** opens
   an empty tab. Text that comes from elsewhere opens a tab of its own, so the
   text in your other tabs is never replaced:
   - a label or relationship type clicked in the sidebar: its 25-row preview,
@@ -267,10 +268,10 @@ has not run shows **Run a query** on its Graph tab.
 A result opens as a **Graph** when it holds nodes or relationships that can be
 drawn, and as a **Table** otherwise. **Raw** shows the node's answer as JSON and
 is always available. The Table lists every returned row positionally, so two
-columns with the same name both show; selecting a row opens it in full, with
-**Copy as JSON**. Integers beyond 2^53 are shown as the exact text the node sent,
-never rounded, and a result that arrived with one as a plain number says that it
-may have been rounded.
+columns with the same name both show; selecting a row opens it in full beside
+the table, with **Copy row as JSON**. Integers beyond 2^53 are shown as the
+exact text the node sent, never rounded, and a result that arrived with one as
+a plain number says that it may have been rounded.
 
 A result that hit a limit says which one: the row limit, the node's element
 budget or its value budget.
@@ -609,10 +610,11 @@ that nothing matches. Tokens and connection strings are never recorded.
 ## Saved queries and templates
 
 **Saved** in the run bar shows this connection's saved queries beside the tabs.
-**Save current query** keeps the text of the query tab you were in last, under a
-name you type. A saved query opens in a new tab, not run (**Open in new tab**),
+**Save current query** keeps the text the query tab you were in last holds when
+you press it, under a name you type; with no query tab open, or an empty one, it
+says so and keeps nothing. A saved query opens in a new tab, not run (**Open in new tab**),
 goes into the editor at the caret, replacing any selection (**Insert**), or is
-renamed or deleted (after a confirmation). When a save is refused, the panel
+renamed, or deleted after a confirmation. When a save is refused, the panel
 shows the reason and keeps nothing. The panel's last line says where saved
 queries are kept on this mount.
 
@@ -628,9 +630,9 @@ and that the engine can quote:
   type;
 - on Neo4j, nodes with no relationships.
 
-Apache AGE gets only the first three: its node refuses `CALL`, `ORDER BY` on a
-returned name and label predicates, and whether it runs `labels()`, `type()` or
-a pattern predicate has not been checked. No template takes parameters (the
+Apache AGE gets only the first three: the two counts sort by a returned name
+(`ORDER BY` on an alias), which its node refuses, and whether it runs a pattern
+predicate has not been checked. No template takes parameters (the
 editor sends none).
 
 ## As a dev tool
@@ -796,8 +798,8 @@ and it always says what it is:
 
 ## Limits
 
-- A workbench holds at most 8 query tabs. Only Query 1's text is kept when the
-  document closes.
+- A workbench holds at most 8 query tabs. When the document closes, the full
+  app keeps only Query 1's text (as its draft); a dev tool keeps none.
 - It reads and writes through the node's tool surface: no cancel of a running
   query, no server-side cursor, no streaming of a large result. A query is
   bounded by the row limit, the node's element and value budgets and its

@@ -30,9 +30,10 @@
 // connection's own schema: the first one with data that the engine can quote.
 //
 // Per engine, only what that engine runs:
-//   - Apache AGE refuses CALL, ORDER BY on a RETURN alias and label predicates,
-//     and whether it runs labels(), type() or a pattern predicate is not
-//     verified, so it gets only the sample, a label and a pattern;
+//   - Apache AGE runs labels(), type() and count (probed on 1.5.0), but refuses
+//     ORDER BY on a RETURN alias, which both counts use, and CALL and label
+//     predicates; whether it runs a pattern predicate is not verified. So it
+//     gets only the sample, a label and a pattern;
 //   - "Nodes with no relationships" uses a pattern predicate (WHERE NOT (n)--()),
 //     which only Neo4j is known to run.
 // No template takes $parameters: the editor sends none (there is no parameters
