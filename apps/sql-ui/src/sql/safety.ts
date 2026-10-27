@@ -63,7 +63,7 @@ import type { SafetyLevel } from '../connect/savedConnections';
 import { leadingVerb } from './batch';
 import { CTE_WRITE_WORDS, classifyStatement, patternCheck } from './classify';
 import { buildExplain } from './explain';
-import { keywordSites, stripSqlComments } from './split';
+import { hasTopLevelKeyword, keywordSites, stripSqlComments } from './split';
 
 // =============================================================================
 // TYPES
@@ -548,24 +548,58 @@ export function parseRowEstimate(dialect: SqlDialect, rows: Record<string, unkno
 export function rowsChangeText(confirmation: WriteConfirmation, sql: string, estimate: RowEstimate): string | null {
 	if (confirmation.target?.verb === 'TRUNCATE') return 'Every row';
 	if (classifyStatement(sql, confirmation.reading) !== 'write') return null;
+	const reach = writeReach(sql, statementVerb(confirmation, sql), confirmation.reading);
+	// The body says every row, so this line does too; the planner's number
+	// sits beside it rather than in place of it.
+	if (reach === 'table') return estimate.state === 'rows' ? `Every row (about ${estimate.rows.toLocaleString()} by the planner's estimate)` : 'Every row';
 	if (estimate.state === 'estimating') return 'Estimating…';
 	if (estimate.state === 'none') return 'No estimate';
-	return `about ${estimate.rows.toLocaleString()} ${estimate.rows === 1 ? 'row' : 'rows'} (planner estimate)`;
+	const about = `about ${estimate.rows.toLocaleString()} ${estimate.rows === 1 ? 'row' : 'rows'}`;
+	return reach === 'unclear' ? `${about} (planner estimate, which may be wrong for a LIMIT or a join)` : `${about} (planner estimate)`;
 }
 
 // =============================================================================
 // WORDING
 // =============================================================================
 
+/** How far an UPDATE or a DELETE reaches, as far as its text tells (see {@link writeReach}). */
+type WriteReach = 'table' | 'filtered' | 'unclear';
+
+/**
+ * How far an UPDATE or a DELETE reaches, as far as its text tells:
+ *
+ * - `table`: one plain table, no WHERE, LIMIT or join: every row in it;
+ * - `filtered`: one plain table with a WHERE and no LIMIT or join: the rows
+ *   the WHERE matches, which is what the planner estimates;
+ * - `unclear`: a LIMIT, a join (`JOIN`, PostgreSQL's `UPDATE … FROM` and
+ *   `DELETE … USING`), several tables, or a prefix (WITH, EXPLAIN ANALYZE):
+ *   only the rows the statement reaches, which the planner's number may not
+ *   count (MySQL's `rows` does not apply a LIMIT).
+ *
+ * @param sql - The statement.
+ * @param verb - Its verb ({@link statementVerb}).
+ * @param reading - The comment rules to read it with.
+ * @returns The reach, or null for any other statement.
+ */
+function writeReach(sql: string, verb: string, reading: SqlDialect): WriteReach | null {
+	if (verb !== 'UPDATE' && verb !== 'DELETE') return null;
+	const joined = hasTopLevelKeyword(sql, verb === 'UPDATE' ? 'from' : 'using', reading);
+	if (writeTable(sql, reading) === null || joined || hasTopLevelKeyword(sql, 'limit', reading)) return 'unclear';
+	return hasTopLevelKeyword(sql, 'where', reading) ? 'filtered' : 'table';
+}
+
 /**
  * What the statement does, for a confirmation without a DROP or TRUNCATE target.
  *
  * @param kind - The confirmation's kind.
+ * @param reach - How far an UPDATE or a DELETE reaches (null for anything else).
  * @returns The sentence.
  */
-function plainConsequence(kind: string): string {
-	if (kind === 'UPDATE without WHERE') return 'No WHERE clause: this changes every row in the table.';
-	if (kind === 'DELETE without WHERE') return 'No WHERE clause: this deletes every row in the table.';
+function plainConsequence(kind: string, reach: WriteReach | null): string {
+	// "Every row in the table" only when nothing else bounds it: a LIMIT or a
+	// join does, and then only the rows the statement reaches are at stake.
+	if (kind === 'UPDATE without WHERE') return reach === 'table' ? 'No WHERE clause: this changes every row in the table.' : 'No WHERE clause: this can change every row the statement reaches.';
+	if (kind === 'DELETE without WHERE') return reach === 'table' ? 'No WHERE clause: this deletes every row in the table.' : 'No WHERE clause: this can delete every row the statement reaches.';
 	const inWith = /^(UPDATE|DELETE) inside a WITH clause$/.exec(kind);
 	if (inWith) return `A WITH clause in it runs ${inWith[1]}; this check cannot tell which rows that reaches.`;
 	if (kind === 'EXPLAIN ANALYZE') return 'ANALYZE runs the statement to measure it, so what it changes is changed for real.';
@@ -628,7 +662,11 @@ function writeTable(sql: string, reading: SqlDialect): string | null {
 
 /**
  * The dialog's sentences for one confirmation. With an estimate, an UPDATE or
- * a DELETE names the rows and the table: "Update about 20 rows in orders?".
+ * a DELETE names the rows and the table: "Update about 20 rows in orders?"
+ * for one with a WHERE, "Update every row in orders?" for one without. One
+ * with a LIMIT or a join keeps the plain title: the planner's number may not
+ * count what it reaches, and the title never states a count the body
+ * contradicts.
  *
  * @param confirmation - Why the statement asks.
  * @param sql - The statement.
@@ -665,14 +703,16 @@ export function writeConfirmCopy(confirmation: WriteConfirmation, sql: string, c
 		};
 	}
 	const verb = statementVerb(confirmation, sql);
-	if (estimate?.state === 'rows' && (verb === 'UPDATE' || verb === 'DELETE')) {
+	const reach = writeReach(sql, verb, confirmation.reading);
+	const consequence = plainConsequence(confirmation.kind, reach);
+	if (estimate?.state === 'rows' && (reach === 'filtered' || reach === 'table')) {
 		const action = verb === 'UPDATE' ? 'Update' : 'Delete';
-		const count = `${estimate.rows.toLocaleString()} ${estimate.rows === 1 ? 'row' : 'rows'}`;
-		const table = writeTable(sql, confirmation.reading);
-		const where = table === null ? '' : `${verb === 'UPDATE' ? ' in' : ' from'} ${table}`;
+		const count = reach === 'table' ? 'every row' : `${estimate.rows.toLocaleString()} ${estimate.rows === 1 ? 'row' : 'rows'}`;
+		// Both reaches have one plain table.
+		const where = `${verb === 'UPDATE' ? ' in' : ' from'} ${writeTable(sql, confirmation.reading) ?? ''}`;
 		return {
-			title: `${action} about ${count}${where}?`,
-			consequence: plainConsequence(confirmation.kind),
+			title: `${action} ${reach === 'table' ? count : `about ${count}`}${where}?`,
+			consequence,
 			runsAs,
 			why,
 			confirmLabel: `${action} ${count}`,
@@ -680,7 +720,7 @@ export function writeConfirmCopy(confirmation: WriteConfirmation, sql: string, c
 	}
 	return {
 		title: `Run this ${verb}?`,
-		consequence: plainConsequence(confirmation.kind),
+		consequence,
 		runsAs,
 		why,
 		confirmLabel: `Run ${verb}`,

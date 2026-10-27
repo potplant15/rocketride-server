@@ -475,8 +475,14 @@ change**: `about N rows (planner estimate)` on PostgreSQL and MySQL, from a
 plain `EXPLAIN` (no `ANALYZE`, so nothing runs) of the statement. It reads
 `Estimating…` while that runs, and `No estimate` on ClickHouse, for a `WITH`
 chain, or when the plan gives no number; for `TRUNCATE` it reads `Every
-row`. Once an `UPDATE` or `DELETE` has an estimate, the title and the button
-name the rows: `Update about 20 rows in orders?` and **Update 20 rows**.
+row`. Once an `UPDATE` or `DELETE` on one table with a `WHERE` has an
+estimate, the title and the button name the rows: `Update about 20 rows in
+orders?` and **Update 20 rows**. With no `WHERE`, they say every row
+instead (`Delete every row from orders?`), and the planner's number sits
+beside **Every row** in the rows line. A `LIMIT` or a join bounds what the
+statement reaches, so then the body says `No WHERE clause: this can delete
+every row the statement reaches.`, the title names no count, and the
+estimate is marked as one that may be wrong for a `LIMIT` or a join.
 **Cancel** works at any time, also while the estimate is still running. The
 estimate is not recorded in History.
 
