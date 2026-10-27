@@ -145,8 +145,9 @@ edited that tab's text, Explore opens a new one and runs the sample there.
 - **Query tabs.** Each query tab has its own editor, row limit, runs, results
   and graph, and a tab you are not looking at keeps them; only the tab shown
   draws its results, so when you come back to a tab its graph is laid out
-  again: nodes you moved go back to a computed place, and the graph's layout
-  choice and canvas search start over. **+ New query** opens
+  again: nodes you moved go back to a computed place and the canvas search
+  starts over, while the tab keeps its layout choice, **Keep dragged nodes
+  pinned** and whether the legend is open. **+ New query** opens
   an empty tab. Text that comes from elsewhere opens a tab of its own, so the
   text in your other tabs is never replaced:
   - a label or relationship type clicked in the sidebar: its 25-row preview,

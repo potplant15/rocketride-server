@@ -178,6 +178,18 @@ test('a gate refusal is a warning with no pipeline hint and no History entry, an
 	assert.ok(/waiting \? 'Waiting for an earlier request to finish…'/.test(surface) && /title=\{waiting \? gateWaitingTitle\(mode === 'read' \? 'Run' : 'Execute'\) :/.test(surface) && /title=\{waiting \? gateWaitingTitle\(mode === 'read' \? 'Run all' : 'Execute all'\) :/.test(surface), 'Run says it is waiting, and why, naming its own button (Execute in the write console)');
 });
 
+// DA-R1 I-2: the graph view is mounted only while its tab is shown, so how the graph is shown lives with the tab: a
+// tab switch must not reset Tree to Force (the grid again in VS Code past 100 nodes), unpin nodes or reopen the legend.
+test('a tab keeps its layout choice, pinning and legend for its graph view, which it mounts only while shown', () => {
+	const surface = code(read('components', 'RunSurface.tsx'));
+	assert.ok(/export const DEFAULT_GRAPH_VIEW: IGraphViewState = Object\.freeze\(\{ layoutMode: 'force', keepPinned: true, legendOpen: false \}\);/.test(surface), 'a new tab: Force, dragged nodes kept pinned, the legend closed');
+	assert.ok(/const \[graphView, setGraphView\] = useState<IGraphViewState>\(DEFAULT_GRAPH_VIEW\);/.test(surface), 'kept by the surface, which a hidden tab keeps mounted');
+	const tag = surface.slice(surface.indexOf('<GraphView'), surface.indexOf('/>', surface.indexOf('<GraphView')));
+	for (const prop of ['layoutMode={graphView.layoutMode}', 'onLayoutModeChange={setLayoutMode}', 'keepPinned={graphView.keepPinned}', 'onKeepPinnedChange={setKeepPinned}', 'legendOpen={graphView.legendOpen}', 'onLegendOpenChange={setLegendOpen}']) {
+		assert.ok(tag.includes(prop), `the graph view is controlled: ${prop}`);
+	}
+});
+
 // A hidden tab keeps its runs, result and graph session, but no canvas or grid (8 tabs x every open document).
 test('only the shown tab draws its results, puts its run bar in the tab row, and keeps a row open', () => {
 	const surface = code(read('components', 'RunSurface.tsx'));
