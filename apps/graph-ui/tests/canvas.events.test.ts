@@ -106,3 +106,15 @@ test('wiring: the handle centres, fits, re-lays out and exports; the layout foll
 	assert.doesNotMatch(hook, /from 'd3-force'/, 'the force simulation never runs here');
 	assert.match(hook, /row\.current = ids\.length < 2 \? null : pathRow\(/, 'the path row is placed over the layout');
 });
+
+test('wiring: Escape is the canvas\'s only while something can be cleared, and the handle can give focus back to a node', () => {
+	const canvas = source('canvas', 'GraphCanvas.tsx');
+	assert.match(canvas, /const clearable = p\.selected\.size > 0 \|\| \(p\.selectedRelationshipId \?\? null\) !== null \? 'selection' : p\.path && p\.path\.nodes\.length > 0 && p\.onClearPath \? 'path' : null;/);
+	assert.match(canvas, /keyAction\(\{ model: p\.model, positions: layoutPositions\.current, focusedId: p\.focusedId, clearable \}/);
+	assert.match(canvas, /if \(!handled\(action\)\) return;\s*event\.preventDefault\(\);/, 'preventDefault only for a key the canvas uses');
+	assert.match(canvas, /case 'clear-path':\s*p\.onClearPath\?\.\(\);/);
+	assert.doesNotMatch(canvas, /stopPropagation/, 'nothing stops an event: outer handlers read defaultPrevented');
+	const focusNode = canvas.slice(canvas.indexOf('focusNode(id: GraphId): boolean'), canvas.indexOf('fit: refit'));
+	assert.match(focusNode, /\.react-flow__node\[data-id=/, 'scoped to node elements (relationship ids overlap node ids)');
+	assert.match(focusNode, /el\.focus\(\{ preventScroll: true \}\);/);
+});

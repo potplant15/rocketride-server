@@ -168,6 +168,12 @@ export interface IGraphSession {
 	toggleSelect(id: GraphId): void;
 	/** Select a node: `only` replaces the selection and inspects it (a click); `toggle` adds or removes it (Shift-click). */
 	select(id: GraphId, mode: 'only' | 'toggle'): void;
+	/**
+	 * Select several nodes in one update (the legend's "every node of this label"): `only` replaces the selection with
+	 * exactly these and inspects the first (or closes the inspector when there is none); `toggle` adds them all when any
+	 * is not selected, else takes them all out. Ids that are not drawn are ignored.
+	 */
+	selectMany(ids: readonly GraphId[], mode: 'only' | 'toggle'): void;
 	/** Select a relationship and inspect it; null clears it. */
 	selectRelationship(id: GraphId | null): void;
 	clearSelection(): void;
@@ -420,6 +426,25 @@ export function createGraphSession(deps: IGraphSessionDeps): IGraphSession {
 			if (!node) return;
 			set({ selected: new Set([id]), selectedRelationship: null, inspect: { kind: 'node', id } });
 			deps.announce(`${captionFor(node)} selected.`);
+		},
+
+		selectMany(ids, mode) {
+			const drawn = [...new Set(ids)].filter((id) => state.model.nodes.has(id));
+			const nodes = (n: number): string => `${num(n)} ${n === 1 ? 'node' : 'nodes'}`;
+			if (mode === 'only') {
+				set({ selected: new Set(drawn), selectedRelationship: null, inspect: drawn.length > 0 ? { kind: 'node', id: drawn[0] } : null });
+				deps.announce(`${nodes(drawn.length)} selected.`);
+				return;
+			}
+			if (drawn.length === 0) return;
+			const next = new Set(state.selected);
+			const add = drawn.some((id) => !next.has(id));
+			for (const id of drawn) {
+				if (add) next.add(id);
+				else next.delete(id);
+			}
+			set({ selected: next });
+			deps.announce(`${nodes(drawn.length)} ${add ? 'selected' : 'deselected'}. ${nodes(next.size)} selected.`);
 		},
 
 		selectRelationship(id) {

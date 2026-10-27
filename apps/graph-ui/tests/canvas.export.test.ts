@@ -79,6 +79,7 @@ test('nothing drawn, nothing to export; the PNG scale stays inside what a browse
 	assert.equal(buildSvg([], [], THEME, { resolve, labels: true }), null);
 	assert.equal(pngScale(800, 600), 2);
 	assert.ok(pngScale(12000, 400) * 12000 <= 16384);
-	assert.ok(pngScale(9000, 9000) ** 2 * 9000 * 9000 <= 1.6e8 + 1);
+	assert.ok(pngScale(9000, 9000) ** 2 * 9000 * 9000 <= 16_777_216 + 1, 'within Safari\'s canvas area');
+	assert.ok(pngScale(3000, 2000) ** 2 * 3000 * 2000 <= 16_777_216 + 1);
 	assert.equal(pngScale(2e6, 10), 0, 'too big to draw at any useful size');
 });

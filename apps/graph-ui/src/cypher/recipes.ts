@@ -46,14 +46,18 @@
 // labels on one node (AGE has one label per node), datetime() and friends. The
 // generated queries stay inside what all three engines accept, with ONE
 // exception: the single shortestPath call of a path search, which is sent only
-// where the engine has it (usesShortestPath: Neo4j; never AGE) and is always
-// backed by the depth search, which every engine accepts.
+// on Neo4j (usesShortestPath; never FalkorDB or AGE) and is backed by the depth
+// search, which every engine accepts. A relationship type is one type per
+// statement: AGE 1.5.0 cannot parse `[:A|B]`.
 //
 // "New query from here" is different: it is TEXT put into the editor for the
 // user to read, change and run, and the editor sends no parameters. So the id is
 // written into it, but only an id that can be written safely: an integer on
-// FalkorDB and AGE, and a string with no quote, backslash or control character
-// on Neo4j. Anything else gets no text, never an escaped guess.
+// FalkorDB and AGE (kept as the decimal text it arrived as, never through a
+// JavaScript number), and a string with no quote, backslash or control character
+// on Neo4j. Anything else gets no text, never an escaped guess. The text starts
+// with a comment saying the id is a live handle: History and Saved queries keep
+// it long after the element may be gone.
 // =============================================================================
 
 import { PATH_MAX_DEPTH, PREVIEW_LIMIT } from '../graph/budgets';
@@ -102,11 +106,16 @@ export const AGE_CONNECT_MAX_NODES = 40;
 export const AGE_EXPAND_MAX_EXCLUDED = 200;
 
 /**
- * Whether FalkorDB gets the one-call shortest path. Its shortestPath() needs both ends bound before the call and may
- * search one direction only (docs.falkordb.com, "Path functions"); the form {@link shortestPathRecipe} writes has not
- * been run on a live FalkorDB 6 through GRAPH.RO_QUERY, so it stays off until it has. This is the only switch.
+ * Whether FalkorDB gets the one-call shortest path: NO, for good. Probed live on FalkorDB 4.22.2 (graph `shop`, Ada to
+ * Ken): the Neo4j form fails ("only supports shortestPaths in WITH or RETURN clauses"), an undirected one is refused
+ * ("does not currently support undirected shortestPath traversals"), and the directed one it accepts answers a
+ * different question: a path of 5 relationships from Ada to Ken, none the other way, where the undirected depth search
+ * finds one of 3. The graph view's paths are undirected, so FalkorDB uses the depth search, as AGE does.
  */
 export const FALKORDB_SHORTEST_PATH = false;
+
+/** The first line of "new query from here" text: the id written below it is a live handle. */
+export const LIVE_HANDLE_NOTE = '// Ids are live handles: an id below named its element when this text was written; after a delete, the database can give it to another.';
 
 /** Nodes fetched by "new query from here". */
 const QUERY_TEXT_LIMIT = 25;
@@ -358,7 +367,7 @@ export function pathAtDepth(engine: IEngine, fromId: string, toId: string, depth
 
 /**
  * Whether a path search starts with one shortestPath call: only where the node reports the engine has shortestPath()
- * and the form is known to work (Neo4j 5 and later; FalkorDB behind {@link FALKORDB_SHORTEST_PATH}; never AGE).
+ * and the undirected form works (Neo4j 5 and later; not FalkorDB, see {@link FALKORDB_SHORTEST_PATH}; never AGE).
  *
  * @param engine - The engine, with the node's shortest_path capability.
  * @returns True when the call is made.
@@ -370,11 +379,11 @@ export function usesShortestPath(engine: IEngine): boolean {
 }
 
 /**
- * One shortest path of at most `maxDepth` relationships between two nodes, in ONE call. Traversal is in either
- * direction, as the depth search's. An empty answer is NOT "no path": an engine may search one direction only, so the
- * caller falls back to the depth search on an empty answer as on an error (pathSearch.ts).
+ * One shortest path of at most `maxDepth` relationships between two nodes, in ONE call, on Neo4j. Traversal is in
+ * either direction, as the depth search's, so an empty answer means no path within `maxDepth` (probed on Neo4j
+ * 2026.10.1: it finds what the depth search finds). On an error the caller falls back to the depth search.
  *
- * @param engine - The engine (Neo4j or FalkorDB; AGE has no shortestPath and is refused).
+ * @param engine - The engine (Neo4j; FalkorDB and AGE are refused).
  * @param fromId - Element id of the first node.
  * @param toId - Element id of the second node.
  * @param maxDepth - The longest path asked for (1..10).
@@ -382,6 +391,7 @@ export function usesShortestPath(engine: IEngine): boolean {
  */
 export function shortestPathRecipe(engine: IEngine, fromId: string, toId: string, maxDepth: number = PATH_MAX_DEPTH): RecipeResult {
 	if (engine.dialect === 'age') return { refusal: 'Apache AGE has no shortestPath(); the path is found one depth at a time.' };
+	if (engine.dialect === 'falkordb' && !FALKORDB_SHORTEST_PATH) return { refusal: "FalkorDB's shortestPath() follows relationships in one direction only, so it can miss the shortest path; the path is found one depth at a time." };
 	if (!validId(fromId) || !validId(toId)) return { refusal: 'There is no usable id for one of the two nodes.' };
 	if (fromId === toId) return { refusal: 'Pick two different nodes.' };
 	const from = idPredicate(engine, 'a', 'from');
@@ -389,9 +399,7 @@ export function shortestPathRecipe(engine: IEngine, fromId: string, toId: string
 	const to = idPredicate(engine, 'b', 'to');
 	if (typeof to !== 'string') return to;
 	const d = clampInt(maxDepth, 1, PATH_MAX_DEPTH);
-	// FalkorDB needs both ends resolved before shortestPath() is called: WITH makes that explicit.
-	const bind = engine.dialect === 'falkordb' ? ' WITH a, b' : '';
-	return { cypher: `MATCH (a), (b) WHERE ${from} AND ${to}${bind} MATCH p = shortestPath((a)-[*..${d}]-(b)) RETURN p LIMIT 1`, params: { from: fromId, to: toId }, limit: 1 };
+	return { cypher: `MATCH (a), (b) WHERE ${from} AND ${to} MATCH p = shortestPath((a)-[*..${d}]-(b)) RETURN p LIMIT 1`, params: { from: fromId, to: toId }, limit: 1 };
 }
 
 // =============================================================================
@@ -438,7 +446,7 @@ function literalPredicate(engine: IEngine, variable: string, id: string): string
  */
 export function neighboursQueryText(engine: IEngine, id: string): string | null {
 	const predicate = literalPredicate(engine, 'n', id);
-	return predicate === null ? null : `MATCH (n) WHERE ${predicate} OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT ${QUERY_TEXT_LIMIT}`;
+	return predicate === null ? null : `${LIVE_HANDLE_NOTE}\nMATCH (n) WHERE ${predicate} OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT ${QUERY_TEXT_LIMIT}`;
 }
 
 /**
@@ -450,7 +458,7 @@ export function neighboursQueryText(engine: IEngine, id: string): string | null 
  */
 export function relationshipQueryText(engine: IEngine, id: string): string | null {
 	const predicate = literalPredicate(engine, 'r', id);
-	return predicate === null ? null : `MATCH (a)-[r]->(b) WHERE ${predicate} RETURN a, r, b`;
+	return predicate === null ? null : `${LIVE_HANDLE_NOTE}\nMATCH (a)-[r]->(b) WHERE ${predicate} RETURN a, r, b`;
 }
 
 /**
@@ -467,11 +475,11 @@ export function pathQueryText(engine: IEngine, fromId: string, toId: string, how
 	const to = literalPredicate(engine, 'b', toId);
 	if (from === null || to === null) return null;
 	if (how.method === 'shortest-path') {
-		if (engine.dialect === 'age') return null;
-		return `MATCH (a), (b) WHERE ${from} AND ${to}${engine.dialect === 'falkordb' ? ' WITH a, b' : ''} MATCH p = shortestPath((a)-[*..${PATH_MAX_DEPTH}]-(b)) RETURN p`;
+		if (engine.dialect !== 'neo4j') return null;
+		return `${LIVE_HANDLE_NOTE}\nMATCH (a), (b) WHERE ${from} AND ${to} MATCH p = shortestPath((a)-[*..${PATH_MAX_DEPTH}]-(b)) RETURN p`;
 	}
 	const d = clampInt(how.depth, 1, PATH_MAX_DEPTH);
-	return `MATCH p = (a)-[*${d}..${d}]-(b) WHERE ${from} AND ${to} RETURN p LIMIT 1`;
+	return `${LIVE_HANDLE_NOTE}\nMATCH p = (a)-[*${d}..${d}]-(b) WHERE ${from} AND ${to} RETURN p LIMIT 1`;
 }
 
 /**

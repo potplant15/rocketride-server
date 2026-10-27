@@ -70,7 +70,7 @@ test('every core action has a key', () => {
 	assert.deepEqual(press(c, 'c'), { type: 'collapse', id: 'c' });
 	assert.deepEqual(press(c, 'Delete'), { type: 'dismiss', id: 'c' });
 	assert.deepEqual(press(c, 'p'), { type: 'find-path' });
-	assert.deepEqual(press(c, 'Escape'), { type: 'clear-selection' });
+	assert.deepEqual(press({ ...c, clearable: 'selection' }, 'Escape'), { type: 'clear-selection' });
 	assert.deepEqual(press(c, '?'), { type: 'help' });
 	const documented = KEY_HELP.map((k) => k.keys).join(' | ');
 	for (const word of ['Arrow', 'Home', 'Enter', 'Space', 'E', 'C', 'Delete', 'P', 'Escape', '?', 'Tab']) assert.ok(documented.includes(word), `${word} is documented`);
@@ -141,6 +141,22 @@ test('the Menu key and Shift+F10 open the focused node\'s menu; F10 alone does n
 	assert.deepEqual(press({ ...c, focusedId: null }, 'ContextMenu'), { type: 'none' });
 	assert.equal(handled(press(c, 'ContextMenu')), true, 'the browser does not also open its own menu');
 	assert.ok(KEY_HELP.some((k) => k.keys === 'Menu or Shift+F10' && /menu/i.test(k.does)));
+});
+
+// Escape has several owners (the canvas, the view's menu and panels, the workbench's full screen) and nothing may stop
+// an event from propagating, so the innermost one that USES Escape calls preventDefault and the others ignore an event
+// that is already defaultPrevented. The canvas uses it only while it has something to clear.
+test('Escape clears the selection, then a shown path; with nothing to clear it is not the canvas\'s, so the page gets it', () => {
+	const c = cross();
+	assert.deepEqual(press({ ...c, clearable: 'selection' }, 'Escape'), { type: 'clear-selection' });
+	assert.deepEqual(press({ ...c, clearable: 'path' }, 'Escape'), { type: 'clear-path' });
+	assert.equal(handled(press({ ...c, clearable: 'path' }, 'Escape')), true);
+	for (const clearable of [null, undefined]) {
+		const action = press({ ...c, clearable }, 'Escape');
+		assert.deepEqual(action, { type: 'none' });
+		assert.equal(handled(action), false, 'no preventDefault: full screen (or whatever holds the canvas) gets the key');
+	}
+	assert.ok(KEY_HELP.some((k) => k.keys === 'Escape' && /selection/.test(k.does) && /path/.test(k.does)));
 });
 
 // -----------------------------------------------------------------------------

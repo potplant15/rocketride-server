@@ -129,13 +129,20 @@ test('pairsIn reads path data and polygon points', () => {
 	assert.deepEqual(pairsIn(''), []);
 });
 
-test('wiring: the automatic fit, the ResizeObserver refit and the fit button all go through contentBounds, with the same zoom cap, padding and motion rules', () => {
+test('wiring: the automatic fit and the fit button go through contentBounds with the same zoom cap, padding and motion rules; a resize never refits by itself', () => {
 	const canvas = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'canvas', 'GraphCanvas.tsx'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 	assert.match(canvas, /contentBounds\(layoutPositions\.current, edgesRef\.current, radiusOf\)/, 'each node at its own size');
 	assert.match(canvas, /getViewportForBounds\(bounds, el\.clientWidth, el\.clientHeight, FLOW_MIN_ZOOM, FIT_MAX_ZOOM, FIT_PADDING\)/);
 	assert.doesNotMatch(canvas, /\.fitView\(/, 'React Flow\'s node-box fit is no longer used');
 	assert.match(canvas, /const duration = reducedRef\.current \|\| document\.hidden \? 0 : 300/, 'reduced motion and hidden tabs still skip the animation');
-	assert.match(canvas, /if \(!userMoved\.current\) pendingFit\.current = true;\s*tryFit\(\);/, 'the ResizeObserver still refits until the user takes the view over');
 	assert.match(canvas, /showFitView=\{false\}/);
 	assert.match(canvas, /onClick=\{refit\}/);
+	// The inspector opening beside the canvas resizes it between the two clicks of a double-click: a refit then moved
+	// the node from under the pointer. A resize keeps the view (only the focused node is kept inside it), and a fit is
+	// made when a layout lands (also one owed by a tab that was hidden), on Fit, or with refitOnResize.
+	const observer = canvas.slice(canvas.indexOf('new ResizeObserver('), canvas.indexOf('observer.observe(el)'));
+	assert.match(observer, /if \(el\.clientWidth === 0 \|\| el\.clientHeight === 0\) return;/, 'a hidden canvas has nothing to keep');
+	assert.match(observer, /if \(latest\.current\.refitOnResize === true && !userMoved\.current\) pendingFit\.current = true;/);
+	assert.match(observer, /if \(pendingFit\.current\) tryFit\(\);\s*else keepFocusedInView\(el\.clientWidth, el\.clientHeight\);/);
+	assert.doesNotMatch(observer, /pendingFit\.current = true;\s*tryFit\(\)/, 'no unconditional refit');
 });

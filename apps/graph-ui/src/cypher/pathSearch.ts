@@ -26,12 +26,13 @@
 //
 // "Find path" between two nodes without ever running an unbounded traversal.
 //
-// Where the engine has shortestPath() (Neo4j; see usesShortestPath in recipes.ts)
-// the search first asks for a shortest path of at most 10 relationships in ONE
-// call. A path in that answer is the answer. An error, a refusal or an EMPTY
-// answer proves nothing (an engine's form may search one direction only), so the
-// search then falls back, silently, to the depth search below; "no path" is never
-// concluded from the single call.
+// On Neo4j (usesShortestPath in recipes.ts) the search first asks for a shortest
+// path of at most 10 relationships in ONE call, undirected like the depth search.
+// A path in that answer is the answer, and an empty answer is "no path within 10"
+// (the call searched every depth up to 10; probed on Neo4j 2026.10.1, it finds
+// what the depth search finds). An error, or a path between other nodes, proves
+// nothing, so the search then falls back, silently, to the depth search below.
+// FalkorDB is never asked: its shortestPath() follows one direction only.
 //
 // The depth search works on every engine, Apache AGE included (it has no
 // shortestPath): ask for a path of exactly 1 relationship, then exactly 2, and so
@@ -167,7 +168,9 @@ export function createPathSearch(deps: IPathSearchDeps): IPathSearch {
 					if (result === 'stopped' || generation !== mine) return { status: 'stopped', depthReached: reached, attempts };
 					const path = result === null ? null : firstPath(result);
 					if (path && joins(path, fromId, toId)) return { status: 'found', depth: path.relationships.length, path, attempts, method: 'shortest-path' };
-					// Empty, failed, or about other nodes: fall back to the depth search, which every engine answers.
+					// An answer with no path at all: the undirected call searched every depth up to the maximum.
+					if (result !== null && path === null && (result.rows ?? []).length === 0) return { status: 'none', maxDepth, attempts };
+					// Failed, or about other nodes: fall back to the depth search, which every engine answers.
 				}
 				for (let depth = 1; depth <= maxDepth; depth++) {
 					if (generation !== mine) return { status: 'stopped', depthReached: reached, attempts };

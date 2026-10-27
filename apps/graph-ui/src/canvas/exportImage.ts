@@ -32,9 +32,16 @@
 // not just the part in view.
 //
 // The canvas draws with CSS variables (`var(--rr-chart-1)`), which mean nothing once the
-// SVG leaves the page, so every colour goes through a resolver first (the canvas resolves
-// against its own computed style, so the export has the current theme's colours), and a
-// colour that still cannot be resolved is drawn in a plain grey rather than left out.
+// SVG leaves the page, so every colour goes through a resolver first, and a colour that
+// still cannot be resolved is drawn in a plain grey rather than left out. The resolver
+// asks the browser for the colour as an element inside the canvas would show it now (the
+// current theme), and reads it back as plain #rrggbb: a token's own text can be another
+// variable or a `color-mix()` an SVG viewer does not understand.
+//
+// The picture is self-contained: a background rectangle in the canvas colour (a dark
+// theme's drawing on a transparent PNG would be unreadable), the system font stack (an SVG
+// drawn as an image cannot load the page's web fonts), and no foreignObject (it taints the
+// canvas in Safari, which then refuses to give the PNG back).
 //
 // PNG is that SVG drawn into a <canvas> at twice the size, as large as a browser canvas
 // can hold. It needs a browser; `buildSvg` and `pngScale` do not, and are tested in Node.
@@ -124,9 +131,9 @@ const FALLBACK_COLOUR = '#808080';
 const DIM_OPACITY = 0.2;
 const STALE_OPACITY = 0.55;
 
-/** The largest side and area a browser canvas reliably holds. */
+/** The largest side and area a browser canvas reliably holds (the area is Safari's limit, the smallest; past it toBlob gives nothing or a blank image). */
 const MAX_CANVAS_SIDE = 16384;
-const MAX_CANVAS_AREA = 1.6e8;
+const MAX_CANVAS_AREA = 16_777_216;
 
 /**
  * A number for an attribute: two decimals, no trailing zeros.
@@ -243,19 +250,48 @@ export function buildSvg(nodes: readonly IExportNode[], edges: readonly IExportE
 // =============================================================================
 
 /**
- * A resolver for `var(--x)` (and `var(--x, fallback)`) against an element's computed style, so the export is in the
- * colours the element shows now (the current theme). Any other colour passes through.
+ * A resolver from any CSS colour (`var(--x)` included) to the colour an element inside `element` shows for it now, as
+ * `#rrggbb` (or `rgba()` when it is see-through). The browser does the work: a hidden probe element takes the colour,
+ * and a 1 x 1 canvas turns whatever the computed value is (a `color-mix()`, a `color(srgb …)`) into plain numbers.
  *
  * @param element - The element whose variables apply (the canvas container).
- * @returns The resolver.
+ * @returns The resolver; an empty string for a colour the browser does not accept.
  */
 export function cssResolver(element: Element): (css: string) => string {
-	const style = getComputedStyle(element);
+	const page = element.ownerDocument;
+	const pixel = page.createElement('canvas');
+	pixel.width = 1;
+	pixel.height = 1;
+	const context = pixel.getContext('2d', { willReadFrequently: true });
+	const cache = new Map<string, string>();
+	const hex = (n: number): string => n.toString(16).padStart(2, '0');
 	return (css) => {
-		const variable = /^var\((--[A-Za-z0-9_-]+)\s*(?:,\s*(.+))?\)$/.exec(css.trim());
-		if (!variable) return css;
-		const value = style.getPropertyValue(variable[1]).trim();
-		return value !== '' ? value : (variable[2] ?? css);
+		const known = cache.get(css);
+		if (known !== undefined) return known;
+		const probe = page.createElement('span');
+		probe.style.display = 'none';
+		probe.style.color = css;
+		let out = '';
+		if (probe.style.color !== '') {
+			element.appendChild(probe);
+			const computed = getComputedStyle(probe).color;
+			probe.remove();
+			out = computed;
+			if (context) {
+				// A colour the canvas does not take leaves the sentinel in place: then the computed text is the best there is.
+				const sentinel = '#010203';
+				context.fillStyle = sentinel;
+				context.fillStyle = computed;
+				if (context.fillStyle !== sentinel || computed === 'rgb(1, 2, 3)') {
+					context.clearRect(0, 0, 1, 1);
+					context.fillRect(0, 0, 1, 1);
+					const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+					out = a === 255 ? `#${hex(r)}${hex(g)}${hex(b)}` : `rgba(${r},${g},${b},${fmt(a / 255)})`;
+				}
+			}
+		}
+		cache.set(css, out);
+		return out;
 	};
 }
 

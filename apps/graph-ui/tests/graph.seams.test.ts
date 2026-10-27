@@ -76,7 +76,7 @@ test('the redesign members answer for real: expandByType sends for a drawn node,
 	assert.equal(session.getState().model, before.model, 'a node that is not drawn is not expanded');
 	await session.expandByType('a', 'T');
 	assert.match(said.at(-1) ?? '', /^A is no longer found/, 'the node answered nothing, so the id no longer finds it');
-	assert.equal(session.queryTextFor({ kind: 'node', id: 'a' }), "MATCH (n) WHERE elementId(n) = 'a' OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25");
+	assert.match(session.queryTextFor({ kind: 'node', id: 'a' }) ?? '', /\nMATCH \(n\) WHERE elementId\(n\) = 'a' OPTIONAL MATCH \(n\)-\[r\]-\(m\) RETURN n, r, m LIMIT 25$/);
 	const state = session.getState();
 	session.clearPath();
 	assert.equal(session.getState(), state);

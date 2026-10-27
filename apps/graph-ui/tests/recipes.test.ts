@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { AGE_CONNECT_MAX_NODES, AGE_EXPAND_MAX_EXCLUDED, FALKORDB_SHORTEST_PATH, connectNodes, expandByType, expandNeighbors, idPredicate, inspectNode, isRefusal, labelPreview, majorVersion, neighboursQueryText, pathAtDepth, pathQueryText, relationshipQueryText, shortestPathRecipe, typePreview, usesShortestPath } from '../src/cypher/recipes';
+import { AGE_CONNECT_MAX_NODES, AGE_EXPAND_MAX_EXCLUDED, FALKORDB_SHORTEST_PATH, LIVE_HANDLE_NOTE, connectNodes, expandByType, expandNeighbors, idPredicate, inspectNode, isRefusal, labelPreview, majorVersion, neighboursQueryText, pathAtDepth, pathQueryText, relationshipQueryText, shortestPathRecipe, typePreview, usesShortestPath } from '../src/cypher/recipes';
 import type { IEngine, IRecipe, RecipeResult } from '../src/cypher/recipes';
 import { createPathSearch, noPathText } from '../src/cypher/pathSearch';
 import type { ReadQueryResult } from '../src/graph/types';
@@ -369,6 +369,10 @@ test('expand by type: one relationship type, quoted for the dialect, with the dr
 		assert.match(isRefusal(refused) ? refused.refusal : '', /relationship type .* cannot be put in a generated query on this engine/);
 	}
 	assert.ok(isRefusal(expandByType(ENGINES[0], '', 'MAKES', 100, [])));
+	// One type per statement: `[:A|B]` is a syntax error on AGE 1.5.0, so a name holding `|` is one quoted name or refused.
+	assert.match(recipe(expandByType(ENGINES[0], 'a', 'A|B', 100, [])).cypher, /\[r:`A\|B`\]/);
+	assert.ok(isRefusal(expandByType(ENGINES[2], 'a', 'A|B', 100, [])));
+	for (const engine of ENGINES) assert.doesNotMatch(recipe(expandByType(engine, '1', 'MAKES', 100, ['2'])).cypher, /\[r:[^\]`]*\|/);
 	for (const engine of ENGINES) {
 		for (const id of HOSTILE_IDS) {
 			const r = recipe(expandByType(engine, id, 'MAKES', 100, [id]));
@@ -378,40 +382,45 @@ test('expand by type: one relationship type, quoted for the dialect, with the dr
 	}
 });
 
-test('one shortestPath call: Neo4j binds both ids; FalkorDB has its own form behind a single switch; AGE never gets one', () => {
+// FalkorDB (probed on 4.22.2) refuses the undirected form and answers the directed one with a longer path than the
+// undirected depth search finds (5 relationships where depth 3 has one), so it is never asked: Neo4j only.
+test('one shortestPath call on Neo4j only: both ids bound; FalkorDB and AGE are refused and use the depth search', () => {
 	const neo = recipe(shortestPathRecipe(ENGINES[0], 'a', 'b'));
 	assert.equal(neo.cypher, 'MATCH (a), (b) WHERE elementId(a) = $from AND elementId(b) = $to MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p LIMIT 1');
 	assert.deepEqual(neo.params, { from: 'a', to: 'b' });
 	assert.equal(neo.limit, 1);
-	// FalkorDB resolves both ends before the call (its documented restriction); the form is unproven, so it is off.
-	const falkor = recipe(shortestPathRecipe(ENGINES[1], '1', '2'));
-	assert.equal(falkor.cypher, 'MATCH (a), (b) WHERE id(a) = toInteger($from) AND id(b) = toInteger($to) WITH a, b MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p LIMIT 1');
-	assert.equal(FALKORDB_SHORTEST_PATH, false, 'FalkorDB is tried only once a live test proves the form');
+	assert.equal(FALKORDB_SHORTEST_PATH, false);
+	const falkor = shortestPathRecipe(ENGINES[1], '1', '2');
+	assert.ok(isRefusal(falkor));
+	assert.match(isRefusal(falkor) ? falkor.refusal : '', /one direction/);
 	assert.ok(isRefusal(shortestPathRecipe(ENGINES[2], '1', '2')), 'Apache AGE has no shortestPath');
 	assert.ok(isRefusal(shortestPathRecipe(ENGINES[0], 'a', 'a')));
 	assert.ok(isRefusal(shortestPathRecipe({ dialect: 'neo4j', version: '4.4' }, 'a', 'b')));
-	for (const engine of ENGINES.slice(0, 2)) {
-		const r = recipe(shortestPathRecipe(engine, HOSTILE_IDS[0], HOSTILE_IDS[1]));
-		assert.ok(!r.cypher.includes(HOSTILE_IDS[0]) && !r.cypher.includes(HOSTILE_IDS[1]));
-		assert.equal(classifyStatement(r.cypher).kind, 'read');
-	}
-	// Used only where the node says the engine has it, and only on an engine where the form is known to work.
+	const hostile = recipe(shortestPathRecipe(ENGINES[0], HOSTILE_IDS[0], HOSTILE_IDS[1]));
+	assert.ok(!hostile.cypher.includes(HOSTILE_IDS[0]) && !hostile.cypher.includes(HOSTILE_IDS[1]));
+	assert.equal(classifyStatement(hostile.cypher).kind, 'read');
+	// Used only where the node says the engine has it, and only on Neo4j.
 	assert.equal(usesShortestPath({ ...ENGINES[0], shortestPath: true }), true);
 	assert.equal(usesShortestPath(ENGINES[0]), false, 'not reported, not used');
 	assert.equal(usesShortestPath({ ...ENGINES[0], shortestPath: false }), false);
-	assert.equal(usesShortestPath({ ...ENGINES[1], shortestPath: true }), FALKORDB_SHORTEST_PATH);
+	assert.equal(usesShortestPath({ ...ENGINES[1], shortestPath: true }), false, 'not on FalkorDB, whatever it reports');
 	assert.equal(usesShortestPath({ ...ENGINES[2], shortestPath: true }), false, 'not on AGE, whatever it reports');
 	assert.equal(usesShortestPath({ dialect: 'neo4j', version: '4.4', shortestPath: true }), false, 'not where elementId() is missing');
 });
 
-test('"new query from here" texts: an editable statement with the id written in, read-only, AGE-safe, and none for an id that cannot be written safely', () => {
-	assert.equal(neighboursQueryText(ENGINES[0], '4:c7e1:0'), "MATCH (n) WHERE elementId(n) = '4:c7e1:0' OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25");
-	assert.equal(neighboursQueryText(ENGINES[1], '0'), 'MATCH (n) WHERE id(n) = 0 OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25');
-	assert.equal(neighboursQueryText(ENGINES[2], '11821949021847553'), 'MATCH (n) WHERE id(n) = 11821949021847553 OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25', 'a 64-bit id is written exactly');
-	assert.equal(relationshipQueryText(ENGINES[0], '5:c7e1:163'), "MATCH (a)-[r]->(b) WHERE elementId(r) = '5:c7e1:163' RETURN a, r, b");
-	assert.equal(relationshipQueryText(ENGINES[2], '1125899906842625'), 'MATCH (a)-[r]->(b) WHERE id(r) = 1125899906842625 RETURN a, r, b');
-	assert.equal(pathQueryText({ ...ENGINES[0], shortestPath: true }, '4:x:1', '4:x:2', { method: 'shortest-path' }), "MATCH (a), (b) WHERE elementId(a) = '4:x:1' AND elementId(b) = '4:x:2' MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p");
-	assert.equal(pathQueryText(ENGINES[2], '1', '2', { method: 'depth', depth: 3 }), 'MATCH p = (a)-[*3..3]-(b) WHERE id(a) = 1 AND id(b) = 2 RETURN p LIMIT 1');
+// The editor runs its text with no parameters, so the id is written in; a first comment line says it is a live handle,
+// because the text can outlive the element (History and Saved keep it).
+test('"new query from here" texts: an editable statement with the id written in under a live-handle note, read-only, AGE-safe, and none for an id that cannot be written safely', () => {
+	const note = `${LIVE_HANDLE_NOTE}\n`;
+	assert.match(LIVE_HANDLE_NOTE, /^\/\/ .*live handles/);
+	assert.equal(neighboursQueryText(ENGINES[0], '4:c7e1:0'), `${note}MATCH (n) WHERE elementId(n) = '4:c7e1:0' OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25`);
+	assert.equal(neighboursQueryText(ENGINES[1], '0'), `${note}MATCH (n) WHERE id(n) = 0 OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25`);
+	assert.equal(neighboursQueryText(ENGINES[2], '11821949021847553'), `${note}MATCH (n) WHERE id(n) = 11821949021847553 OPTIONAL MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25`, 'a 64-bit id is written exactly');
+	assert.equal(relationshipQueryText(ENGINES[0], '5:c7e1:163'), `${note}MATCH (a)-[r]->(b) WHERE elementId(r) = '5:c7e1:163' RETURN a, r, b`);
+	assert.equal(relationshipQueryText(ENGINES[2], '1125899906842625'), `${note}MATCH (a)-[r]->(b) WHERE id(r) = 1125899906842625 RETURN a, r, b`);
+	assert.equal(pathQueryText({ ...ENGINES[0], shortestPath: true }, '4:x:1', '4:x:2', { method: 'shortest-path' }), `${note}MATCH (a), (b) WHERE elementId(a) = '4:x:1' AND elementId(b) = '4:x:2' MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p`);
+	assert.equal(pathQueryText(ENGINES[2], '1', '2', { method: 'depth', depth: 3 }), `${note}MATCH p = (a)-[*3..3]-(b) WHERE id(a) = 1 AND id(b) = 2 RETURN p LIMIT 1`);
+	assert.doesNotMatch(neighboursQueryText(ENGINES[2], '1') ?? '', /\$/, 'no parameter: the editor sends none');
 	for (const engine of ENGINES) {
 		const texts = [neighboursQueryText(engine, '12'), relationshipQueryText(engine, '13'), pathQueryText(engine, '12', '14', { method: 'depth', depth: 2 })];
 		for (const text of texts) {
@@ -431,6 +440,7 @@ test('"new query from here" texts: an editable statement with the id written in,
 		assert.equal(neighboursQueryText(ENGINES[2], id), null, `AGE ids are integers: ${id}`);
 	}
 	assert.equal(pathQueryText(ENGINES[2], '1', '2', { method: 'shortest-path' }), null, 'no shortestPath text for AGE');
+	assert.equal(pathQueryText(ENGINES[1], '1', '2', { method: 'shortest-path' }), null, 'nor for FalkorDB');
 	assert.equal(neighboursQueryText({ dialect: 'neo4j', version: '4.4' }, '1'), null, 'no elementId() before Neo4j 5');
 });
 
@@ -462,8 +472,8 @@ test('with the one-call search on, a path the shortestPath call finds is the ans
 	assert.equal(single, 1);
 });
 
-test('an empty answer, an error or a path between other nodes from the shortestPath call falls back to the depth search; "no path" is never claimed from it', async () => {
-	for (const single of ['empty', 'error', 'other-ends'] as const) {
+test('an error or a path between other nodes from the shortestPath call falls back to the depth search', async () => {
+	for (const single of ['error', 'other-ends'] as const) {
 		const calls: string[] = [];
 		const found = await createPathSearch({ engine: { ...ENGINES[0], shortestPath: true }, single: true, run: singleRun(single, 2, calls) }).start('from', 'to');
 		assert.equal(found.status, 'found', single);
@@ -474,8 +484,17 @@ test('an empty answer, an error or a path between other nodes from the shortestP
 		}
 		assert.match(calls[0], /shortestPath/);
 		const none = await createPathSearch({ engine: { ...ENGINES[0], shortestPath: true }, single: true, run: singleRun(single, null, []) }).start('from', 'to');
-		assert.deepEqual(none, { status: 'none', maxDepth: 10, attempts: 11 }, `${single}: "no path" comes from the depth search alone`);
+		assert.deepEqual(none, { status: 'none', maxDepth: 10, attempts: 11 }, `${single}: then "no path" comes from the depth search`);
 	}
+});
+
+// Neo4j's call is undirected and bounded at 10 (probed on Neo4j 2026.10.1: it finds what the depth search finds), so
+// an empty answer already means "no path within 10": ten more calls would only say the same, slower.
+test('an empty answer from the undirected shortestPath call is "no path within depth 10", after that one call', async () => {
+	const calls: string[] = [];
+	const outcome = await createPathSearch({ engine: { ...ENGINES[0], shortestPath: true }, single: true, run: singleRun('empty', 2, calls), onDepth: () => assert.fail('no depth search') }).start('from', 'to');
+	assert.deepEqual(outcome, { status: 'none', maxDepth: 10, attempts: 1 });
+	assert.equal(calls.length, 1);
 });
 
 test('the depth search alone finds paths as before and says so; AGE never sends shortestPath even when asked to', async () => {

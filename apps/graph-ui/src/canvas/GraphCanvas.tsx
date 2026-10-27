@@ -41,7 +41,13 @@
 //     in the edge layer; React Flow is given no edges, so its edge events never fire.
 //   - A right-click on a node, a relationship or the empty canvas asks for a
 //     menu (`onContextMenu`, at the pointer); the view draws the menu.
+//   - Escape clears the selection, then a shown path; with nothing to clear the
+//     canvas leaves Escape alone (no preventDefault), so full screen gets it.
 //   - Dragging a node pins it where it is dropped.
+//   - The view is fitted when a layout lands and on Fit, never on a resize: the
+//     inspector opening beside the canvas must not move the node just clicked
+//     (the second click of a double-click would miss it). A resize keeps the view
+//     where it is, and only pans to keep the focused node inside it.
 //   - Force, Tree or Left to right layout (`layoutMode`); a found `path` is laid
 //     out left to right on a row of its own and everything else is dimmed.
 //   - The view can centre a node, fit, re-run the layout and export the drawing
@@ -94,6 +100,8 @@ export type CanvasMenuTarget = { kind: 'node'; id: GraphId } | { kind: 'relation
 /** What the view can ask of a mounted canvas. */
 export interface IGraphCanvasHandle {
 	centerOn(id: GraphId): void;
+	/** Move keyboard focus to a node (a menu or panel giving focus back). False when it could not: focus it elsewhere. */
+	focusNode(id: GraphId): boolean;
 	fit(): void;
 	relayout(): void;
 	/** The drawing as an image, or null when it cannot be made. */
@@ -155,6 +163,10 @@ export interface IGraphCanvasProps {
 	focusIds?: { nodes: ReadonlySet<GraphId>; relationships: ReadonlySet<GraphId> } | null;
 	/** A found path, in order: laid out left to right on a row of its own, everything else dimmed. */
 	path?: { nodes: readonly GraphId[]; relationships: readonly GraphId[] } | null;
+	/** Stop showing the path (Escape, once nothing is selected). */
+	onClearPath?(): void;
+	/** Refit whenever the canvas changes size, until the user pans or zooms (the old behaviour). Default: never on a resize. */
+	refitOnResize?: boolean;
 	/** How each label's nodes are drawn, by label. */
 	looks?: ReadonlyMap<string, INodeLook>;
 	/** A colour per relationship type. */
@@ -205,6 +217,8 @@ const NO_EDGES: never[] = [];
  * already opened the menu, so that event is ignored for this long afterwards.
  */
 const KEYBOARD_MENU_ECHO_MS = 600;
+/** How far inside the canvas edge a resize keeps the focused node (screen pixels beyond its circle). */
+const KEEP_IN_VIEW_MARGIN = 16;
 
 /**
  * The canvas proper.
@@ -326,18 +340,37 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 		timer = window.setTimeout(poll, 16);
 		return () => window.clearTimeout(timer);
 	}, [layout.version, tryFit]);
+	/** After a resize, pan only as far as it takes to keep the focused node inside the canvas. */
+	const keepFocusedInView = useCallback(
+		(width: number, height: number) => {
+			const id = latest.current.focusedId;
+			const at = id === null ? undefined : layoutPositions.current.get(id);
+			if (id === null || !at) return;
+			const { x, y, zoom } = flowRef.current.getViewport();
+			const reach = radiusOf(id) * zoom + KEEP_IN_VIEW_MARGIN;
+			const sx = x + at.x * zoom;
+			const sy = y + at.y * zoom;
+			const dx = sx < reach ? reach - sx : sx > width - reach ? width - reach - sx : 0;
+			const dy = sy < reach ? reach - sy : sy > height - reach ? height - reach - sy : 0;
+			if (dx !== 0 || dy !== 0) void flowRef.current.setViewport({ x: x + dx, y: y + dy, zoom }, { duration: 0 });
+		},
+		[radiusOf]
+	);
 	useEffect(() => {
 		const el = container.current;
 		if (!el || typeof ResizeObserver === 'undefined') return undefined;
-		// The canvas can change size after the fit (a notice or the result line appears around it):
-		// until the user takes the view over, the whole graph stays in it.
+		// The canvas changes size when the inspector opens beside it, the status line grows or the divider moves. None of
+		// that refits: a fit re-zooms the graph and moves the node under the pointer. The view stays as it is (only the
+		// focused node is kept inside it); a fit that is still owed (a layout landed while the tab was hidden) happens now.
 		const observer = new ResizeObserver(() => {
-			if (!userMoved.current) pendingFit.current = true;
-			tryFit();
+			if (el.clientWidth === 0 || el.clientHeight === 0) return;
+			if (latest.current.refitOnResize === true && !userMoved.current) pendingFit.current = true;
+			if (pendingFit.current) tryFit();
+			else keepFocusedInView(el.clientWidth, el.clientHeight);
 		});
 		observer.observe(el);
 		return () => observer.disconnect();
-	}, [tryFit]);
+	}, [tryFit, keepFocusedInView]);
 
 	// Glide into place only after a layout, never while dragging.
 	useEffect(() => {
@@ -486,7 +519,9 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 			const target = event.target as HTMLElement;
 			if (target !== event.currentTarget && !target.classList.contains('react-flow__node')) return;
 			const p = latest.current;
-			const action = keyAction({ model: p.model, positions: layoutPositions.current, focusedId: p.focusedId }, { key: event.key, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey });
+			// Escape is the canvas's only while it has something to clear; otherwise it is left to the page (full screen).
+			const clearable = p.selected.size > 0 || (p.selectedRelationshipId ?? null) !== null ? 'selection' : p.path && p.path.nodes.length > 0 && p.onClearPath ? 'path' : null;
+			const action = keyAction({ model: p.model, positions: layoutPositions.current, focusedId: p.focusedId, clearable }, { key: event.key, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey });
 			if (!handled(action)) return;
 			event.preventDefault();
 			switch (action.type) {
@@ -524,6 +559,9 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 					break;
 				case 'clear-selection':
 					p.onClearSelection();
+					break;
+				case 'clear-path':
+					p.onClearPath?.();
 					break;
 				case 'help':
 					p.onHelp();
@@ -608,6 +646,15 @@ function CanvasInner(props: IGraphCanvasProps): React.ReactElement {
 				// The view now shows what was asked for: a resize keeps it rather than refitting.
 				userMoved.current = true;
 				void flowRef.current.setCenter(at.x, at.y, { zoom: flowRef.current.getZoom(), duration: reducedRef.current || document.hidden ? 0 : 300 });
+			},
+			focusNode(id: GraphId): boolean {
+				if (!latest.current.model.nodes.has(id)) return false;
+				// Node ids and relationship ids overlap (FalkorDB), so the lookup is scoped to node elements.
+				const el = container.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`);
+				if (!el) return false;
+				if (!el.hasAttribute('tabindex')) el.tabIndex = -1;
+				el.focus({ preventScroll: true });
+				return document.activeElement === el;
 			},
 			fit: refit,
 			relayout: () => setRelayoutNonce((n) => n + 1),

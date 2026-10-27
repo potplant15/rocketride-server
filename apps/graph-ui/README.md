@@ -177,7 +177,7 @@ along its line that takes the click.
 | Dismiss | Removes the node from the canvas. |
 | Inspect | Opens the node's labels, id and properties, exact and complete, with Copy JSON. |
 | Connect nodes | Draws the relationships among the nodes already on the canvas. When the node returns only part of them (it stops at its own row limit), it says that more may exist; connect fewer nodes to see the others. |
-| Find path | Between two selected nodes. Where the node reports that the engine has `shortestPath` (Neo4j), the app first asks for a shortest path of up to 10 relationships in one call. If that call fails or comes back empty, which may only mean the engine searched in one direction, the app tries depth 1, 2 and so on up to 10, one call each, as it always does on Apache AGE (which has no `shortestPath`) and on FalkorDB (whose form has not been checked against a live server yet). Only that depth search ever says there is no path, and it names the depth it searched. The path found is laid out left to right on a row above the rest of the drawing, everything else is dimmed, and the status line says how it was found. Clear path puts its nodes back where the layout had them. |
+| Find path | Between two selected nodes. On Neo4j (when the node reports that the engine has `shortestPath`), one call asks for a shortest path of up to 10 relationships in either direction; an empty answer means there is none within 10, and if the call fails the app falls back to the search below. FalkorDB and Apache AGE try depth 1, 2 and so on up to 10, one call each, and stop at the first depth that has a path, so it is a shortest one. (AGE has no `shortestPath`. FalkorDB's follows one direction only: probed on FalkorDB 4.22.2, it returned a 5-relationship path where a 3-relationship one exists.) "No path" names the depth searched. The path found is laid out left to right on a row above the rest of the drawing, everything else is dimmed, and the status line says how it was found. Clear path (or Escape, once nothing is selected) puts its nodes back where the layout had them. |
 | Show more nodes | Adds nodes the first draw left out. |
 
 The graph sends one request at a time. While Expand, Expand by type, Connect,
@@ -210,15 +210,19 @@ proves to work. The one exception is text the app puts into the editor for you t
 read and run ("New query from here", a path's "Open as query"): the editor sends no
 parameters, so the element's id is written into the text, and only when it can be
 written safely (an integer on FalkorDB and Apache AGE; on Neo4j an id with no
-quote, backslash or control character). Otherwise there is no such text.
+quote, backslash or control character). Otherwise there is no such text. Its first
+line is a comment saying the ids are live handles: History and Saved queries keep
+the text after the element may be gone, and a database can give a deleted
+element's id to another.
 
 **Image export.** The drawing can be saved as SVG or PNG. The picture is written
 from the canvas's own positions, colours, badges, captions and relationship
 geometry, not taken from the screen, so it covers the whole drawing rather than
-the part in view, in the colours of the current theme. Captions are cut at 24
-characters, and relationship labels are written when no more than 200
-relationships are drawn. A PNG is twice the drawing's size, or smaller for a very
-large drawing, so that it fits what a browser canvas can hold.
+the part in view, on the canvas background, in the colours of the current theme
+and in the system font. Captions are cut at 24 characters, and relationship labels
+are written when no more than 200 relationships are drawn. A PNG is twice the
+drawing's size, or smaller for a very large drawing, so that it stays within what
+a browser canvas can hold (16.7 million pixels, Safari's limit).
 
 **Layout.** There are three: Force (the default), Tree (top down) and Left to
 right. Force is computed off the main thread, in a Web Worker running d3-force
@@ -235,7 +239,11 @@ under 50 ms at the canvas maximum (1,000 nodes, 2,000 relationships), so it runs
 on the main thread and works the same in a browser and in VS Code. Tree and Left
 to right lay the whole drawing out again when nodes are added; Force places only
 the new ones. **Re-run layout** lays out every node again; a node you dragged
-stays where you dropped it while **Keep dragged nodes pinned** is on.
+stays where you dropped it while **Keep dragged nodes pinned** is on. The view is
+fitted to the drawing when a layout lands and with the fit button, not when the
+canvas changes size: opening the inspector beside it, or moving the divider, keeps
+the view where it is, and only pans as far as it takes to keep the focused node in
+sight.
 
 **Keyboard.** The canvas is a single tab stop with roving focus: arrow keys move
 to the connected node in that direction, Enter inspects, Space selects, `E`
@@ -243,7 +251,9 @@ expands, `C` collapses, Delete or Backspace (the Mac "delete" key) dismisses,
 `P` finds a path between two selected nodes, `R` shows the focused node's next
 relationship in the inspector (relationships are not tab stops, so this is how a
 keyboard reaches them), the Menu key or Shift+F10 opens the focused node's menu,
-`?` lists every key, Tab leaves the canvas. Each node is spoken with its caption, labels and how many relationships
+Escape clears the selection and then a shown path, `?` lists every key, Tab leaves
+the canvas. With nothing left to clear, the canvas does not use Escape, so in full
+screen it leaves full screen. Each node is spoken with its caption, labels and how many relationships
 are shown, and each action is announced through one polite live region.
 Animations respect the reduced-motion setting. The Table tab lists the same
 result for anyone who would rather not use the canvas.
@@ -431,9 +441,9 @@ editor and an **Execute** button, and it always says what it is:
   makes one very wide level (or a very tall column), and the tree is rooted at
   the first selected node when a layout runs, not whenever the selection changes.
   Re-run the layout after selecting a different root.
-- The one-call `shortestPath` is used on Neo4j only. On FalkorDB the app uses the
-  depth search until its `shortestPath` form is checked against a live server;
-  Apache AGE has none.
+- Find path makes one `shortestPath` call on Neo4j only; FalkorDB and Apache AGE
+  try depth 1 to 10, one call each, which takes longer when the path is long or
+  there is none.
 - Apache AGE 1.5.0 lacks `date()`, `duration()` and `EXISTS { }` subqueries; the
   node says so with its own text and the app shows it.
 - FalkorDB and Neo4j refuse two columns with the same name; AGE keeps them, and
@@ -449,7 +459,13 @@ editor and an **Execute** button, and it always says what it is:
   panning or dragging at any of these. With the CPU slowed 4x in Chrome, as a
   stand-in for a slower device, panning a fully drawn 1,000-node graph stutters,
   which is one reason the first draw is capped at 300. No real low-end device
-  was measured.
+  was measured. Those checks were made before relationships could be clicked.
+  Each relationship now also has an invisible hit path, so the browser tests
+  the pointer against one more shape per relationship on every move. In a
+  synthetic page shaped like the canvas (headless Chrome 156, Apple M4 Pro), one
+  such hit test took 0.068 ms without the hit paths and 0.074 ms with them at
+  1,000 nodes and 2,000 relationships (0.036 and 0.039 ms at 300 and 600), against
+  the 16.7 ms of a frame. The app itself has not been re-measured.
 - Browsers: the production checks ran in Chrome 154, Firefox 141 and WebKit 26
   (Playwright). WebKit is the engine Safari uses, but it is not Safari, and
   Safari itself has not been tried. The build declares Safari 13 as its floor,

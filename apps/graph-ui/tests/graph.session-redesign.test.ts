@@ -93,6 +93,37 @@ test('a relationship that is not drawn is not selected; clearing the selection c
 	assert.deepEqual(s.inspect, { kind: 'node', id: 'a' });
 });
 
+// The legend selects every drawn node of a label: one state update, not one per node.
+test('selectMany: `only` replaces the selection in one update and the inspector follows the first node; `toggle` adds them all unless all are selected', () => {
+	const { session, log } = rig(FALKOR);
+	session.load(envelope([[node('0', ['P'], { name: 'Zero' }), node('1', ['P']), node('2', ['Q']), rel('0', 'T', '1', '2')]]));
+	let updates = 0;
+	session.subscribe(() => (updates += 1));
+	session.selectRelationship('0');
+	updates = 0;
+	session.selectMany(['0', '1', 'ghost', '1'], 'only');
+	let s = session.getState();
+	assert.equal(updates, 1, 'one update');
+	assert.deepEqual([...s.selected], ['0', '1'], 'drawn nodes only, each once');
+	assert.equal(s.selectedRelationship, null, 'relationship 0 is not node 0, and it is no longer selected');
+	assert.deepEqual(s.inspect, { kind: 'node', id: '0' });
+	assert.equal(log.said.at(-1), '2 nodes selected.');
+	session.selectMany(['1', '2'], 'toggle');
+	s = session.getState();
+	assert.deepEqual([...s.selected].sort(), ['0', '1', '2'], 'one of them was not selected, so all are added');
+	assert.deepEqual(s.inspect, { kind: 'node', id: '0' }, 'a toggle leaves the inspector alone');
+	session.selectMany(['1', '2'], 'toggle');
+	assert.deepEqual([...session.getState().selected], ['0'], 'all were selected, so all are removed');
+	assert.equal(log.said.at(-1), '2 nodes deselected. 1 node selected.');
+	updates = 0;
+	session.selectMany(['ghost'], 'toggle');
+	assert.equal(updates, 0, 'nothing drawn, nothing changes');
+	session.selectMany([], 'only');
+	s = session.getState();
+	assert.equal(s.selected.size, 0);
+	assert.equal(s.inspect, null, 'the inspector closes when nothing is selected');
+});
+
 test('collapse keeps a relationship that is still drawn in the inspector, and lets go of one that left with its end', () => {
 	const { session } = rig(NEO, () => envelope([[node('a', ['P']), rel('r2', 'T', 'a', 'c'), node('c', ['P'], { name: 'C' })]]));
 	session.load(base());
@@ -171,6 +202,16 @@ test('Expand by type says when the node has no relationship of that type, and re
 	assert.equal(age.log.recipes.length, 0, 'a node that is not drawn is not expanded');
 });
 
+test('Expand by type on a node whose neighbours of that type are all drawn says nothing new, not that the node is gone', async () => {
+	// The node is matched on its own and its relationships OPTIONALLY: it answers with itself even when nothing is new.
+	const { session, log } = rig(NEO, () => envelope([[node('a', ['P'], { name: 'A' }), null, null]]));
+	session.load(envelope([[node('a', ['P'], { name: 'A' }), rel('m0', 'MAKES', 'a', 'd'), node('d', ['Product'])]]));
+	await session.expandByType('a', 'MAKES');
+	assert.match(log.recipes[0].cypher, /^MATCH \(n\) WHERE .* OPTIONAL MATCH \(n\)-\[r:`MAKES`\]-\(m\)/);
+	assert.equal(session.getState().notice?.text, 'No new MAKES neighbours of A.');
+	assert.equal(session.getState().notice?.variant, 'info');
+});
+
 test('Expand by type is one request at a time like every other action, and its late answer is dropped by a new result', async () => {
 	let release: (r: ReadQueryResult) => void = () => undefined;
 	const { session, log } = rig(NEO, () => new Promise<ReadQueryResult>((resolve) => { release = resolve; }));
@@ -208,8 +249,11 @@ test('on an engine with shortestPath, Find path makes ONE call, keeps the path i
 	assert.equal(s.highlight.size, 0);
 });
 
-test('an empty answer from the shortestPath call falls back to the depth search, which finds the path and is named as the method', async () => {
-	const { session, log } = rig(NEO_SP, (recipe) => envelope(/\[\*2\.\.2\]/.test(recipe.cypher) ? [[PATH]] : []));
+test('a failed shortestPath call falls back to the depth search, which finds the path and is named as the method; an empty one is final', async () => {
+	const { session, log } = rig(NEO_SP, (recipe) => {
+		if (/shortestPath/.test(recipe.cypher)) throw new Error('Query failed');
+		return envelope(/\[\*2\.\.2\]/.test(recipe.cypher) ? [[PATH]] : []);
+	});
 	session.load(base());
 	session.toggleSelect('a');
 	session.toggleSelect('b');
@@ -217,6 +261,13 @@ test('an empty answer from the shortestPath call falls back to the depth search,
 	assert.deepEqual(log.recipes.map((r) => (/shortestPath/.test(r.cypher) ? 'one call' : /\[\*(\d)\.\./.exec(r.cypher)?.[1])), ['one call', '1', '2']);
 	assert.equal(session.getState().path?.method, 'depth');
 	assert.match(session.getState().notice?.text ?? '', /^Shortest path A → B: 2 relationships, found by trying depth 1 to 2, one call each\./);
+	const empty = rig(NEO_SP, () => envelope([]));
+	empty.session.load(base());
+	empty.session.toggleSelect('a');
+	empty.session.toggleSelect('b');
+	await empty.session.findPath();
+	assert.equal(empty.log.recipes.length, 1, 'the undirected call already searched depth 1 to 10');
+	assert.match(empty.session.getState().notice?.text ?? '', /^No path within depth 10\./);
 });
 
 test('AGE, and an engine that does not report shortestPath, go straight to the depth search; the progress line says which search runs', async () => {
