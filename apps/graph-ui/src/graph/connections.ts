@@ -287,8 +287,8 @@ function sizePart(items: ReadonlyArray<{ count: number | null; countEstimated: b
 	return { text: none ? `${many} not reported` : `some ${one} counts not reported`, counted: false, none };
 }
 
-/** Said after the counts of a stale schema: they are the last successful read's. */
-export const AS_OF_LAST_READ = ' (as of the last read)';
+/** Said of a stale schema's counts and lists: they are the last successful read's. */
+export const AS_OF_LAST_READ = 'as of the last read';
 
 /**
  * A connection's size from the schema read in this session, in the words the cards, the drawer and the Overview share:
@@ -306,7 +306,7 @@ export function countsText(schema: ISchemaView | null): string {
 	const parts = [sizePart(schema.labels, 'node', 'nodes', ' (per label)', schema.truncated), sizePart(schema.relationshipTypes, 'relationship', 'relationships', '', schema.truncated)].filter((part) => part !== null);
 	if (parts.length === 0) return '';
 	if (parts.every((part) => !part.counted)) return parts.every((part) => part.none) ? 'counts not reported' : 'some counts not reported';
-	return `${parts.map((part) => part.text).join(' \u00b7 ')}${schema.evidence === 'stale' ? AS_OF_LAST_READ : ''}`;
+	return `${parts.map((part) => part.text).join(' \u00b7 ')}${schema.evidence === 'stale' ? `, ${AS_OF_LAST_READ}` : ''}`;
 }
 
 /**
@@ -382,7 +382,8 @@ export function schemaSummaryText(schema: ISchemaView): string {
 	const keys = new Set<string>();
 	for (const item of [...schema.labels, ...schema.relationshipTypes]) for (const property of item.properties) keys.add(property.name);
 	const n = (count: number, one: string, many: string): string => `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`;
-	return `${n(schema.labels.length, 'label', 'labels')} \u00b7 ${n(schema.relationshipTypes.length, 'relationship type', 'relationship types')} \u00b7 ${n(keys.size, 'property key', 'property keys')}${schema.sampled ? ' (sampled)' : ''}${schema.evidence === 'stale' ? AS_OF_LAST_READ : ''}`;
+	const notes = [schema.sampled ? 'sampled' : null, schema.evidence === 'stale' ? AS_OF_LAST_READ : null].filter(Boolean);
+	return `${n(schema.labels.length, 'label', 'labels')} \u00b7 ${n(schema.relationshipTypes.length, 'relationship type', 'relationship types')} \u00b7 ${n(keys.size, 'property key', 'property keys')}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`;
 }
 
 // =============================================================================

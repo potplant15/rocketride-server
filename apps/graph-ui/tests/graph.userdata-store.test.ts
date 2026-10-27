@@ -24,6 +24,7 @@ import {
 	STYLES_PATH,
 	applySavedEdit,
 	applyStyleChange,
+	moveLegacyCaptions,
 	assignmentFor,
 	checkSavedEdit,
 	checkStyleEdit,
@@ -364,5 +365,50 @@ describe('relationship-type colours: only the measured slots', () => {
 		assert.throws(() => applyStyleChange({}, KEY, { kind: 'type', type: 'KNOWS', patch: { slot: 3 } }), refused(/cannot be drawn in that colour/));
 		assert.doesNotThrow(() => applyStyleChange({}, KEY, { kind: 'type', type: 'KNOWS', patch: { slot: 4 } }));
 		assert.deepEqual(readConnectionStyle({ types: { OLD: { slot: 5 }, OK: { slot: 1 } } }).types, { OK: { slot: 1 } }, 'an older file\'s yellow type is read as no choice');
+	});
+});
+
+describe('captions from 1.2: a choice that does not fit stays where it was', () => {
+	const LEGACY = 'graph.captions';
+	/**
+	 * Accessor holding a styles bag with exactly `room` characters left under the cap.
+	 *
+	 * @param room - Characters left.
+	 * @returns The accessor.
+	 */
+	function nearlyFull(room: number) {
+		const fill = (n: number) => ({ [OTHER]: { labels: { ['F'.repeat(n)]: { slot: 1 } } } });
+		const base = JSON.stringify(fill(0), null, 2).length;
+		const prefs = memoryPrefs();
+		prefs.setPref(STYLES_PREF, fill(MAX_STYLES_BAG_CHARS - room - base));
+		return prefs;
+	}
+
+	it('the choices that fit are moved; the one that does not is kept under the old key, and is tried again later', () => {
+		const prefs = nearlyFull(140);
+		prefs.setPref(LEGACY, { [KEY]: { A: 'a', B: 'x'.repeat(250) } });
+		assert.equal(moveLegacyCaptions(prefs, LEGACY), true);
+		assert.equal(styleIn(prefs, KEY).labels.A?.caption, 'a', 'moved');
+		assert.equal(styleIn(prefs, KEY).labels.B, undefined, 'did not fit');
+		assert.deepEqual(prefs.getPref(LEGACY), { [KEY]: { B: 'x'.repeat(250) } }, 'kept, not lost');
+	});
+
+	it('nothing fits: nothing is written, and the old key is left as it was', () => {
+		const prefs = nearlyFull(0);
+		const legacy = { [KEY]: { A: 'name' } };
+		prefs.setPref(LEGACY, legacy);
+		const styles = prefs.getPref(STYLES_PREF);
+		assert.equal(moveLegacyCaptions(prefs, LEGACY), false);
+		assert.equal(prefs.getPref(LEGACY), legacy);
+		assert.equal(prefs.getPref(STYLES_PREF), styles);
+	});
+
+	it('everything moved (or already captioned in the style): the old key is removed', () => {
+		const prefs = memoryPrefs();
+		prefs.setPref(STYLES_PREF, { [KEY]: { labels: { B: { caption: 'mine' } } } });
+		prefs.setPref(LEGACY, { [KEY]: { A: 'a', B: 'old' } });
+		assert.equal(moveLegacyCaptions(prefs, LEGACY), true);
+		assert.equal(prefs.getPref(LEGACY), undefined);
+		assert.equal(styleIn(prefs, KEY).labels.B?.caption, 'mine', 'the style\'s own caption wins');
 	});
 });

@@ -359,7 +359,7 @@ test('counts: exact sums; "about" on an estimate; "not reported" for a part whos
 test('the drawer\'s size and schema lines', () => {
 	assert.equal(sizeText(view({ labels: [label('A', null)], relationshipTypes: [] })), 'Counts not reported');
 	assert.equal(sizeText(view({ labels: [label('A', null)], relationshipTypes: [type('R', 2)] })), 'Nodes not reported \u00b7 2 relationships', 'a line starts with a capital');
-	assert.equal(sizeText(view({ evidence: 'stale', labels: [label('A', 3)], relationshipTypes: [] })), '3 nodes (per label) (as of the last read)', 'a stale schema: the counts of the last successful read');
+	assert.equal(sizeText(view({ evidence: 'stale', labels: [label('A', 3)], relationshipTypes: [] })), '3 nodes (per label), as of the last read', 'a stale schema: the counts of the last successful read');
 	assert.equal(sizeText(view({ evidence: 'fresh', labels: [], relationshipTypes: [] })), 'Empty');
 	assert.equal(sizeText(view({ evidence: 'unknown', labels: [], relationshipTypes: [] })), 'Not reported', 'an unreadable schema proves nothing');
 	assert.equal(sizeText(view({ labels: [label('A', 3)], relationshipTypes: [type('R', 1)] })), '3 nodes (per label) \u00b7 1 relationship');
@@ -398,5 +398,6 @@ test('the drawer never claims "0 labels" for a schema nobody could read', () => 
 	}
 	assert.equal(rows(view({ evidence: 'fresh', sampled: false, labels: [], relationshipTypes: [] })).Schema, '0 labels \u00b7 0 relationship types \u00b7 0 property keys', 'a fresh read that lists nothing is an empty graph');
 	assert.equal(rows(view({ evidence: 'stale', sampled: false, labels: [label('A', 1)], relationshipTypes: [] })).Schema, '1 label \u00b7 0 relationship types \u00b7 0 property keys (as of the last read)');
+	assert.equal(rows(view({ evidence: 'stale', sampled: true, labels: [label('A', 1)], relationshipTypes: [] })).Schema, '1 label \u00b7 0 relationship types \u00b7 0 property keys (sampled, as of the last read)', 'one parenthetical, not two');
 	assert.match(rows(parseSchema(fixture('schema_old_node'))).Schema, /^2 labels/, 'an old node that lists something: what it lists');
 });

@@ -83,8 +83,8 @@ A card also carries chips, each from what the node itself reports:
   reported* when it has none, and *some node counts not reported* (or
   relationship) when only some are missing; with no total at all, the card says
   *counts not reported* or *some counts not reported*. When the last refresh
-  failed, the counts are the last successful read's and say *(as of the last
-  read)*.
+  failed, the counts are the last successful read's and say *as of the last
+  read*.
 - **Empty graph**, only when a schema read in this session lists no label and
   no relationship type. A node that could not read its schema, or an older
   node, never shows it.
@@ -132,18 +132,23 @@ signed-in account's file, so reload the page before working as another account.
 
 **One page at a time.** Each page of the app holds the workspace file as it was
 when the page loaded, and any change it saves (a keystroke in a draft, a run, a
-style, a saved query) writes all of it back. So with two pages of the same
-account open, a change saved in the older page overwrites what the newer one
-saved, saved queries included: change things in one page at a time; the last
-page to save wins. The colours the app gives new labels are not saved by
-themselves (opening a connection writes nothing): they are shown at once and
-saved with the next change you make in that page.
+grid layout, a style, a saved query) writes all of it back. So with two pages of
+the same account open, a change saved in the older page overwrites what the
+newer one saved, saved queries included: change things in one page at a time;
+the last page to save wins. The colours the app gives new labels are not saved
+by themselves (opening a connection writes nothing): they are shown at once and
+saved with the next draft, editor height, style or saved query you change in
+that page. A run or a grid layout change does not save them. Colours shown in a
+page that saves none of those are not kept, so if the connection's labels
+change before the next session, a label can get a different colour then.
 
 **Captions from 1.2.** The caption choices the app kept before 1.3
 (`graph.captions`) are shown as the labels' captions at once, and moved into
-the styles with the next change you make, once, for labels that have no caption
-in their style yet; the old key is then removed. Nothing is moved for another
-account signed in without a reload.
+the styles once, with the next draft, editor height, style or saved query you
+change, for labels that have no caption in their style yet. The old key is then
+removed; a choice that does not fit because the styles are full stays in it,
+still shown, and is tried again with a later change. Nothing is moved for
+another account signed in without a reload.
 
 ## The workbench
 
@@ -569,9 +574,10 @@ per connection and per account:
   a moment later.
 
 A relationship type shows a line in the colour chosen for it, or in the
-relationship colour when none was chosen. Only the four colours the canvas
-draws types in are shown or kept (a colour that is too faint against the canvas
-in some themes, as an older file may hold, is not).
+relationship colour when none was chosen. A type can only be given one of the
+four colours the canvas draws types in; a colour outside those four that an
+older file still holds is ignored, and that type is drawn in the relationship
+colour.
 
 - Select a label or type, or press Enter on it, to show and run a preview of
   25 rows in the workbench.
