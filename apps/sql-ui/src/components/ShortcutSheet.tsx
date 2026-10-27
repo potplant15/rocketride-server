@@ -62,6 +62,7 @@ const GROUPS: ShortcutGroup[] = [
 			{ action: 'Run the selection, or the statement at the cursor', keys: 'Ctrl or Cmd + Enter' },
 			{ action: 'Run every statement, stopping at the first error', keys: 'Ctrl or Cmd + Shift + Enter' },
 			{ action: 'Explain the statement Run would send', keys: 'Ctrl or Cmd + Shift + E' },
+			{ action: 'On a schema-only node a run from the keyboard sends nothing and says why; Check again on the query page looks again', keys: 'Ctrl or Cmd + Enter' },
 		],
 	},
 	{
@@ -69,7 +70,6 @@ const GROUPS: ShortcutGroup[] = [
 		rows: [
 			{ action: 'Show this list', keys: '?' },
 			{ action: 'Close a drawer or this list', keys: 'Esc' },
-			{ action: 'When the node is schema only, a keyboard run still tries and re-checks it', keys: 'Ctrl or Cmd + Enter' },
 		],
 	},
 ];

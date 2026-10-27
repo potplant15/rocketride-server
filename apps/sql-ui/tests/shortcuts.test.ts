@@ -112,3 +112,17 @@ describe('the workbench wiring', () => {
 		assert.match(view, /setShortcutsOpen\(true\)/);
 	});
 });
+
+// DA-R2 M1: since the schema-only fix, QueryView's runner refuses a keyboard
+// run and sends nothing (canRun), so the sheet must not say it "still tries".
+describe('the shortcut sheet says what a keyboard run does on a schema-only node', () => {
+	const sheet = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'components', 'ShortcutSheet.tsx'), 'utf8');
+	const view = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'views', 'QueryView.tsx'), 'utf8');
+
+	it('it is refused and sends nothing; Check again is the way back', () => {
+		assert.match(view, /canRun: \(\) => \{\s*if \(allowExecuteOff\) \{[\s\S]*?return false;/);
+		assert.doesNotMatch(sheet, /still tries/);
+		assert.match(sheet, /On a schema-only node a run from the keyboard sends nothing and says why; Check again on the query page looks again/);
+	});
+});
+
