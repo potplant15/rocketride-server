@@ -55,7 +55,7 @@ describe('QueryView on the shared runner', () => {
 
 	it('sends each statement on the session SqlEnv gives the document (the remote proxy in a frame), repeatable only for a read', () => {
 		assert.match(view, /execute: \(run, send(?:, ticket)?\) => env\.getSession\(endpoint\)\.execute\(send\.sql, \{ idempotent: run\.kind === 'read'/);
-		assert.match(view, /canRun: \(\) => env\.ready/);
+		assert.match(view, /canRun: \(\) => \{[\s\S]*?return env\.ready;\s*\},/);
 	});
 
 	it('keeps no run loop of its own', () => {

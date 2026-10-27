@@ -141,8 +141,10 @@ When a connection opens, the app sends `SELECT 1` once to find out whether
 the node runs statements. It goes straight to the node, so it is not in your
 query history. If the node has `allow_execute` off, the connection is
 **schema only**: the header says so, and Run, Run all, Explain, New Query,
-**Select top 100**, **Count rows** and **Open data** are off with the reason
-shown, and the Data page says it cannot read rows. Tables, columns, keys,
+**Select top 100**, **Count rows**, **Open data** and History's **Rerun** are
+off with the reason shown, and the Data page says it cannot read rows. The
+run shortcuts send nothing either and say why, so no statement, and no row
+estimate for a confirmation, reaches the node. Tables, columns, keys,
 Diagram and Insights keep working. After you turn `allow_execute` on and
 restart the pipeline, **Check again** on the Overview page (or **Refresh
 Schema**) looks again. While the answer is not known yet, nothing is

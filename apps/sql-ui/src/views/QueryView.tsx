@@ -312,6 +312,10 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// as the default, which asks.
 	const { record: connectionRecord } = useConnectionRecord(endpoint.connId ?? null);
 	const safety = safetyLevelOf(connectionRecord);
+	// The runner copies its hooks once per batch; they read the level here,
+	// so each statement is checked at the level set when it is reached.
+	const safetyRef = useRef(safety);
+	safetyRef.current = safety;
 
 	// ── Editor + run state ───────────────────────────────────────────────────
 	const [sql, setSql] = useState(initialSql ?? '');
@@ -392,7 +396,17 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		runTargets: runStatements,
 		stopWaiting,
 	} = useStatementRunner<StatementRun, { sql: string }, SqlExecuteResult, FailureNotice>({
-		canRun: () => env.ready,
+		// Nothing is sent to a node that is schema only: not by the keyboard
+		// (Ctrl/Cmd+Enter, Ctrl/Cmd+Shift+Enter) nor by History's Rerun, which
+		// the gated buttons do not cover. The reason is said, since a key press
+		// has no tooltip to show it.
+		canRun: () => {
+			if (allowExecuteOff) {
+				announce(SCHEMA_ONLY_REASON);
+				return false;
+			}
+			return env.ready;
+		},
 		initRun: (target, index): StatementRun => ({
 			index,
 			sql: target.text,
@@ -413,8 +427,8 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		// Read before every statement, so a level changed in the connection's
 		// editor applies from the next statement on. No answer in the dialog
 		// turns asking off: the level is the connection's, changed in its editor.
-		patternChecksOn: () => safety !== 'off',
-		patternCheck: (run) => needsConfirmation(run.sql, dialect, safety),
+		patternChecksOn: () => safetyRef.current !== 'off',
+		patternCheck: (run) => needsConfirmation(run.sql, dialect, safetyRef.current),
 		prepare: (run) => {
 			const prepared = applyRowLimit(run.sql, limit, dialect);
 			return { send: { sql: prepared.sql }, patch: { limitApplied: prepared.limit, limitState: prepared.state } };
@@ -476,7 +490,8 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		if (!patternPrompt) return undefined;
 		const { run } = patternPrompt;
 		const statement = rowEstimateStatement(run.sql, dialect);
-		if (statement === null || !env.ready) {
+		// A schema-only node is sent nothing, the estimate included.
+		if (statement === null || !env.ready || allowExecuteOff) {
 			setEstimate({ run, value: { state: 'none' } });
 			return undefined;
 		}
@@ -495,15 +510,15 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			alive = false;
 			estimateGeneration.invalidate();
 		};
-	}, [patternPrompt, dialect, env, endpoint, estimateGeneration]);
+	}, [patternPrompt, dialect, env, endpoint, estimateGeneration, allowExecuteOff]);
 
 	// The open confirmation's own estimate; before its effect has run, what it
 	// is about to be.
 	const promptEstimate = useMemo((): RowEstimate => {
 		if (!patternPrompt) return { state: 'none' };
 		if (estimate !== null && estimate.run === patternPrompt.run) return estimate.value;
-		return env.ready && rowEstimateStatement(patternPrompt.run.sql, dialect) !== null ? { state: 'estimating' } : { state: 'none' };
-	}, [patternPrompt, estimate, env.ready, dialect]);
+		return env.ready && !allowExecuteOff && rowEstimateStatement(patternPrompt.run.sql, dialect) !== null ? { state: 'estimating' } : { state: 'none' };
+	}, [patternPrompt, estimate, env.ready, dialect, allowExecuteOff]);
 
 	// ── Editor wiring ────────────────────────────────────────────────────────
 

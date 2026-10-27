@@ -116,6 +116,33 @@ describe('every listed control takes the gate', () => {
 	});
 });
 
+describe('schema only: no statement path is left open (DA-R1 M2)', () => {
+	const query = src('views', 'QueryView.tsx');
+	const history = src('components', 'HistoryPanel.tsx');
+
+	it('the runner starts nothing while the node is schema only, and says why: Ctrl+Enter, Ctrl+Shift+Enter and Rerun', () => {
+		assert.match(query, /canRun: \(\) => \{\s*if \(allowExecuteOff\) \{\s*announce\(SCHEMA_ONLY_REASON\);\s*return false;\s*\}\s*return env\.ready;\s*\},/);
+	});
+
+	it('the confirmation\'s row estimate is not sent either', () => {
+		assert.match(query, /if \(statement === null \|\| !env\.ready \|\| allowExecuteOff\) \{/);
+		assert.match(query, /return env\.ready && !allowExecuteOff && rowEstimateStatement\(patternPrompt\.run\.sql, dialect\) !== null/);
+	});
+
+	it('the README lists them', () => {
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(prose, /\*\*Open data\*\* and History's \*\*Rerun\*\* are off with the reason shown/);
+		assert.match(prose, /The run shortcuts send nothing either and say why, so no statement, and no row estimate for a confirmation, reaches the node\./);
+	});
+
+	it('History\'s Rerun takes the gate, with the reason shown in the drawer', () => {
+		assert.match(history, /const rerunGate = executeGateReason\(useExecuteState\(endpoint\.key\)\);/);
+		assert.match(tagBefore(history, 'Rerun'), /gateReason=\{rerunGate\}/);
+		assert.match(tagBefore(history, 'Rerun'), /reasonId=\{gateNoteId\}/);
+		assert.match(history, /<div id=\{gateNoteId\} style=\{styles\.capLine\}>\{`Schema only: \$\{SCHEMA_ONLY_REASON\} Rerun is off\.`\}<\/div>/);
+	});
+});
+
 describe('the probe', () => {
 	const store = src('schema', 'schemaStore.ts');
 	const view = src('views', 'ConnectionView.tsx');
