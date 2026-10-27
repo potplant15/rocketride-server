@@ -28,6 +28,7 @@ test('"Expand by type" holds one item per relationship type, and is off (with th
 	const none = menuItemsFor({ kind: 'node', id: 'a' }, { ...ctx, relationshipTypes: [] }).find((i) => i.id === 'expand-type') as IMenuItem;
 	assert.equal(none.disabled, true);
 	assert.match(none.reason ?? '', /relationship type/i);
+	assert.match(typed.label, /sampled/);
 });
 
 test('what asks the database is off while busy or out of date, and says why; what only changes the drawing stays on', () => {

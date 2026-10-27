@@ -78,6 +78,8 @@ export const CanvasMenu: React.FC<ICanvasMenuProps> = ({ label, items, x, y, bou
 	const [page, setPage] = useState<{ title: string; items: readonly IMenuItem[] } | null>(null);
 	const [active, setActive] = useState(0);
 	const [at, setAt] = useState({ x, y });
+	// Swapping the items replaces the focused element, and the browser may report that as focus leaving the menu.
+	const paging = useRef(false);
 
 	const shown: readonly IMenuItem[] = page ? [{ id: BACK_ID, label: `‹ ${page.title}` }, ...page.items] : items;
 
@@ -94,15 +96,18 @@ export const CanvasMenu: React.FC<ICanvasMenuProps> = ({ label, items, x, y, bou
 	// Focus follows the current item (and the first item when the menu opens).
 	useEffect(() => {
 		itemRefs.current[active]?.focus({ preventScroll: true });
+		paging.current = false;
 	}, [active, page]);
 
 	const choose = (index: number): void => {
 		const item = shown[index];
 		if (!item || item.disabled) return;
 		if (item.id === BACK_ID) {
+			paging.current = true;
 			setPage(null);
 			setActive(0);
 		} else if (item.submenu) {
+			paging.current = true;
 			setPage({ title: item.label, items: item.submenu });
 			setActive(1);
 		} else onActivate(item.id);
@@ -124,12 +129,14 @@ export const CanvasMenu: React.FC<ICanvasMenuProps> = ({ label, items, x, y, bou
 				break;
 			case 'back':
 				if (page) {
+					paging.current = true;
 					setPage(null);
 					setActive(0);
 				}
 				break;
 			case 'close':
 				if (event.key === 'Escape' && page) {
+					paging.current = true;
 					setPage(null);
 					setActive(0);
 				} else onClose(true);
@@ -148,6 +155,7 @@ export const CanvasMenu: React.FC<ICanvasMenuProps> = ({ label, items, x, y, bou
 			onKeyDown={onKeyDown}
 			onBlur={(event) => {
 				// Focus left the menu for somewhere else (a click in another part of the page): it goes away without taking focus back.
+				if (paging.current) return;
 				const next = event.relatedTarget as HTMLElement | null;
 				if (next && (root.current?.contains(next) || next.closest?.('[data-menu-trigger]'))) return;
 				onClose(false);

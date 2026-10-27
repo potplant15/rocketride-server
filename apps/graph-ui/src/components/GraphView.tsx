@@ -188,6 +188,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const [layoutStatus, setLayoutStatus] = useState<LayoutStatus>({ state: 'idle' });
 	const [helpOpen, setHelpOpen] = useState(false);
 	const [helpToken, setHelpToken] = useState(0);
+	const [legendOpen, setLegendOpen] = useState(true);
 	const [inspectToken, setInspectToken] = useState(0);
 	const [layoutMode, setLayoutMode] = useState<LayoutMode>('force');
 	const [keepPinned, setKeepPinned] = useState(true);
@@ -443,13 +444,14 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 
 	const onRootKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
 		if (event.ctrlKey || event.metaKey || event.altKey) return;
+		if (event.defaultPrevented) return;
 		if (event.key === '/' && !isTyping(event.target)) {
 			event.preventDefault();
 			searchInput.current?.focus();
 			searchInput.current?.select();
 			return;
 		}
-		if (event.key === 'Escape' && pickFrom !== null && !isTyping(event.target) && !(event.target as HTMLElement).closest?.('[role="menu"]')) {
+		if (event.key === 'Escape' && pickFrom !== null) {
 			event.preventDefault();
 			setPickFrom(null);
 		}
@@ -514,7 +516,15 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	});
 
 	if (state.model.nodes.size === 0) {
-		return <EmptyState icon={<GraphIcon />} title="Nothing to draw" description="This result has no nodes. The Table tab lists every returned row." />;
+		// Still the status line: an out-of-date empty drawing must keep its Rerun.
+		return (
+			<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+				<div style={{ flex: 1, minHeight: 0 }}>
+					<EmptyState icon={<GraphIcon />} title="Nothing to draw" description="This result has no nodes. The Table tab lists every returned row." />
+				</div>
+				<GraphStatusLine items={items} meta={meta} onRerun={onRerun} />
+			</div>
+		);
 	}
 
 	const toolMenuTrigger = (which: ToolMenu, text: string, items: IMenuItem[]): ReactNode => (
@@ -562,6 +572,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 						<Button variant="ghost" small title="Fit to screen (F)" onClick={() => handle.current?.fit()}>Fit</Button>
 						{toolMenuTrigger('export', 'Export', exportItems)}
 						{onToggleMaximized && <Button variant="ghost" small pressed={maximized === true} title={maximized ? 'Exit full screen (Esc)' : 'Full screen'} onClick={onToggleMaximized}>{maximized ? 'Exit full screen' : 'Full screen'}</Button>}
+						<Button variant="ghost" small ariaExpanded={legendOpen} title="Show or hide the legend and its styles" onClick={() => setLegendOpen(!legendOpen)}>Legend</Button>
 						<span ref={keysAnchor}>
 							<Button variant="ghost" small ariaExpanded={helpOpen} title="Keyboard shortcuts (?)" onClick={() => { setHelpOpen(!helpOpen); setHelpToken((n) => n + 1); }}>Keys</Button>
 						</span>
@@ -621,28 +632,30 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 					)}
 				</div>
 
-				<LegendPanel
-					labels={legend}
-					types={typeLegend}
-					colors={colors}
-					style={style}
-					captions={captions}
-					nodes={nodes}
-					onSelectLabel={(label) => {
-						session.clearSelection();
-						// TODO(selectMany): one session call instead of a notification per node, once the session has selectMany.
-						for (const id of nodeIdsOfLabel(state.model, label)) session.toggleSelect(id);
-					}}
-					onCaption={onCaption}
-					onEdit={(edit) => env.userData.editStyle(key, edit)}
-					privacyNote={env.userData.privacyNote}
-				/>
 				<GraphStatusLine items={items} meta={meta} onRerun={onRerun} />
 			</div>
 
-			{(showInspector || helpOpen) && (
+			{(showInspector || helpOpen || legendOpen) && (
 				<div style={styles.side}>
 					{showInspector && <InspectorPanel state={state} session={session} captions={captions} announce={announce} onNewQuery={onNewQuery} onFindPathFrom={startPath} focusToken={inspectToken} schema={schema} onClosed={() => restoreFocus()} />}
+					{legendOpen && (
+						<LegendPanel
+							labels={legend}
+							types={typeLegend}
+							colors={colors}
+							style={style}
+							captions={captions}
+							nodes={nodes}
+							onSelectLabel={(label) => {
+								session.clearSelection();
+								// TODO(selectMany): one session call instead of a notification per node, once the session has selectMany.
+								for (const id of nodeIdsOfLabel(state.model, label)) session.toggleSelect(id);
+							}}
+							onCaption={onCaption}
+							onEdit={(edit) => env.userData.editStyle(key, edit)}
+							privacyNote={env.userData.privacyNote}
+						/>
+					)}
 					{helpOpen && <KeysPanel focusToken={helpToken} onClose={() => { setHelpOpen(false); keysAnchor.current?.querySelector('button')?.focus(); }} />}
 				</div>
 			)}

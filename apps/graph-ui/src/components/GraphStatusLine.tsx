@@ -52,11 +52,14 @@ const TONE: Record<IStatusItem['tone'], string> = { info: 'var(--rr-text-seconda
 const MARK: Record<IStatusItem['tone'], string> = { info: '', warning: 'Warning: ', error: 'Error: ' };
 
 const styles = {
-	root: { borderTop: '1px solid var(--rr-border)', fontSize: 12, padding: '4px 10px', display: 'flex', flexDirection: 'column', gap: 4 } as CSSProperties,
-	row: { display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' } as CSSProperties,
-	left: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 } as CSSProperties,
-	item: (tone: IStatusItem['tone']): CSSProperties => ({ display: 'inline-flex', gap: 6, alignItems: 'center', color: TONE[tone], fontWeight: tone === 'info' ? 400 : 600 }),
-	details: { margin: 0, padding: '4px 8px', whiteSpace: 'pre-wrap', color: 'var(--rr-text-primary)', background: 'var(--rr-bg-default)', border: '1px solid var(--rr-border)', borderRadius: 4 } as CSSProperties,
+	// One fixed line: a notice coming or going must never resize the canvas above it (the canvas would re-zoom).
+	root: { position: 'relative', flex: '0 0 auto', height: 28, boxSizing: 'border-box', borderTop: '1px solid var(--rr-border)', fontSize: 12, padding: '0 10px', display: 'flex', alignItems: 'center' } as CSSProperties,
+	row: { display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', width: '100%', minWidth: 0 } as CSSProperties,
+	left: { display: 'flex', gap: 14, alignItems: 'center', minWidth: 0, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap' } as CSSProperties,
+	item: (tone: IStatusItem['tone']): CSSProperties => ({ display: 'inline-flex', gap: 6, alignItems: 'center', minWidth: 0, color: TONE[tone], fontWeight: tone === 'info' ? 400 : 600 }),
+	text: { overflow: 'hidden', textOverflow: 'ellipsis' } as CSSProperties,
+	// Details float above the line, over the canvas, so opening them changes no height.
+	details: { position: 'absolute', left: 0, right: 0, bottom: '100%', zIndex: 10, margin: 0, padding: '6px 10px', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap', color: 'var(--rr-text-primary)', background: 'var(--rr-bg-paper)', border: '1px solid var(--rr-border)', boxShadow: '0 -2px 8px rgba(0,0,0,0.2)' } as CSSProperties,
 	meta: { color: 'var(--rr-text-secondary)', whiteSpace: 'nowrap' } as CSSProperties,
 };
 
@@ -85,7 +88,7 @@ export const GraphStatusLine: React.FC<IGraphStatusLineProps> = ({ items, meta, 
 						const live = item.kind === 'selection' ? {} : item.tone === 'error' ? { role: 'alert' as const } : { role: 'status' as const };
 						return (
 							<span key={item.kind} style={styles.item(item.tone)} {...live}>
-								<span>{`${MARK[item.tone]}${item.headline}`}</span>
+								<span style={styles.text} title={item.headline}>{`${MARK[item.tone]}${item.headline}`}</span>
 								{item.kind === 'stale' && onRerun && <Button variant="ghost" small onClick={onRerun}>Rerun</Button>}
 								{item.details !== null && <Button variant="ghost" small ariaExpanded={open.has(item.kind)} onClick={() => toggle(item.kind)}>Details</Button>}
 							</span>

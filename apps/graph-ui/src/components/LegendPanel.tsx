@@ -64,10 +64,10 @@ export interface ILegendPanelProps {
 }
 
 const styles = {
-	root: { borderTop: '1px solid var(--rr-border)', fontSize: 12 } as CSSProperties,
+	root: { borderTop: '1px solid var(--rr-border)', fontSize: 12, flex: '0 0 auto' } as CSSProperties,
 	head: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 10px' } as CSSProperties,
 	title: { margin: 0, fontSize: 12, fontWeight: 600 } as CSSProperties,
-	body: { padding: '2px 10px 6px', maxHeight: 110, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 } as CSSProperties,
+	body: { padding: '2px 10px 6px', display: 'flex', flexDirection: 'column', gap: 4 } as CSSProperties,
 	group: { display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' } as CSSProperties,
 	groupName: { color: 'var(--rr-text-secondary)', marginRight: 6 } as CSSProperties,
 	swatch: (fill: string): CSSProperties => ({ display: 'inline-block', width: 12, height: 12, borderRadius: '50%', background: fill, border: '1px solid var(--rr-text-primary)', marginRight: 6, verticalAlign: 'middle' }),
@@ -91,8 +91,8 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 	const root = useRef<HTMLElement>(null);
 
 	const usedBy = useMemo(() => {
-		const out = new Map<number, string>();
-		for (const [label, color] of colors) if (color.slot !== null && !out.has(color.slot)) out.set(color.slot, label);
+		const out = new Map<number, string[]>();
+		for (const [label, color] of colors) if (color.slot !== null) out.set(color.slot, [...(out.get(color.slot) ?? []), label]);
 		return out;
 	}, [colors]);
 

@@ -89,7 +89,7 @@ export type MenuKeyResult =
 
 const BUSY_REASON = 'Wait for the running action to finish, or stop waiting.';
 const STALE_REASON = 'Out of date: run the query again first.';
-const NO_TYPES_REASON = 'No relationship type is known for this label.';
+const NO_TYPES_REASON = 'No relationship type is known for this label. The list comes from the schema, which is sampled.';
 
 // =============================================================================
 // ITEMS
@@ -120,7 +120,7 @@ export function menuItemsFor(target: CanvasMenuTarget, context: IMenuContext): I
 		if (context.canQuery) items.push({ id: 'new-query', label: 'New query from here', separatorBefore: true });
 		return items;
 	}
-	const types: IMenuItem = context.relationshipTypes.length === 0 ? { id: 'expand-type', label: 'Expand by type', disabled: true, reason: NO_TYPES_REASON } : { id: 'expand-type', label: 'Expand by type', submenu: context.relationshipTypes.map((type) => ({ id: `type:${type}`, label: type })) };
+	const types: IMenuItem = context.relationshipTypes.length === 0 ? { id: 'expand-type', label: 'Expand by type (sampled)', disabled: true, reason: NO_TYPES_REASON } : { id: 'expand-type', label: 'Expand by type (sampled)', submenu: context.relationshipTypes.map((type) => ({ id: `type:${type}`, label: type })) };
 	const items: IMenuItem[] = [
 		asks({ id: 'expand', label: 'Expand all neighbours', hint: 'double-click · E' }),
 		asks(types),

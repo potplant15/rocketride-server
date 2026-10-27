@@ -65,7 +65,7 @@ export const KeysPanel: React.FC<IKeysPanelProps> = ({ onClose, focusToken }) =>
 			aria-label="Keyboard shortcuts"
 			style={styles.root}
 			onKeyDown={(event) => {
-				if (event.key === 'Escape') {
+				if (event.key === 'Escape' && !event.defaultPrevented) {
 					event.preventDefault();
 					onClose();
 				}

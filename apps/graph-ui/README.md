@@ -409,8 +409,8 @@ Enter or Space chooses, Right opens **Expand by type** and Left goes back,
 Escape closes it and returns focus to the node, and Tab closes it. Shift+F10 or
 the Menu key opens it at the focused node. Anything that asks the database is
 off while another request is running or the drawing is out of date, and says so
-in its title. **Expand by type** lists the relationship types the schema says
-can start or end at one of the node's labels. **Find path to...** then waits for
+in its title. **Expand by type (sampled)** lists the relationship types the schema says
+can start or end at one of the node's labels; the schema is sampled, so the list can be incomplete. **Find path to...** then waits for
 you to click the second node (Escape cancels). **Connect the drawn nodes**
 connects every drawn node, as the toolbar button does.
 
@@ -427,13 +427,13 @@ SVG images and the drawn graph as JSON. Where the host cannot download files
 there. Fit and Full screen sit beside them.
 
 **Status line.** One line under the graph replaces the notices that floated over
-it. It holds at most one item of each kind: out of date, the session's notice,
+it. It is one fixed line high (long text is cut with an ellipsis, so a notice never resizes the canvas) and holds at most one item of each kind: out of date, the session's notice,
 what is running, the canvas budget, the layout, a path pick, a shown path and the
-selection. A long text shows its first sentence and the rest behind **Details**.
+selection. A long text shows its first sentence and the rest behind **Details**, which opens over the canvas.
 An out of date drawing says so once, offers **Rerun**, and keeps the full
 explanation in its Details. The result line (rows, time) is on the right.
 
-**Legend and styles.** The legend lists the labels and relationship types that
+**Legend and styles.** The legend sits in the column to the right of the canvas, with the inspector, so it costs the canvas no height; the **Legend** button hides it. It lists the labels and relationship types that
 are drawn, with how many of each (drawn, not in the database). Clicking a label
 selects its drawn nodes. **Style** opens an editor under the legend: a label
 takes one of the six measured chart colours (or its automatic one), a size (S,
@@ -443,7 +443,7 @@ canvas in every shipped theme (yellow and orange are below that in the light
 themes, so they are not offered). There is no free colour picker. A label keeps
 the colour it was first given, so a label added to the graph later never moves
 another label's colour, and up to six labels never share a colour unless you
-choose it. Styles are saved through the connection's user data; the legend says
+choose it (the editor says when two labels end up with the same one). Styles are saved through the connection's user data; the legend says
 where on this mount (the sentence comes from the mount, not from this page).
 
 **Badges.** The letters inside a node are the shortest start of its label that no

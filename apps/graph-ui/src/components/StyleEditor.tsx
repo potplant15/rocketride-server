@@ -54,7 +54,7 @@ export interface IStyleEditorProps {
 	/** The slot the label has now, whether chosen or automatic (marked when no own choice is made). */
 	currentSlot: number | null;
 	/** Which other label already uses a slot, by slot. */
-	usedBy: ReadonlyMap<number, string>;
+	usedBy: ReadonlyMap<number, readonly string[]>;
 	/** Label only: the caption choices and the one chosen ('' for automatic). */
 	captionChoices?: readonly ICaptionChoice[];
 	caption?: string;
@@ -96,13 +96,13 @@ export const StyleEditor: React.FC<IStyleEditorProps> = ({ kind, name, style, sl
 	}, [kind, name]);
 	const own = style.slot;
 	const chosenSlot = own ?? currentSlot;
-	const sameAs = chosenSlot !== null ? usedBy.get(chosenSlot) : undefined;
+	const sameAs = chosenSlot !== null ? (usedBy.get(chosenSlot) ?? []).filter((other) => other !== name && other !== (name === '(no label)' ? '' : name)) : [];
 	return (
 		<section
 			aria-label={`Style ${name}`}
 			style={styles.root}
 			onKeyDown={(event) => {
-				if (event.key === 'Escape') {
+				if (event.key === 'Escape' && !event.defaultPrevented) {
 					event.preventDefault();
 					onDone();
 				}
@@ -116,7 +116,7 @@ export const StyleEditor: React.FC<IStyleEditorProps> = ({ kind, name, style, sl
 					<button key={slot} type="button" aria-label={CHART_COLOR_NAMES[slot]} title={CHART_COLOR_NAMES[slot]} aria-pressed={own === slot} style={styles.swatch(`var(${CHART_COLOR_VARS[slot]})`, own === slot)} onClick={() => onChange({ ...style, slot })} />
 				))}
 			</div>
-			{sameAs !== undefined && sameAs !== name && <div style={styles.note}>{`The same colour as ${sameAs}.`}</div>}
+			{sameAs.length > 0 && <div role="status" style={{ ...styles.note, color: 'var(--rr-text-primary)' }}>{`Same colour as ${sameAs.join(', ')}: they will be hard to tell apart.`}</div>}
 			{kind === 'label' && (
 				<>
 					<div style={styles.row} role="group" aria-label="Size">

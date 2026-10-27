@@ -146,7 +146,7 @@ export const InspectorPanel: React.FC<IInspectorPanelProps> = ({ state, session,
 		onClosed?.();
 	};
 	const onKeyDown = (event: React.KeyboardEvent<HTMLElement>): void => {
-		if (event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+		if (event.key === 'Escape' && !event.defaultPrevented && !event.ctrlKey && !event.metaKey && !event.altKey) {
 			event.preventDefault();
 			close();
 		}
