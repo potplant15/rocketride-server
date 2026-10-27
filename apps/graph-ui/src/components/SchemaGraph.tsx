@@ -29,7 +29,7 @@
 // things in text, so the picture is named for assistive technology but not walked.
 // =============================================================================
 
-import React from 'react';
+import React, { useId } from 'react';
 import type { IGraphEdgeShape, IGraphNodeShape, OverviewGraph } from '../graph/overview';
 
 /** The longest caption drawn; the full text is in the circle's title. */
@@ -46,10 +46,10 @@ function fit(text: string): string {
 }
 
 /** One arrow and its type name. */
-const Edge: React.FC<{ edge: IGraphEdgeShape }> = ({ edge }) => (
+const Edge: React.FC<{ edge: IGraphEdgeShape; arrow: string }> = ({ edge, arrow }) => (
 	<g>
 		<title>{`${edge.from} -[${edge.type}]-> ${edge.to}${edge.observed ? '' : ' (inferred, not seen in data)'}`}</title>
-		<path d={edge.path} fill="none" stroke="var(--rr-text-secondary)" strokeWidth={1.4} strokeDasharray={edge.observed ? undefined : '4 3'} markerEnd="url(#schema-arrow)" />
+		<path d={edge.path} fill="none" stroke="var(--rr-text-secondary)" strokeWidth={1.4} strokeDasharray={edge.observed ? undefined : '4 3'} markerEnd={`url(#${arrow})`} />
 		<text x={edge.labelX} y={edge.labelY} textAnchor="middle" dominantBaseline="middle" fontSize={10} fill="var(--rr-text-secondary)" stroke="var(--rr-bg-paper)" strokeWidth={3} paintOrder="stroke">
 			{fit(edge.type)}
 		</text>
@@ -78,21 +78,26 @@ export interface ISchemaGraphProps {
  * @param props - See {@link ISchemaGraphProps}.
  * @returns The picture.
  */
-export const SchemaGraph: React.FC<ISchemaGraphProps> = ({ graph }) => (
-	<svg viewBox={`0 0 ${graph.width} ${graph.height}`} role="img" aria-label={`Schema graph: ${graph.nodes.length} labels, ${graph.edges.length} observed patterns`} style={{ width: '100%', maxWidth: 680, height: 'auto', display: 'block' }}>
-		<title>{`Schema graph: ${graph.nodes.length} labels, ${graph.edges.length} observed patterns`}</title>
-		<defs>
-			<marker id="schema-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-				<path d="M 0 0 L 10 5 L 0 10 z" fill="var(--rr-text-secondary)" />
-			</marker>
-		</defs>
-		{graph.edges.map((edge) => (
-			<Edge key={edge.id} edge={edge} />
-		))}
-		{graph.nodes.map((node) => (
-			<Node key={node.label} node={node} />
-		))}
-	</svg>
-);
+export const SchemaGraph: React.FC<ISchemaGraphProps> = ({ graph }) => {
+	// Several Overviews stay mounted in one realm (hidden documents): a fixed id would resolve to the first one, which can
+	// sit in a hidden subtree, where browsers do not draw the markers it defines.
+	const arrow = `schema-arrow-${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
+	return (
+		<svg viewBox={`0 0 ${graph.width} ${graph.height}`} role="img" aria-label={`Schema graph: ${graph.nodes.length} labels, ${graph.edges.length} observed patterns`} style={{ width: '100%', maxWidth: 680, height: 'auto', display: 'block' }}>
+			<title>{`Schema graph: ${graph.nodes.length} labels, ${graph.edges.length} observed patterns`}</title>
+			<defs>
+				<marker id={arrow} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+					<path d="M 0 0 L 10 5 L 0 10 z" fill="var(--rr-text-secondary)" />
+				</marker>
+			</defs>
+			{graph.edges.map((edge) => (
+				<Edge key={edge.id} edge={edge} arrow={arrow} />
+			))}
+			{graph.nodes.map((node) => (
+				<Node key={node.label} node={node} />
+			))}
+		</svg>
+	);
+};
 
 export default SchemaGraph;

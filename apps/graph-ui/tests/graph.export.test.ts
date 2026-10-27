@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { deliverExport, exportColumns, exportFileName, exportNote, exportResult, toCsv, toJson } from '../src/graph/exportRows';
+import { MAX_COPY_CHARS, deliverExport, exportColumns, exportFileName, exportNote, exportResult, toCsv, toJson } from '../src/graph/exportRows';
 import type { ReadQueryResult } from '../src/graph/types';
 import { node, readQueryFixture } from './support/builders';
 
@@ -133,6 +133,15 @@ test('a copy that the page refuses is a failure the caller can show, never a sil
 	assert.equal(await deliverExport(payload, { downloadsRefused: true, download: () => undefined, copy: () => Promise.reject(new Error('refused')) }), 'failed');
 });
 
+test('a copy over the cap is not attempted and says so; a download of any size is not capped', async () => {
+	const big = { ...payload, text: 'x'.repeat(MAX_COPY_CHARS + 1) };
+	let copied = false;
+	assert.equal(await deliverExport(big, { downloadsRefused: true, download: () => undefined, copy: async () => { copied = true; } }), 'too-large');
+	assert.equal(copied, false);
+	assert.equal(await deliverExport(big, { downloadsRefused: false, download: () => undefined, copy: async () => undefined }), 'downloaded');
+	assert.equal(await deliverExport(big, { downloadsRefused: false, download: () => { throw new Error('blocked'); }, copy: async () => undefined }), 'too-large', 'the fallback is capped too');
+});
+
 // -----------------------------------------------------------------------------
 // Wiring
 // -----------------------------------------------------------------------------
@@ -143,7 +152,7 @@ const code = (file: string): string => fs.readFileSync(path.join(SRC, ...file.sp
 test('the table drops the grid\'s own export, keeps the persistence, and hands the grid copies', () => {
 	const views = code('components/ResultViews.tsx');
 	assert.match(views, /noExport/);
-	assert.match(views, /persistence=\{env\.gridPersistence\}/);
+	assert.match(views, /guardLayouts\(env\.gridPersistence/);
 	assert.match(views, /toGridRows\(result\)/, 'the grid is given rows built fresh from the result');
 });
 

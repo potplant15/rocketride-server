@@ -199,7 +199,7 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, dialect
 									<SchemaGraph graph={model.graph} />
 								</>
 							) : (
-								<p style={styles.hint}>{`This graph has ${model.graph.labels.toLocaleString('en-US')} labels, too many to draw. The cards below list every label.`}</p>
+								<p style={styles.hint}>{`This graph has ${model.graph.labels.toLocaleString('en-US')} labels, too many to draw. The cards below list the labels.`}</p>
 							)}
 						</section>
 					)}

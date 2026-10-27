@@ -227,7 +227,9 @@ CSV** and **Copy as JSON**, which put the text on the clipboard). They hold the
 rows the query returned under the limit that was applied, and the menu says how
 many and says when the limit cut the result short; they are not the whole
 result. They are built from the result itself, not from the table on screen, so
-a search or a column filter in the table does not change them.
+a search or a column filter in the table does not change them. Where a download is not possible and the text is over 5 million characters, nothing is copied and the menu says so; lower the row limit.
+
+The Table remembers sort and which columns are shown, but not column widths: every result column fills the space, because a grid built while its tab was hidden would otherwise save crushed widths and restore them later.
 - **JSON** is an array of objects keyed by the Cypher column names. A name that
   repeats gets ` (2)`, ` (3)`, so both values are kept; a column with no name
   is `(column 2)`. Graph values and integers beyond 2^53 keep the exact form the

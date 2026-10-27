@@ -32,7 +32,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { AnchoredPopup, Button, commonStyles, isInVSCode } from 'shell';
-import { CSV_FORMULA_NOTE, browserCopy, browserDownload, deliverExport, exportFileName, exportNote, exportResult } from '../graph/exportRows';
+import { CSV_FORMULA_NOTE, MAX_COPY_CHARS, browserCopy, browserDownload, deliverExport, exportFileName, exportNote, exportResult } from '../graph/exportRows';
 import type { ExportFormat } from '../graph/exportRows';
 import type { ReadQueryResult } from '../graph/types';
 
@@ -105,7 +105,7 @@ export const ExportMenu: React.FC<IExportMenuProps> = ({ result, announce }) => 
 			const payload = { ...exportResult(format, result), fileName: exportFileName(Date.now(), format) };
 			void deliverExport(payload, { downloadsRefused: copies, download: browserDownload, copy: browserCopy }).then((outcome) => {
 				// A page that blocks downloads quietly cannot be told apart, so this says the download started.
-				const text = outcome === 'downloaded' ? `Download started: ${what}.` : outcome === 'copied' ? `Copied ${what} to the clipboard.` : `Could not export ${what}: the browser refused.`;
+				const text = outcome === 'downloaded' ? `Download started: ${what}.` : outcome === 'copied' ? `Copied ${what} to the clipboard.` : outcome === 'too-large' ? `Not copied: ${what} is too large for the clipboard (over ${MAX_COPY_CHARS.toLocaleString('en-US')} characters). Lower the row limit, or export where downloads are allowed.` : `Could not export ${what}: the browser refused.`;
 				setStatus(text);
 				announce?.(text);
 			});

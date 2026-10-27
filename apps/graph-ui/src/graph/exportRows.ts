@@ -77,7 +77,10 @@ export type ExportSource = Pick<ReadQueryResult, 'columns' | 'rows'>;
  * How a delivery ended. `downloaded` means the browser was handed the file: a page that blocks downloads without saying
  * so cannot be detected.
  */
-export type ExportDelivery = 'downloaded' | 'copied' | 'failed';
+export type ExportDelivery = 'downloaded' | 'copied' | 'failed' | 'too-large';
+
+/** The most characters put on the clipboard when an export cannot be downloaded (a huge string can freeze the page or be refused). */
+export const MAX_COPY_CHARS = 5_000_000;
 
 /** What delivering needs from the page (injected, so the rule is testable). */
 export interface IExportDeliveryDeps {
@@ -197,7 +200,8 @@ export function exportNote(result: Pick<ReadQueryResult, 'rows' | 'row_limit' | 
 // =============================================================================
 
 /**
- * Deliver an export: it downloads, unless downloads are refused or the attempt throws, and then the text is copied.
+ * Deliver an export: it downloads, unless downloads are refused or the attempt throws, and then the text is copied (up to
+ * {@link MAX_COPY_CHARS}; a larger one is not copied, and the answer says so).
  *
  * @param payload - The export and its file name.
  * @param deps - The page's download and clipboard.
@@ -212,6 +216,7 @@ export async function deliverExport(payload: IExportPayload & { fileName: string
 			// Refused by the page: the clipboard is the fallback.
 		}
 	}
+	if (payload.text.length > MAX_COPY_CHARS) return 'too-large';
 	try {
 		await deps.copy(payload.text);
 		return 'copied';

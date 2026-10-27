@@ -280,14 +280,14 @@ function drawGraph(view: ISchemaView, fills: ReadonlyMap<string, string>): Overv
 			sizes.set(key, (sizes.get(key) ?? 0) + 1);
 		}
 	}
-	const edges: IGraphEdgeShape[] = wanted.map(({ type, endpoint }) => {
+	const edges: IGraphEdgeShape[] = wanted.map(({ type, endpoint }, index) => {
 		const a = at.get(endpoint.start) as { x: number; y: number; ox: number; oy: number };
 		const b = at.get(endpoint.end) as { x: number; y: number; ox: number; oy: number };
 		const loop = endpoint.start === endpoint.end;
 		const key = loop ? `loop|${endpoint.start}` : [endpoint.start, endpoint.end].sort().join('|');
 		const k = slots.get(key) ?? 0;
 		slots.set(key, k + 1);
-		const id = `${type}|${endpoint.start}|${endpoint.end}`;
+		const id = `${index}:${type}`;
 		if (loop) {
 			// Out from the circle's far side from the centre, a little larger for each further loop.
 			const ox = n <= 1 ? 0 : a.ox;
