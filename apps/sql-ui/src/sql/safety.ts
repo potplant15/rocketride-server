@@ -204,6 +204,44 @@ export function toWriteConfirmation(finding: IPatternFinding): WriteConfirmation
 	return isWriteConfirmation(finding) ? finding : { kind: finding.kind, level: 'risky', target: null, reading: 'unknown' };
 }
 
+/** How much each level asks, lowest first. */
+const SAFETY_RANK: Record<SafetyLevel, number> = { off: 0, risky: 1, every: 2 };
+
+/**
+ * Whether moving from one level to another asks LESS, which the Query page
+ * confirms before it saves: the one change that should be hard to make by
+ * accident.
+ *
+ * @param from - The level in force.
+ * @param to - The level chosen.
+ * @returns True for a lower level.
+ */
+export function isSafetyDowngrade(from: SafetyLevel, to: SafetyLevel): boolean {
+	return SAFETY_RANK[to] < SAFETY_RANK[from];
+}
+
+/**
+ * The question asked before a connection's level is lowered.
+ *
+ * @param to - The lower level chosen.
+ * @param connection - The connection's name.
+ * @returns The dialog's title, message and confirm label.
+ */
+export function safetyDowngradeCopy(to: SafetyLevel, connection: string): { title: string; message: string; confirmLabel: string } {
+	if (to === 'off') {
+		return {
+			title: `Never ask before writes on ${connection}?`,
+			message: "Every statement will run as typed, DROP and TRUNCATE included, in every document of this connection. The node's allow_execute still decides what may run at all.",
+			confirmLabel: "Don't ask",
+		};
+	}
+	return {
+		title: `Ask only before risky writes on ${connection}?`,
+		message: 'A bounded UPDATE or DELETE, an INSERT, a CALL and similar statements will run without asking, in every document of this connection. DROP, TRUNCATE, ALTER and an UPDATE or DELETE without WHERE still ask.',
+		confirmLabel: 'Ask before risky writes',
+	};
+}
+
 /**
  * Whether the typed text confirms a target. The match is EXACT: case
  * sensitive, and nothing is trimmed, so the user types what the dialog shows.

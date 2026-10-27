@@ -32,12 +32,13 @@ import type { GridColumnDefinition } from 'shell';
 import type { SqlEndpoint, SqlSchemaTable } from '../connect';
 import type { SchemaState } from '../schema/schemaStore';
 import { refreshSchema, useExecuteState } from '../schema/schemaStore';
-import { executeGateReason } from '../executeGate';
+import { SCHEMA_ONLY_NOTE_ID, executeGateReason } from '../executeGate';
 import { useSqlEnv } from '../sqlEnv';
 import { guardLayouts, layoutRulesFor } from '../sql/gridLayout';
 import { useTableRecordRequest } from '../navigation';
 import { useSqlPageNav } from '../pageNav';
 import TableRecordPanel from '../components/TableRecordPanel';
+import GatedButton from '../components/GatedButton';
 import { buildRelationGraph } from '../schema/relations';
 import { DatabaseIcon } from '../icons';
 
@@ -263,16 +264,20 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot
 					<CardDataGrid<TableRow>
 						title="Tables in the connection's default schema"
 						actions={
-							<Button
+							// A new table needs a statement, so a schema-only node
+							// turns this off with the workbench's stated reason.
+							<GatedButton
 								variant="ghost"
 								small
 								onClick={() => {
 									// Fresh create-table draft — the DESIGN page.
 									pageNav.openDesign(null);
 								}}
+								gateReason={gateReason}
+								reasonId={SCHEMA_ONLY_NOTE_ID}
 							>
 								+ Create Table
-							</Button>
+							</GatedButton>
 						}
 						columns={columns}
 						data={rows}

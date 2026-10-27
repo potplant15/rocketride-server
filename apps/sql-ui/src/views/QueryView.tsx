@@ -62,6 +62,7 @@ import type { DecorationRange, EditorCursorState, SqlEditorHandle } from '../com
 import StatementStrip from '../components/StatementStrip';
 import CellInspector from '../components/CellInspector';
 import WriteConfirmDialog from '../components/WriteConfirmDialog';
+import SafetyDowngradeDialog from '../components/SafetyDowngradeDialog';
 import { FailureBanner } from 'shared/explorer/components/FailureBanner';
 import { createGeneration } from 'shared/explorer/generation';
 import { lineRange, clock } from 'shared/explorer/runner/format';
@@ -71,15 +72,16 @@ import { SaveQueryButton, SavedQueriesButton } from '../components/SavedQueriesP
 import AskBar from '../components/AskBar';
 import ExplainPanel from '../components/ExplainPanel';
 import { announce } from '../a11y/announce';
+import { menuKeyTarget } from '../a11y/menuKeys';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
 import { liveBufferText, selectRunTargets } from '../sql/targets';
 import { classifyStatement } from '../sql/classify';
-import { needsConfirmation, parseRowEstimate, rowEstimateStatement, toWriteConfirmation } from '../sql/safety';
+import { isSafetyDowngrade, needsConfirmation, parseRowEstimate, rowEstimateStatement, toWriteConfirmation } from '../sql/safety';
 import type { RowEstimate } from '../sql/safety';
-import { safetyLevelOf } from '../connect/savedConnections';
+import { SAFETY_LEVELS, safetyLevelOf } from '../connect/savedConnections';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { useConnectionRecord } from '../connectionRecord';
-import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, settleStatement } from '../sql/batch';
+import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, runSummary, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
 import { guardLayouts, layoutRulesFor } from '../sql/gridLayout';
 import {
@@ -145,12 +147,18 @@ const LIMIT_OPTIONS = ['200', '1000', 'All'] as const;
 /** Shown on the results header line when a value may not be the number the database holds. */
 const PRECISION_NOTE = 'Decimal values arrive as floating point; integers above 2^53 lose precision.';
 
-/** The line under the editor names the connection's safety level. */
-const SAFETY_LINE: Record<SafetyLevel, string> = {
-	off: 'Does not ask before writes',
-	risky: 'Asks before risky writes',
-	every: 'Asks before every write',
+/** The safety levels as the line under the editor offers them (the editor's own names). */
+const SAFETY_CHOICES: Record<SafetyLevel, string> = {
+	off: "Don't ask",
+	risky: 'Ask before risky writes',
+	every: 'Ask before every write',
 };
+
+/**
+ * How long a saved level is shown as pending when the stored record has not
+ * caught up (a dev tool's copy of it arrives a moment after the save).
+ */
+const SAFETY_SYNC_GRACE_MS = 3000;
 
 /** How the export announcements name each format. */
 const EXPORT_NAMES: Record<ExportFormat, string> = { csv: 'CSV', json: 'JSON', markdown: 'Markdown' };
@@ -216,20 +224,20 @@ const styles = {
 		color: 'var(--rr-text-secondary)',
 	} as CSSProperties,
 
-	// The Export button's menu.
-	exportMenu: {
+	// A button's menu (Export, and the safety level).
+	popupMenu: {
 		...commonStyles.popupMenu,
 		minWidth: 200,
 	} as CSSProperties,
 
-	exportItems: {
+	menuItems: {
 		display: 'flex',
 		flexDirection: 'column',
 		alignItems: 'stretch',
 		gap: 2,
 	} as CSSProperties,
 
-	exportHeading: {
+	menuNote: {
 		fontSize: 11,
 		color: 'var(--rr-text-secondary)',
 		padding: '4px 8px',
@@ -272,6 +280,32 @@ function resultCellEl(value: unknown): HTMLElement {
 	if (value === null || value === undefined) return mutedEl('NULL');
 	if (typeof value === 'object') return monoEl(JSON.stringify(value));
 	return monoEl(String(value));
+}
+
+/**
+ * Move focus between the buttons of a popup menu with Up, Down, Home and End.
+ *
+ * @param event - The key event on the menu's container.
+ */
+function moveMenuFocus(event: React.KeyboardEvent<HTMLElement>): void {
+	const items = Array.from(event.currentTarget.querySelectorAll('button'));
+	const target = menuKeyTarget(event.key, items.indexOf(document.activeElement as HTMLButtonElement), items.length);
+	if (target === null) return;
+	event.preventDefault();
+	items[target]?.focus();
+}
+
+/**
+ * After a popup menu closes, give focus back to the button that opened it,
+ * but only when focus was lost with the menu: a click that put focus somewhere
+ * else (the editor, another control) keeps it there.
+ *
+ * @param anchor - The element holding the menu's button.
+ */
+function refocusIfLost(anchor: React.RefObject<HTMLElement | null>): void {
+	requestAnimationFrame(() => {
+		if (document.activeElement === null || document.activeElement === document.body) anchor.current?.querySelector('button')?.focus();
+	});
 }
 
 /**
@@ -323,12 +357,123 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// What asks before it runs is the saved connection's safety level: the
 	// same per-user record in both mounts. Until the record is known it reads
 	// as the default, which asks.
-	const { record: connectionRecord } = useConnectionRecord(endpoint.connId ?? null);
-	const safety = safetyLevelOf(connectionRecord);
+	const { record: connectionRecord, status: connectionStatus } = useConnectionRecord(endpoint.connId ?? null);
+	const recordSafety = safetyLevelOf(connectionRecord);
+	// The owner's answer, asked once when this realm's copy of the record is
+	// slow to show a saved level (see commitSafety). It gives way as soon as
+	// the copy changes.
+	const [askedSafety, setAskedSafety] = useState<SafetyLevel | null>(null);
+	useEffect(() => { setAskedSafety(null); }, [recordSafety]);
+	const safety = askedSafety ?? recordSafety;
 	// The runner copies its hooks once per batch; they read the level here,
 	// so each statement is checked at the level set when it is reached.
 	const safetyRef = useRef(safety);
 	safetyRef.current = safety;
+
+	// ── The safety level, changed in place ───────────────────────────────────
+	//
+	// The line under the editor opens a menu of the three levels. Only a choice
+	// made there is saved, and a LOWER level asks first, so no keystroke on the
+	// control can turn asking down. Only the id and the level are sent: the
+	// record's owner sets that one field, so the stored config (a direct
+	// connection's password included) is never re-typed, rebuilt or sent again.
+	const [safetyMenuOpen, setSafetyMenuOpen] = useState(false);
+	const [confirmSafety, setConfirmSafety] = useState<SafetyLevel | null>(null);
+	// A level being saved, shown until the stored record says the same (a dev
+	// tool's copy arrives a moment later) or, at the latest, a short grace after
+	// the save succeeded, so a copy that never arrives cannot hold it.
+	const [pendingSafety, setPendingSafety] = useState<SafetyLevel | null>(null);
+	const savingSafety = pendingSafety !== null;
+	const shownSafety = pendingSafety ?? safety;
+	const safetyAnchorRef = useRef<HTMLSpanElement>(null);
+	const safetyMenuRef = useRef<HTMLDivElement>(null);
+	const safetySyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(() => {
+		if (pendingSafety === null || pendingSafety !== safety) return;
+		setPendingSafety(null);
+		if (safetySyncTimerRef.current !== null) clearTimeout(safetySyncTimerRef.current);
+	}, [pendingSafety, safety]);
+	useEffect(() => {
+		return () => { if (safetySyncTimerRef.current !== null) clearTimeout(safetySyncTimerRef.current); };
+	}, []);
+
+	// Why the level cannot be changed here: there is no saved record to change.
+	const safetyGate = connectionRecord !== null
+		? null
+		: connectionStatus === 'ready' ? 'This connection is not saved, so its level cannot be changed here.' : 'Reading the saved connection…';
+
+	/**
+	 * Put focus back on the safety button, on the next frame: the menu (a
+	 * portal) and the downgrade dialog have unmounted by then.
+	 */
+	const focusSafetyButton = useCallback((): void => {
+		requestAnimationFrame(() => safetyAnchorRef.current?.querySelector('button')?.focus());
+	}, []);
+
+	/**
+	 * Save a level the user chose (and, for a lower one, confirmed).
+	 *
+	 * @param next - The level.
+	 */
+	const commitSafety = useCallback((next: SafetyLevel): void => {
+		const connId = endpoint.connId;
+		if (!connId) return;
+		setPendingSafety(next);
+		env.setConnectionSafety(connId, next).then(
+			() => {
+				announce(`Safety level for this connection: ${SAFETY_CHOICES[next]}`);
+				if (safetySyncTimerRef.current !== null) clearTimeout(safetySyncTimerRef.current);
+				// Still not in this realm's copy after the grace: ask the owner once,
+				// rather than fall back to showing the old level.
+				safetySyncTimerRef.current = setTimeout(() => {
+					void env.getConnection(connId).then(
+						(record) => setAskedSafety(record === null ? null : safetyLevelOf(record)),
+						() => undefined,
+					).finally(() => setPendingSafety(null));
+				}, SAFETY_SYNC_GRACE_MS);
+			},
+			(error: unknown) => {
+				setPendingSafety(null);
+				announce(`The safety level was not changed. ${error instanceof Error ? error.message : String(error)}`);
+			},
+		).finally(() => {
+			// Focus stays where the user put it; only focus the page lost comes back here.
+			if (document.activeElement === null || document.activeElement === document.body) focusSafetyButton();
+		});
+	}, [endpoint.connId, env, focusSafetyButton]);
+
+	/**
+	 * A level picked in the menu: a higher one is saved at once, a lower one
+	 * asks first.
+	 *
+	 * @param level - The level picked.
+	 */
+	const chooseSafety = useCallback((level: SafetyLevel): void => {
+		setSafetyMenuOpen(false);
+		if (savingSafety || level === safety) {
+			focusSafetyButton();
+			return;
+		}
+		// A lower level asks first. The dialog takes focus (on Cancel) and gives
+		// it back when it closes, so the button is not focused under it.
+		if (isSafetyDowngrade(safety, level)) {
+			setConfirmSafety(level);
+			return;
+		}
+		focusSafetyButton();
+		commitSafety(level);
+	}, [focusSafetyButton, savingSafety, safety, commitSafety]);
+
+	// The menu renders in a portal: focus moves to the level in force when it
+	// opens (on the next frame, once it has been measured and shown).
+	useEffect(() => {
+		if (!safetyMenuOpen) return undefined;
+		const frame = requestAnimationFrame(() => {
+			const menu = safetyMenuRef.current;
+			(menu?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]') ?? menu?.querySelector('button'))?.focus();
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [safetyMenuOpen]);
 
 	// ── Editor + run state ───────────────────────────────────────────────────
 	const [sql, setSql] = useState(initialSql ?? '');
@@ -497,13 +642,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 		},
 		// Only outcomes that have NO live region of their own are announced. A
 		// failure is not one: the error Banner is an assertive alert already
-		// (Banner.tsx:75-76), so announcing it here would read it twice.
-		summarize: ({ runs: finished, shown, failedAt }) => {
-			if (finished.length > 1) return `${finished.length} statements: ${formatBatchOutcome(finished)}`;
-			if (failedAt < 0 && shown?.outcome === 'rows') return `Statement returned ${(shown.rows?.length ?? 0).toLocaleString()} rows`;
-			if (failedAt < 0 && shown?.outcome === 'affected') return `Statement affected ${(shown.affected ?? 0).toLocaleString()} rows`;
-			return null;
-		},
+		// (Banner.tsx:75-76), so announcing it here would read it twice. A
+		// declined confirmation is announced, or the last run's sentence stays.
+		summarize: (info) => runSummary(info),
 		announce,
 		// The warning Banner carries the notice; it is a live region already.
 		onStopped: () => {
@@ -991,7 +1132,47 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 				{/* The pre-run truth line: what Run would send, in words. */}
 				<div style={styles.willRun}>
 					<span>{preview.text}</span>
-					<span title="Safety level for this connection. Change it in the connection's settings.">{SAFETY_LINE[safety]}</span>
+					<span ref={safetyAnchorRef}>
+						<GatedButton
+							variant="ghost"
+							small
+							ariaExpanded={safetyMenuOpen}
+							title="How much this connection asks before a statement that changes something. A check on the statement text, not a database permission."
+							onClick={() => setSafetyMenuOpen((open) => !open)}
+							gateReason={safetyGate}
+						>
+							{`Safety: ${SAFETY_CHOICES[shownSafety]}`}{savingSafety ? ' (saving…)' : ''}
+						</GatedButton>
+					</span>
+					<AnchoredPopup
+						anchorRef={safetyAnchorRef}
+						open={safetyMenuOpen}
+						onClose={() => {
+							setSafetyMenuOpen(false);
+							refocusIfLost(safetyAnchorRef);
+						}}
+						align="end"
+						style={styles.popupMenu}
+					>
+						<div
+							ref={safetyMenuRef}
+							role="group"
+							aria-label="Safety level for this connection"
+							style={styles.menuItems}
+							onKeyDown={(event) => {
+								// Escape closes the menu (the popup's own listener); focus goes back to the button.
+								if (event.key === 'Escape') focusSafetyButton();
+								else moveMenuFocus(event);
+							}}
+						>
+							{SAFETY_LEVELS.map((level) => (
+								<Button key={level} variant="ghost" small pressed={level === shownSafety} onClick={() => chooseSafety(level)}>
+									{SAFETY_CHOICES[level]}
+								</Button>
+							))}
+							<div style={styles.menuNote}>Lowering the level asks first. A check on the statement text, not a database permission.</div>
+						</div>
+					</AnchoredPopup>
 				</div>
 
 				{/* All has a cost the toggle cannot show. */}
@@ -1050,22 +1231,32 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 												Export
 											</Button>
 										</span>
-										<AnchoredPopup anchorRef={exportAnchorRef} open={exportOpen} onClose={() => setExportOpen(false)} align="end" style={styles.exportMenu}>
+										<AnchoredPopup
+											anchorRef={exportAnchorRef}
+											open={exportOpen}
+											onClose={() => {
+												setExportOpen(false);
+												refocusIfLost(exportAnchorRef);
+											}}
+											align="end"
+											style={styles.popupMenu}
+										>
 											<div
 												ref={exportMenuRef}
 												role="group"
 												aria-label="Export"
-												style={styles.exportItems}
+												style={styles.menuItems}
 												onKeyDown={(event) => {
 													// Escape closes the menu (the popup's own listener); focus goes back to the button.
 													if (event.key === 'Escape') exportAnchorRef.current?.querySelector('button')?.focus();
+													else moveMenuFocus(event);
 												}}
 											>
-												<div style={styles.exportHeading}>{`Rows this statement returned (${rows.length.toLocaleString()})`}</div>
+												<div style={styles.menuNote}>{`Rows this statement returned (${rows.length.toLocaleString()})`}</div>
 												<Button variant="ghost" small onClick={() => exportRows('csv')}>{copiesExports ? 'Copy as CSV' : 'Download CSV'}</Button>
 												<Button variant="ghost" small onClick={() => exportRows('json')}>{copiesExports ? 'Copy as JSON' : 'Download JSON'}</Button>
 												<Button variant="ghost" small onClick={() => exportRows('markdown')}>Copy as Markdown</Button>
-												<div style={styles.exportHeading}>{CSV_FORMULA_NOTE}</div>
+												<div style={styles.menuNote}>{CSV_FORMULA_NOTE}</div>
 											</div>
 										</AnchoredPopup>
 									</span>
@@ -1137,6 +1328,24 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 					confirmLabel="Replace"
 					onConfirm={confirmLoad}
 					onCancel={() => setPendingLoad(null)}
+				/>
+			)}
+
+			{/* Lowering the connection's safety level asks first; Cancel changes nothing. */}
+			{confirmSafety !== null && (
+				<SafetyDowngradeDialog
+					level={confirmSafety}
+					connection={connectionRecord?.name ?? endpoint.nodeName}
+					onConfirm={() => {
+						const level = confirmSafety;
+						setConfirmSafety(null);
+						focusSafetyButton();
+						commitSafety(level);
+					}}
+					onCancel={() => {
+						setConfirmSafety(null);
+						focusSafetyButton();
+					}}
 				/>
 			)}
 

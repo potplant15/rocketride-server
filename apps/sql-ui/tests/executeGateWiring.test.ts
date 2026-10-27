@@ -131,7 +131,7 @@ describe('schema only: no statement path is left open (DA-R1 M2)', () => {
 
 	it('the README lists them', () => {
 		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
-		assert.match(prose, /\*\*Open data\*\* and History's \*\*Rerun\*\* are off with the reason shown/);
+		assert.match(prose, /\*\*Open data\*\*, \*\*\+ Create Table\*\* and History's \*\*Rerun\*\* are off with the reason shown/);
 		assert.match(prose, /The run shortcuts send nothing either and say why, so no statement, and no row estimate for a confirmation, reaches the node\./);
 	});
 

@@ -122,8 +122,10 @@ The app finds out once when a connection opens whether the node runs
 statements: it sends `SELECT 1`. It goes straight to the node, so it is not in your
 query history. If the node has `allow_execute` off, the connection is
 **schema only**: the header says so, and Run, Run all, Explain, New Query,
-**Select top 100**, **Count rows**, **Open data** and History's **Rerun** are
-off with the reason shown, and the Data page says it cannot read rows. The
+**Select top 100**, **Count rows**, **Open data**, **+ Create Table** and
+History's **Rerun** are off with the reason shown, and the Data page says it
+cannot read rows. **Design** still opens, to read a table's structure and its
+DDL, and says that Apply is off. The
 run shortcuts send nothing either and say why, so no statement, and no row
 estimate for a confirmation, reaches the node. Tables, columns, keys,
 Diagram and Insights keep working. After you turn `allow_execute` on and
@@ -142,7 +144,10 @@ and column sorts all narrow what the database returns. A very large table is
 slow on deep pages, because the pager can jump to any page.
 
 **Search and filters.** The search box looks in the text columns and ignores
-case. A `%`, `_` or `\` you type matches itself. **+ Filter** adds a chip
+case; **contains** and **starts with** ignore case too; **equals** and **not
+equals** compare exactly, as the database does (on PostgreSQL `NOTE 2` does
+not match `note 2`; MySQL's usual collations ignore case). A `%`, `_` or `\`
+you type matches itself. **+ Filter** adds a chip
 above the grid: a column, an operator (equals, not equals, contains, starts
 with, `>`, `<`, `≥`, `≤`, is null, is not null) and a value. What you type is
 never pasted into the statement. On a number or yes/no column the value is
@@ -445,7 +450,7 @@ drawer says `EXPLAIN is not available for <dialect> in SQL Explorer`.
 ## Confirmations and safety levels
 
 Each saved connection has a **safety level**, set in its connection editor
-under **Safety level for this connection**:
+under **Safety level for this connection**, or on the Query page:
 
 - **Don't ask**: a statement you run from the editor is sent without asking.
   (History's rerun of a write still asks, and Apply always confirms.) The row
@@ -471,9 +476,11 @@ asks.
 
 The level is stored on the saved connection, so it is the same in the app and
 as a dev tool. A connection saved before levels existed reads as **Ask before
-risky writes**. The line under the editor names the level. The dialog has no
-answer that turns asking off; change the level in the connection editor
-instead.
+risky writes**. The line under the editor names the level and changes it in
+place: only the level is sent, so a direct connection's password is neither
+re-typed nor sent again. Lowering the level asks first. The dialog has no
+answer that turns asking off;
+change the level there or in the connection editor instead.
 
 The dialog says what the statement does, quotes it, and says how it runs
 (at once, committing on its own) and why it asked: `<connection> is set to

@@ -33,8 +33,9 @@
 import React, { useId, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Button, Chip, InputField } from 'shell';
-import { FILTER_OPS, describeChip, isCompleteChip } from '../sql/filters';
+import { FILTER_OPS, describeChip, isCompleteChip, textMatchHint } from '../sql/filters';
 import type { FilterChip, FilterOp } from '../sql/filters';
+import type { SqlDialect } from '../connect';
 
 /** One active sorter of the grid. */
 export interface SortChip {
@@ -56,6 +57,8 @@ export interface FilterChipsProps {
 	sort: readonly SortChip[];
 	/** Fired with the sorters that remain when a sort chip is removed. */
 	onSortChange: (sort: SortChip[]) => void;
+	/** The engine dialect: which matches ignore case depends on it. */
+	dialect: SqlDialect;
 }
 
 const styles = {
@@ -115,7 +118,7 @@ const styles = {
  * @param props - {@link FilterChipsProps}.
  * @returns The strip element.
  */
-export const FilterChips: React.FC<FilterChipsProps> = ({ columns, chips, onChipsChange, sort, onSortChange }) => {
+export const FilterChips: React.FC<FilterChipsProps> = ({ columns, chips, onChipsChange, sort, onSortChange, dialect }) => {
 	const id = useId();
 	const [adding, setAdding] = useState(false);
 	const [column, setColumn] = useState('');
@@ -201,7 +204,7 @@ export const FilterChips: React.FC<FilterChipsProps> = ({ columns, chips, onChip
 					<Button variant="primary" small disabled={!isCompleteChip(draft)} onClick={add}>Add filter</Button>
 					<Button variant="ghost" small onClick={reset}>Cancel</Button>
 					<div style={styles.hint}>
-						Text matches ignore upper and lower case.
+						{textMatchHint(dialect)}
 					</div>
 				</div>
 			)}

@@ -37,6 +37,13 @@ import type { ExecuteState } from './schema/schemaStore';
 export const SCHEMA_ONLY_REASON = 'Needs allow_execute on the node.';
 
 /**
+ * Id of the workbench's visible schema-only note. The gated controls on the
+ * workbench and its Overview point at it (`aria-describedby`), so the reason
+ * is read with the control.
+ */
+export const SCHEMA_ONLY_NOTE_ID = 'sql-schema-only';
+
+/**
  * What a schema-only connection can and cannot do, for the banner and the
  * Data page.
  *
