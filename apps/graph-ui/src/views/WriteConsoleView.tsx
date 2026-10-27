@@ -36,13 +36,17 @@
 // account to choose: it connects as the role that owns the RocketRide database,
 // so for it the boundary is whether the node allows execute at all.
 //
+// The header says "Writes allowed" while the console can run. History is an
+// inline side panel (SidePanel, never a drawer); from it a statement is only put
+// in the editor, never sent. There are no query tabs here: one editor.
+//
 // As a dev tool, where the console is unavailable Test connection shows the
 // connection details inline in this document, with a test (ConnectionDetailsPanel,
 // never a drawer); the full app keeps Open Connections.
 // =============================================================================
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Banner, Button, ContentHeader, EmptyState } from 'shell';
+import { Banner, Button, ContentHeader, EmptyState, StatusBadge } from 'shell';
 import type { IExplorerEndpoint } from 'shared/explorer';
 import { announcer } from '../adapters/explorer';
 import { useGraphEndpoints, useGraphEnv } from '../env';
@@ -54,7 +58,8 @@ import { GraphIcon } from '../icons';
 import { styles } from '../styles';
 import ConnectionDetailsPanel from '../components/ConnectionDetailsPanel';
 import HistoryPanel from '../components/HistoryPanel';
-import RunSurface from '../components/RunSurface';
+import RunSurface, { NoticeBanner } from '../components/RunSurface';
+import SidePanel from '../components/SidePanel';
 import { createLoadSlot } from '../graph/loadSlot';
 
 /** Why the console is unavailable for a node, in words. */
@@ -103,10 +108,21 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 		setLoadSeq(slot.put({ text, run: false }));
 	}, [slot]);
 	const subtitle = dialect ? [engineText(dialect), targetText(dialect)].filter(Boolean).join(' \u00b7 ') : view.address;
+	const failed = endpoint.state === 'unreachable' || endpoint.state === 'inaccessible';
 
 	return (
-		<div style={styles.root}>
-			<ContentHeader title={`${view.title} \u2014 write console`} subtitle={subtitle} />
+		<div style={styles.documentRoot}>
+			<ContentHeader
+				title={`${view.title} \u2014 write console`}
+				subtitle={subtitle}
+				actions={
+					allowed ? (
+						<span title="This node allows execute: statements here can change data.">
+							<StatusBadge variant="warning">Writes allowed</StatusBadge>
+						</span>
+					) : undefined
+				}
+			/>
 			{inFrame && details.open && (
 				<ConnectionDetailsPanel
 					key={endpoint.key}
@@ -124,46 +140,56 @@ export const WriteConsoleView: React.FC<IWriteConsoleViewProps> = ({ endpoint })
 			{gate.mounted ? (
 				<>
 					<div style={{ padding: '8px 24px 0' }}>
-						<Banner variant="warning">{WRITE_CONSOLE_BANNER}</Banner>
+						<NoticeBanner variant="warning" text={WRITE_CONSOLE_BANNER} />
 					</div>
-					<div style={{ flex: 1, minHeight: 0 }}>
-						<RunSurface endpoint={endpoint} mode="write" paused={gate.paused} loadSlot={slot} loadSeq={loadSeq} onOpenHistory={() => setHistoryOpen(true)} />
+					<div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+						<div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+							<RunSurface endpoint={endpoint} mode="write" paused={gate.paused} loadSlot={slot} loadSeq={loadSeq} onOpenHistory={() => setHistoryOpen((open) => !open)} historyOpen={historyOpen} />
+						</div>
+						{historyOpen && (
+							<SidePanel title="History" subtitle={view.title} onClose={() => setHistoryOpen(false)}>
+								<HistoryPanel
+									endpointKey={endpoint.key}
+									nodeName={view.title}
+									onLoad={(cypher) => {
+										put(cypher);
+										announcer.announce('The statement is in the editor. Nothing was sent.');
+									}}
+									onRerun={(cypher) => {
+										put(cypher);
+										announcer.announce(rerunAnnouncement(cypher));
+									}}
+									announce={(text) => announcer.announce(text)}
+								/>
+							</SidePanel>
+						)}
 					</div>
 				</>
 			) : (
-				<EmptyState
-					icon={<GraphIcon />}
-					title="The write console is not available for this connection"
-					description={endpoint.state !== 'ready' ? (view.blocked ?? 'This connection is not available.') : writeUnavailableText(dialect?.allowExecute === true, dialect !== null && dialect.capabilities.execute_shape_graph === true)}
-					action={
-						inFrame ? (
-							<Button variant="primary" onClick={() => panel('test')}>
-								Test connection
-							</Button>
-						) : (
-							<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
-								Open Connections
-							</Button>
-						)
-					}
-				/>
+				<>
+					{failed && view.blocked && (
+						<div style={{ padding: '8px 24px 0' }}>
+							<Banner variant="error">{view.blocked}</Banner>
+						</div>
+					)}
+					<EmptyState
+						icon={<GraphIcon />}
+						title="The write console is not available for this connection"
+						description={failed ? 'Nothing can be sent until the node answers.' : endpoint.state !== 'ready' ? (view.blocked ?? 'This connection is not available.') : writeUnavailableText(dialect?.allowExecute === true, dialect !== null && dialect.capabilities.execute_shape_graph === true)}
+						action={
+							inFrame ? (
+								<Button variant="primary" onClick={() => panel('test')}>
+									Test connection
+								</Button>
+							) : (
+								<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
+									Open Connections
+								</Button>
+							)
+						}
+					/>
+				</>
 			)}
-			<HistoryPanel
-				endpointKey={endpoint.key}
-				nodeName={view.title}
-				open={historyOpen}
-				onClose={() => setHistoryOpen(false)}
-				onLoad={(cypher) => {
-					put(cypher);
-					setHistoryOpen(false);
-				}}
-				onRerun={(cypher) => {
-					put(cypher);
-					setHistoryOpen(false);
-					announcer.announce(rerunAnnouncement(cypher));
-				}}
-				announce={(text) => announcer.announce(text)}
-			/>
 		</div>
 	);
 };

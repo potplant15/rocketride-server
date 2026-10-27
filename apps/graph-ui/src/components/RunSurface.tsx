@@ -21,7 +21,7 @@
 // SOFTWARE.
 
 // =============================================================================
-// GRAPH-UI - RUN SURFACE (editor, runs, results and the graph, for one connection)
+// GRAPH-UI - RUN SURFACE (editor, runs, results and the graph, for one query tab)
 // =============================================================================
 //
 // One component serves both the browsing workbench (mode `read`: every statement
@@ -30,9 +30,20 @@
 // statements the text check marks as mutating). The two modes differ in exactly
 // four places: the tool called, the refusal rule, the confirmation, and the words;
 // everything else - editor, drafts, runner, results tabs, the graph - is shared.
+// The workbench mounts one surface per query tab (each with its own editor, runs,
+// graph session and load slot); the write console mounts one.
 //
-// The statement runner, strip, failure banner and row inspector are the shared
-// Explorer ones; this file only configures them for Cypher.
+// The room the results get:
+//   - a divider (SplitPane.tsx) sets the editor's height, kept in the prefs
+//     (graph.editorHeight), and can hide the editor down to the run bar, which
+//     then shows the statement's first line;
+//   - the graph can fill the whole document (an in-document full screen, not the
+//     browser's Fullscreen API, which VS Code panels and dev-tool frames may not
+//     allow): its area is positioned over the document, nothing remounts, and
+//     Escape (that nothing inside used) or "Exit full screen" leaves it.
+//
+// The statement runner, strip and row inspector are the shared Explorer ones;
+// this file only configures them for Cypher.
 //
 // Everything engine-facing comes from the GraphEnv (env.ts): the session (the
 // store's own in the full app, a remote one over controller ops in a dev-tool
@@ -50,7 +61,7 @@ import type { IExplorerEndpoint, IRunTarget, IStatementRunBase } from 'shared/ex
 import RowInspector from 'shared/explorer/components/RowInspector';
 import StatementStrip from 'shared/explorer/components/StatementStrip';
 import { CAPTIONS_PREF_KEY, DRAFTS_PREF_KEY, TOOL, announcer } from '../adapters/explorer';
-import { useDataVersion, useGraphEndpoints, useGraphEnv, useSchemaLabels } from '../env';
+import { useDataVersion, useGraphEndpoints, useGraphEnv, useSchemaLabels, useSchemaView } from '../env';
 import { describeSnapshot, targetsFromEditor } from '../cypher/targets';
 import type { IEditorSnapshot } from '../cypher/targets';
 import { DEFAULT_ROW_LIMIT, ROW_LIMIT_CHOICES } from '../graph/budgets';
@@ -67,13 +78,17 @@ import { chooseTab, summarizeResult } from '../graph/results';
 import type { ResultTab } from '../graph/results';
 import type { ILoadSlot } from '../graph/loadSlot';
 import { inspectorTextOfRow } from '../graph/rowInspect';
+import { EDITOR_HEIGHT_PREF_KEY, clampEditorHeight, splitToggled, storedEditorHeight } from '../graph/splitPane';
+import type { IEditorSplit } from '../graph/splitPane';
 import type { ReadQueryResult } from '../graph/types';
-import { AGE_AFFECTED_NOT_REPORTED, STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, truncationText } from '../graph/wording';
+import { AGE_AFFECTED_NOT_REPORTED, NOTICE_HEADLINE_MAX, STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, resultNotes, splitNotice, truncationText } from '../graph/wording';
+import type { IResultNote } from '../graph/wording';
 import { GraphFailureBanner } from './GraphFailureBanner';
 import { GraphView } from './GraphView';
 import QueryEditor from './QueryEditor';
 import type { IQueryEditorHandle } from './QueryEditor';
 import { RawView, ResultTable } from './ResultViews';
+import { SplitDivider } from './SplitPane';
 import { WriteConfirmDialog } from './WriteConfirmDialog';
 import { GraphIcon } from '../icons';
 
@@ -96,31 +111,62 @@ export interface IRunSurfaceProps {
 	 * or no longer allows this mode), or null/absent when it can run. Nothing is sent while it is set.
 	 */
 	paused?: string | null;
-	/** The host's mailbox for text the editor should hold (history load, Ask preview, label preview); each request is taken once. */
+	/** The host's mailbox for text the editor should hold (history load, Ask draft, label preview); each request is taken once. */
 	loadSlot: ILoadSlot;
 	/** Changes whenever the host puts a request in the slot. */
 	loadSeq: number;
-	/** Extra content above the editor (the Ask bar). */
-	topSlot?: React.ReactNode;
-	/** Told when the editor text changes (so the host can know a preview was edited). */
+	/** Which tab of its document this surface is: part of the results grid key, so two tabs never share a layout. */
+	tabId?: string;
+	/** The prefs key the draft is kept under; null for a tab whose text lasts the session only. Default `<mode>:<connection>`. */
+	draftKey?: string | null;
+	/** The text the editor starts with when no draft is kept. */
+	defaultText?: string;
+	/** False while the surface's tab is hidden (it leaves full screen). */
+	active?: boolean;
+	/** Told whenever the editor text changes, and once with the text it starts with. */
 	onTextChange?(text: string): void;
-	/** Opens the history panel. */
+	/** Shows or hides the history panel. */
 	onOpenHistory?(): void;
+	historyOpen?: boolean;
+	/** Shows or hides the saved queries panel (the workbench only). */
+	onOpenSaved?(): void;
+	savedOpen?: boolean;
+	/** Shows or hides the Ask bar (the workbench only). */
+	onAsk?(): void;
+	askOpen?: boolean;
+	/** Open a new query tab with this text, not run (the workbench only). */
+	onNewQuery?(cypher: string, title: string): void;
 }
+
+/** The space the run bar, the divider and the paddings take from the surface; the editor and the results share the rest. */
+const SURFACE_CHROME = 64;
 
 const styles = {
 	root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 } as CSSProperties,
-	editorRegion: { flex: '0 0 auto', padding: '12px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
-	editorBox: { height: 190, minHeight: 120 } as CSSProperties,
+	editorRegion: { flex: '0 0 auto', padding: '10px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
+	editorBox: (height: number, hidden: boolean): CSSProperties => ({ flex: '0 0 auto', height, display: hidden ? 'none' : undefined }),
 	runBar: { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' } as CSSProperties,
+	firstLine: { maxWidth: '40%', minWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--rr-font-mono, monospace)', fontSize: 12, padding: '4px 8px', border: '1px solid var(--rr-border)', borderRadius: 4, background: 'var(--rr-bg-paper)', color: 'var(--rr-text-primary)', cursor: 'pointer', textAlign: 'left' } as CSSProperties,
 	willRun: { fontSize: 12, color: 'var(--rr-text-secondary)' } as CSSProperties,
-	notices: { padding: '8px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
-	results: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '8px 24px 16px' } as CSSProperties,
-	body: { flex: 1, minHeight: 0 } as CSSProperties,
+	end: { marginLeft: 'auto' } as CSSProperties,
+	notices: { padding: '6px 24px 0', display: 'flex', flexDirection: 'column', gap: 6 } as CSSProperties,
+	results: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '6px 24px 12px' } as CSSProperties,
+	body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', outline: 'none' } as CSSProperties,
+	// Full screen: the graph's area covers the whole document (the host document root is the positioned ancestor).
+	maximized: { position: 'absolute', inset: 0, zIndex: 20, display: 'flex', flexDirection: 'column', background: 'var(--rr-bg-default)', outline: 'none' } as CSSProperties,
+	maxBar: { flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 10, padding: '4px 12px', fontSize: 12, color: 'var(--rr-text-secondary)', borderBottom: '1px solid var(--rr-border)' } as CSSProperties,
+	fill: { flex: 1, minHeight: 0 } as CSSProperties,
+	footer: { display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 4 } as CSSProperties,
+	notes: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } as CSSProperties,
+	notesHeadlines: { fontSize: 12, color: 'var(--rr-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } as CSSProperties,
+	notesList: { margin: '2px 0 0', paddingLeft: 20, fontSize: 12, color: 'var(--rr-text-secondary)' } as CSSProperties,
 };
 
 /** The row-limit choices as the toggle shows them. */
 const LIMIT_OPTIONS = ROW_LIMIT_CHOICES.map((choice) => ({ id: choice === null ? 'all' : String(choice), label: choice === null ? 'All' : choice.toLocaleString('en-US') }));
+
+/** What the full-screen bar says. */
+export const FULL_SCREEN_TEXT = 'Full screen · Esc to exit · the inspector stays open';
 
 /**
  * A short, unique id for a history entry.
@@ -130,6 +176,68 @@ const LIMIT_OPTIONS = ROW_LIMIT_CHOICES.map((choice) => ({ id: choice === null ?
 function entryId(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/**
+ * The first line with text, for the one-line editor.
+ *
+ * @param text - The editor text.
+ * @returns The line, trimmed ('' for an empty editor).
+ */
+export function firstLineOf(text: string): string {
+	return text.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
+}
+
+// =============================================================================
+// SMALL PARTS
+// =============================================================================
+
+/**
+ * A banner whose long text shows its first sentence, with the rest behind Details.
+ *
+ * @param props - The variant and the text.
+ * @returns The banner.
+ */
+export const NoticeBanner: React.FC<{ variant: 'info' | 'warning' | 'error'; text: string }> = ({ variant, text }) => {
+	const [open, setOpen] = useState(false);
+	const { headline, details } = splitNotice(text);
+	if (text.length <= NOTICE_HEADLINE_MAX || details === '') return <Banner variant={variant}>{text}</Banner>;
+	return (
+		<Banner variant={variant}>
+			{headline}{' '}
+			<Button variant="ghost" small ariaExpanded={open} onClick={() => setOpen((value) => !value)}>
+				{open ? 'Hide details' : 'Details'}
+			</Button>
+			{open && <div style={{ marginTop: 4 }}>{details}</div>}
+		</Banner>
+	);
+};
+
+/**
+ * The result's notes: one line with a count and the headlines, the full sentences behind it.
+ *
+ * @param props - The notes.
+ * @returns The line.
+ */
+const NotesLine: React.FC<{ notes: readonly IResultNote[] }> = ({ notes }) => {
+	const [open, setOpen] = useState(false);
+	return (
+		<div>
+			<div style={styles.notes}>
+				<Button variant="ghost" small ariaExpanded={open} onClick={() => setOpen((value) => !value)}>
+					{`Notes (${notes.length})`}
+				</Button>
+				{!open && <span style={styles.notesHeadlines}>{notes.map((note) => note.headline).join(' · ')}</span>}
+			</div>
+			{open && (
+				<ul style={styles.notesList}>
+					{notes.map((note) => (
+						<li key={note.id}>{note.details}</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+};
 
 // =============================================================================
 // COMPONENT
@@ -141,11 +249,12 @@ function entryId(): string {
  * @param props - See {@link IRunSurfaceProps}.
  * @returns The surface.
  */
-export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused = null, loadSlot, loadSeq, topSlot, onTextChange, onOpenHistory }) => {
+export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused = null, loadSlot, loadSeq, tabId = 'main', draftKey: draftKeyProp, defaultText, active = true, onTextChange, onOpenHistory, historyOpen, onOpenSaved, savedOpen, onAsk, askOpen, onNewQuery }) => {
 	const env = useGraphEnv();
 	const prefs = env.prefs;
 	const { probes } = useGraphEndpoints();
 	const schemaLabels = useSchemaLabels(endpoint.key);
+	const schemaView = useSchemaView(endpoint.key);
 	const probe = probes[endpoint.key];
 	const dialect = useMemo(() => (probe?.ok ? parseDialect(probe.info) : null), [probe]);
 	const writable = dialectCanWrite(dialect);
@@ -170,11 +279,11 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	}, [endpoint.key]);
 
 	// ── Editor, limit, drafts ────────────────────────────────────────────────
-	const draftKey = `${mode}:${endpoint.key}`;
+	const draftKey = draftKeyProp === undefined ? `${mode}:${endpoint.key}` : draftKeyProp;
 	const [text, setText] = useState<string>(() => {
-		const bag = prefs.getPref(DRAFTS_PREF_KEY);
-		const saved = bag && typeof bag === 'object' ? (bag as Record<string, unknown>)[draftKey] : undefined;
-		return typeof saved === 'string' ? saved : mode === 'read' ? 'MATCH (n) RETURN n LIMIT 25' : '';
+		const bag = draftKey === null ? null : prefs.getPref(DRAFTS_PREF_KEY);
+		const saved = bag && typeof bag === 'object' && draftKey !== null ? (bag as Record<string, unknown>)[draftKey] : undefined;
+		return typeof saved === 'string' ? saved : defaultText ?? (mode === 'read' ? 'MATCH (n) RETURN n LIMIT 25' : '');
 	});
 	const [limitId, setLimitId] = useState<string>(String(DEFAULT_ROW_LIMIT));
 	const limitChoice = limitId === 'all' ? null : Number(limitId);
@@ -182,19 +291,27 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const [view, setView] = useState<IEditorSnapshot | null>(null);
 	const latestText = useRef(text);
 	latestText.current = text;
+	const completion = useMemo(() => ({ schema: schemaView, dialect: dialect?.dialect ?? null }), [schemaView, dialect]);
 
-	// Save drafts per connection (text only), debounced.
+	// The host hears every text, the first one included (what "Save current query" saves).
+	const textListener = useRef(onTextChange);
+	textListener.current = onTextChange;
+	useEffect(() => {
+		textListener.current?.(text);
+	}, [text]);
+
+	// Save drafts per connection (text only), debounced. A tab without a draft key keeps its text for the session.
 	const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const changeText = useCallback((next: string) => {
 		setText(next);
-		onTextChange?.(next);
+		if (draftKey === null) return;
 		if (draftTimer.current) clearTimeout(draftTimer.current);
 		draftTimer.current = setTimeout(() => {
 			const bag = prefs.getPref(DRAFTS_PREF_KEY);
 			const base = bag && typeof bag === 'object' ? (bag as Record<string, unknown>) : {};
 			prefs.setPref(DRAFTS_PREF_KEY, { ...base, [draftKey]: next.slice(0, 20_000) });
 		}, 600);
-	}, [prefs, draftKey, onTextChange]);
+	}, [prefs, draftKey]);
 	useEffect(() => () => { if (draftTimer.current) clearTimeout(draftTimer.current); }, []);
 
 	// What the "Will run" sentence describes: one live read of the editor, taken when the caret settles or the text changes.
@@ -207,6 +324,37 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		const timer = setTimeout(syncCursor, 200);
 		return () => clearTimeout(timer);
 	}, [text, syncCursor]);
+
+	// ── The editor's height (the divider), kept in the prefs ─────────────────
+	const rootRef = useRef<HTMLDivElement | null>(null);
+	const [surfaceHeight, setSurfaceHeight] = useState<number | null>(null);
+	useEffect(() => {
+		const el = rootRef.current;
+		if (!el || typeof ResizeObserver === 'undefined') return undefined;
+		// A hidden tab measures 0: its last real size stands until it is shown again.
+		const observer = new ResizeObserver(() => {
+			if (el.clientHeight > 0) setSurfaceHeight(el.clientHeight);
+		});
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, []);
+	const available = surfaceHeight === null ? null : Math.max(0, surfaceHeight - SURFACE_CHROME);
+	const [split, setSplitState] = useState<IEditorSplit>(() => ({ height: storedEditorHeight(prefs.getPref(EDITOR_HEIGHT_PREF_KEY)), collapsed: false }));
+	const heightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const focusEditorNext = useRef(false);
+	const changeSplit = useCallback((next: IEditorSplit) => {
+		setSplitState(next);
+		if (heightTimer.current) clearTimeout(heightTimer.current);
+		heightTimer.current = setTimeout(() => prefs.setPref(EDITOR_HEIGHT_PREF_KEY, next.height), 600);
+	}, [prefs]);
+	useEffect(() => () => { if (heightTimer.current) clearTimeout(heightTimer.current); }, []);
+	useEffect(() => {
+		if (split.collapsed || !focusEditorNext.current) return;
+		focusEditorNext.current = false;
+		editor.current?.focus();
+	}, [split.collapsed]);
+	// Within the bounds of the space there is now (the document may have shrunk since the height was kept).
+	const editorHeight = clampEditorHeight(split.height, available);
 
 	// ── The runner (shared) configured for Cypher ────────────────────────────
 	// The write confirmation waiting for an answer. WriteConfirmDialog is mounted while it is set, and puts the focus on
@@ -263,13 +411,15 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const displayed: IGraphRun | null = runner.selectedRun !== null ? runner.runs[runner.selectedRun] ?? null : null;
 	const result = displayed?.result ?? null;
 	const summary = useMemo(() => (result ? summarizeResult(result) : null), [result]);
-	const [tab, setTab] = useState<ResultTab>('table');
+	// A tab that has not run opens on Graph (with its "Run a query" state), never on an empty Table.
+	const [tab, setTab] = useState<ResultTab>('graph');
 	const resultKey = useRef(0);
 	useEffect(() => {
 		if (!summary) return;
 		resultKey.current += 1;
 		setTab(chooseTab(summary));
 	}, [result, summary]);
+	const notes = useMemo(() => (summary ? resultNotes(summary) : []), [summary]);
 
 	// The graph session lives as long as the connection: a new result replaces what it draws (load), but nothing that
 	// merely re-probes the node, refreshes discovery or re-renders this component may rebuild it, because that would
@@ -330,6 +480,8 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	}, [prefs, endpoint.key]);
 
 	// ── Running ──────────────────────────────────────────────────────────────
+	// How the last batch was taken: the whole editor (Run all), part of it, or text from elsewhere (a rerun).
+	const lastBatch = useRef<'all' | 'editor' | 'other'>('other');
 	const startRun = useCallback((targets: IRunTarget[], fromEditor: boolean) => {
 		// A press while a batch runs (keyboard, History) or while the surface is paused is refused out loud, never dropped.
 		const refusal = runRefusal({ running: runner.running, blocked });
@@ -357,18 +509,65 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const run = useCallback((all: boolean) => {
 		const handle = editor.current;
 		const targets = handle ? targetsFromEditor(handle, all) : targetsFromEditor({ snapshot: () => ({ text: latestText.current, start: 0, end: 0, caret: latestText.current.length }) }, all);
+		lastBatch.current = all ? 'all' : 'editor';
 		startRun(targets, true);
 	}, [startRun]);
 
-	// A request from the host: put text in the editor, and (for a click on a label) run it. The request is TAKEN from
-	// the host's slot, so a surface that mounts again finds nothing to replay.
+	// "Run from statement N" in the failure banner: after a Run all, the editor's statements from N on as they are now
+	// (the failed one may have been fixed); after any other batch, that batch's own statements from N on.
+	const runFrom = useCallback((index: number) => {
+		const handle = editor.current;
+		const fromEditor = lastBatch.current === 'all' && handle !== null;
+		const targets: IRunTarget[] = fromEditor ? targetsFromEditor(handle, true) : runner.runs.map((r) => ({ text: r.cypher }));
+		startRun(targets.slice(index), fromEditor);
+	}, [runner.runs, startRun]);
+
+	// The status line's Rerun: the statement shown, as it was sent.
+	const rerun = useCallback(() => {
+		if (!displayed) return;
+		lastBatch.current = 'other';
+		startRun([{ text: displayed.cypher }], false);
+	}, [displayed, startRun]);
+
+	// A request from the host: put text in the editor (or insert it at the caret), and for a click on a label run it.
+	// The request is TAKEN from the host's slot, so a surface that mounts again finds nothing to replay.
 	useEffect(() => {
 		const request = loadSlot.take();
 		if (!request) return;
-		editor.current?.setText(request.text);
-		changeText(request.text);
-		if (request.run) startRun([{ text: request.text }], false);
+		let next = request.text;
+		if (request.insert) {
+			// The live buffer when the editor holds the text the surface knows; otherwise (not mounted yet) the end of the text.
+			const live = editor.current?.snapshot();
+			const base = live && live.text === latestText.current ? live : { text: latestText.current, start: latestText.current.length, end: latestText.current.length };
+			next = base.text.slice(0, base.start) + request.text + base.text.slice(base.end);
+		}
+		editor.current?.setText(next);
+		changeText(next);
+		if (request.run && !request.insert) {
+			lastBatch.current = 'other';
+			startRun([{ text: next }], false);
+		}
 	}, [loadSlot, loadSeq]); // eslint-disable-line react-hooks/exhaustive-deps
+
+	// ── Full screen (in the document) ────────────────────────────────────────
+	const [maximizeWanted, setMaximizeWanted] = useState(false);
+	// Only the graph of a shown tab fills the document; anything else (a new result opening as a Table, the tab
+	// hidden) leaves full screen.
+	const maximized = maximizeWanted && active && tab === 'graph' && result !== null;
+	useEffect(() => {
+		if (maximizeWanted && !maximized) setMaximizeWanted(false);
+	}, [maximizeWanted, maximized]);
+	const bodyRef = useRef<HTMLDivElement | null>(null);
+	const wasMaximized = useRef(false);
+	useEffect(() => {
+		if (maximized === wasMaximized.current) return;
+		wasMaximized.current = maximized;
+		announce(maximized ? 'Full screen. Escape or Exit full screen leaves it.' : 'Left full screen.');
+		// The Exit button goes away with full screen: keep the focus in the results rather than lose it to the page.
+		const focused = document.activeElement;
+		if (!maximized && (focused === null || focused === document.body)) bodyRef.current?.focus();
+	}, [maximized, announce]);
+	const toggleMaximized = useCallback(() => setMaximizeWanted((value) => !value), []);
 
 	// ── Row inspector (Table) ────────────────────────────────────────────────
 	const [openRow, setOpenRow] = useState<number | null>(null);
@@ -378,8 +577,10 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	// ── Meta line ────────────────────────────────────────────────────────────
 	const metaText = result ? resultMeta(displayed, result, notReported) : '';
 	const truncation = result ? truncationText(result) : null;
+	const metaLine = `${metaText}${truncation ? ` · ${truncation}` : ''}`;
 	const willRun = describeSnapshot(view ?? { text, start: 0, end: 0, caret: 0 });
 	const strip = runner.runs.length > 1;
+	const showNotices = blocked !== null || runner.refusal !== null || runner.failure !== null || runner.abandonNotice !== null || strip;
 
 	const menu: ViewMenu = useMemo(() => ({
 		entries: [
@@ -389,14 +590,33 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		],
 	}), [summary, result]);
 
+	const emptyTitle = runner.running ? 'Waiting for the node' : runner.failure ? 'Statement failed' : runner.refusal ? 'Nothing ran' : mode === 'read' ? 'Run a query' : 'Nothing executed yet';
+	const emptyText = runner.running
+		? 'The statement has been sent.'
+		: runner.failure
+			? 'The error is above. Fix the statement and run it again.'
+			: runner.refusal
+				? 'Change the statement to a read, then run it again.'
+				: mode === 'read'
+					? 'Run sends the statement as a read (read_query). Results with nodes open as a graph; everything else opens as a table.'
+					: 'Execute sends the statements through execute. The ones that look like they change data are listed for you to confirm first.';
+	const showEditor = (): void => {
+		focusEditorNext.current = true;
+		changeSplit(splitToggled(split));
+	};
+
 	return (
-		<div style={styles.root}>
-			{topSlot}
+		<div ref={rootRef} style={styles.root}>
 			<div style={styles.editorRegion}>
-				<div style={styles.editorBox}>
-					<QueryEditor ref={editor} value={text} onChange={changeText} onRun={() => run(false)} onRunAll={() => run(true)} onCursorChange={syncCursor} label={mode === 'read' ? 'Cypher query' : 'Cypher statements to execute'} />
+				<div style={styles.editorBox(editorHeight, split.collapsed)}>
+					<QueryEditor ref={editor} value={text} onChange={changeText} onRun={() => run(false)} onRunAll={() => run(true)} onCursorChange={syncCursor} label={mode === 'read' ? 'Cypher query' : 'Cypher statements to execute'} completion={completion} />
 				</div>
 				<div style={styles.runBar}>
+					{split.collapsed && (
+						<button type="button" style={styles.firstLine} title="Show the editor" onClick={showEditor}>
+							{firstLineOf(text) || '(empty)'}
+						</button>
+					)}
 					<Button variant="primary" disabled={runner.running || blocked !== null} onClick={() => run(false)} title="Run the selection or the statement at the caret (Ctrl/Cmd+Enter)">
 						{mode === 'read' ? 'Run' : 'Execute'}
 					</Button>
@@ -412,41 +632,87 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 						/>
 					)}
 					{runner.canStop && <Button variant="ghost" title={STOP_WAITING_NOTE} onClick={() => runner.stopWaiting()}>Stop waiting</Button>}
-					{onOpenHistory && <Button variant="ghost" onClick={onOpenHistory}>History</Button>}
+					{onOpenHistory && <Button variant="ghost" ariaExpanded={historyOpen === true} onClick={onOpenHistory}>History</Button>}
+					{onOpenSaved && <Button variant="ghost" ariaExpanded={savedOpen === true} onClick={onOpenSaved}>Saved</Button>}
+					{onAsk && <Button variant="ghost" ariaExpanded={askOpen === true} title="Ask the node's language model to draft Cypher; the draft opens in a new tab, not run" onClick={onAsk}>Ask</Button>}
 					{mode === 'read' && dialect && (() => {
 						const chip = rowLimitChip(limitChoice, dialect);
 						return <span title={chip.title ?? undefined}><StatusBadge variant="muted">{chip.text}</StatusBadge></span>;
 					})()}
 					<span style={styles.willRun}>{runner.running ? 'Running…' : willRun}</span>
+					<span style={styles.end}>
+						<Button variant="ghost" small ariaExpanded={!split.collapsed} title={split.collapsed ? 'Show the editor' : 'Hide the editor; the run bar stays'} onClick={() => (split.collapsed ? showEditor() : changeSplit(splitToggled(split)))}>
+							{split.collapsed ? 'Show editor' : 'Hide editor'}
+						</Button>
+					</span>
 				</div>
 			</div>
+			<SplitDivider split={{ height: editorHeight, collapsed: split.collapsed }} available={available} onChange={changeSplit} label="Editor and results" />
 
-			<div style={styles.notices}>
-				{blocked && <Banner variant="warning">{blocked}</Banner>}
-				{runner.refusal && <Banner variant="warning">{runner.refusal}</Banner>}
-				{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} />}
-				{runner.abandonNotice && <Banner variant="warning">{runner.abandonNotice}</Banner>}
-				{strip && <StatementStrip runs={runner.runs} selected={runner.selectedRun} onSelect={(i) => runner.setSelectedRun(i)} labelOf={(r) => formatRunLabel(r)} ariaLabel="Statements in the last run" />}
-				{strip && !runner.running && <div style={styles.willRun}>{formatBatchOutcome(runner.runs, GRAPH_BATCH_WORDS)}</div>}
-			</div>
+			{showNotices && (
+				<div style={styles.notices}>
+					{blocked && <NoticeBanner variant="warning" text={blocked} />}
+					{runner.refusal && <NoticeBanner key={runner.refusal} variant="warning" text={runner.refusal} />}
+					{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} onRunFrom={runFrom} />}
+					{runner.abandonNotice && <NoticeBanner key={runner.abandonNotice} variant="warning" text={runner.abandonNotice} />}
+					{strip && <StatementStrip runs={runner.runs} selected={runner.selectedRun} onSelect={(i) => runner.setSelectedRun(i)} labelOf={(r) => formatRunLabel(r)} ariaLabel="Statements in the last run" />}
+					{strip && !runner.running && <div style={styles.willRun}>{formatBatchOutcome(runner.runs, GRAPH_BATCH_WORDS)}</div>}
+				</div>
+			)}
 
 			<div style={styles.results}>
 				<TabControl menu={menu} activeId={tab} onSelect={(id) => setTab(id as ResultTab)} />
-				<div style={styles.body}>
-					{!result ? (
-						<EmptyState icon={<GraphIcon />} title={runner.running ? 'Waiting for the node' : runner.failure ? 'Statement failed' : 'No results yet'} description={runner.running ? 'The statement has been sent.' : runner.failure ? 'The error is above. Fix the statement and run it again.' : mode === 'read' ? 'Run a query. Results with nodes open as a graph; everything else opens as a table.' : 'Statements run here change data only after you confirm them.'} />
-					) : tab === 'graph' ? (
-						<GraphView session={graphSession} schemaLabels={schemaLabels} captions={captions} onCaption={setCaption} onInspect={(id) => graphSession.inspect({ kind: 'node', id })} seedKey={`${endpoint.key}:${resultKey.current}`} announce={announce} />
-					) : tab === 'table' ? (
-						<ResultTable result={result} tableKey={`${endpoint.key}-${resultKey.current}`} onRowOpen={setOpenRow} meta={<>{metaText}{truncation && <StatusBadge variant="warning">{truncation}</StatusBadge>}</>} />
-					) : (
-						<RawView result={result} announce={announce} />
+				<div
+					ref={bodyRef}
+					tabIndex={-1}
+					style={maximized ? styles.maximized : styles.body}
+					onKeyDown={(event) => {
+						// Escape that nothing inside used (the inspector, a menu, the canvas's own selection) leaves full screen.
+						if (!maximized || event.key !== 'Escape' || event.defaultPrevented || !event.currentTarget.contains(event.target as Node)) return;
+						event.preventDefault();
+						setMaximizeWanted(false);
+					}}
+				>
+					{maximized && (
+						<div style={styles.maxBar}>
+							<span>{FULL_SCREEN_TEXT}</span>
+							<Button variant="ghost" small title="Exit full screen (Esc)" onClick={() => setMaximizeWanted(false)}>
+								Exit full screen
+							</Button>
+						</div>
 					)}
+					<div style={styles.fill}>
+						{!result ? (
+							<EmptyState icon={<GraphIcon />} title={emptyTitle} description={emptyText} />
+						) : tab === 'graph' ? (
+							<GraphView
+								session={graphSession}
+								schemaLabels={schemaLabels}
+								captions={captions}
+								onCaption={setCaption}
+								onInspect={(id) => graphSession.inspect({ kind: 'node', id })}
+								seedKey={`${endpoint.key}:${resultKey.current}`}
+								announce={announce}
+								endpointKey={endpoint.key}
+								meta={metaLine}
+								onRerun={rerun}
+								onNewQuery={onNewQuery}
+								maximized={maximized}
+								onToggleMaximized={toggleMaximized}
+							/>
+						) : tab === 'table' ? (
+							<ResultTable result={result} tableKey={`${endpoint.key}-${tabId}-${resultKey.current}`} onRowOpen={setOpenRow} meta={<>{metaText}{truncation && <StatusBadge variant="warning">{truncation}</StatusBadge>}</>} />
+						) : (
+							<RawView result={result} announce={announce} />
+						)}
+					</div>
 				</div>
-				{result && tab !== 'table' && <div style={{ ...styles.willRun, paddingTop: 4 }}>{metaText}{truncation ? ` · ${truncation}` : ''}</div>}
-				{summary && summary.unsafeNumbers > 0 && <Banner variant="warning">{`${summary.unsafeNumbers} integer ${summary.unsafeNumbers === 1 ? 'value' : 'values'} beyond 2^53 arrived as plain JSON number${summary.unsafeNumbers === 1 ? '' : 's'} and may have been rounded before this app saw them. This node should send them as exact text; upgrade it.`}</Banner>}
-				{summary && summary.malformed > 0 && <Banner variant="warning">{`${summary.malformed} value${summary.malformed === 1 ? ' looks' : 's look'} like graph values but are malformed, so ${summary.malformed === 1 ? 'it is' : 'they are'} shown as plain data.`}</Banner>}
-				{summary && summary.danglingRelationships > 0 && <Banner variant="info">{`${summary.danglingRelationships} relationship${summary.danglingRelationships === 1 ? '' : 's'} in this result ${summary.danglingRelationships === 1 ? 'has' : 'have'} an end node that was not returned, so ${summary.danglingRelationships === 1 ? 'it is' : 'they are'} not drawn. Return the nodes too, or expand a node.`}</Banner>}
+				{(result && tab === 'raw') || notes.length > 0 ? (
+					<div style={styles.footer}>
+						{result && tab === 'raw' && <div style={styles.willRun}>{metaLine}</div>}
+						{notes.length > 0 && <NotesLine key={resultKey.current} notes={notes} />}
+					</div>
+				) : null}
 			</div>
 
 			{rowView && <RowInspector open title={`Row ${(openRow ?? 0) + 1} of ${result?.rows.length ?? 0}`} subtitle={displayed ? `statement ${displayed.index + 1}${displayed.ms !== undefined ? ` · ${clock(Date.now() - displayed.ms)}` : ''}` : ''} fields={rowView.fields} json={rowView.json} note={rowView.note} nullText="null" announce={announce} onClose={() => setOpenRow(null)} />}

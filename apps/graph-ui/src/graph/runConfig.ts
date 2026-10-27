@@ -91,7 +91,7 @@ export function refuseNonReads(statements: readonly IPreparedStatement[], canWri
 	const bad = statements.find((s) => s.kind === 'write');
 	if (!bad) return null;
 	const what = bad.finding ? bad.finding.kind : bad.verb;
-	return `This editor only reads. Statement ${statements.indexOf(bad) + 1} looks like it changes data or runs a command (${what}). ${canWrite ? 'Use the write console for this connection.' : 'This node has direct execution turned off, so there is no write console; use a node that allows it.'} This is a text check, not a database safeguard.`;
+	return `Not sent: statement ${statements.indexOf(bad) + 1} looks like it changes data or runs a command (${what}). ${canWrite ? 'Query tabs only run reads; use the write console for this connection.' : 'Query tabs only run reads, and this connection has no write console.'} This is a text check, not a database safeguard.`;
 }
 
 // =============================================================================

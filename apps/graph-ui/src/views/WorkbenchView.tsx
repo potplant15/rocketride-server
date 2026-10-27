@@ -21,46 +21,93 @@
 // SOFTWARE.
 
 // =============================================================================
-// GRAPH-UI - WORKBENCH VIEW (browse one connection: Ask, Cypher, results, graph)
+// GRAPH-UI - WORKBENCH VIEW (browse one connection: Overview and query tabs)
 // =============================================================================
 //
-// The browsing document of one connection. Everything here READS: the editor sends
-// `read_query`, Ask only previews, a label or type click in the sidebar runs the
-// generated 25-row preview, and the graph's expand/connect/path actions are reads.
-// Changing data is the write console's job, and exists only where the node allows it.
+// The browsing document of one connection. Everything here READS: the editors
+// send `read_query`, Ask only drafts, a label or type click in the sidebar runs
+// the generated 25-row preview, and the graph's expand/connect/path actions are
+// reads. Changing data is the write console's job, and exists only where the
+// node allows it.
 //
-// A sidebar click is a preview REQUEST (graph/previews.ts): this workbench takes it
-// by its nonce, once, whenever it mounts, so the click that summoned a cold dev-tool
-// webview is not lost. A request waits while this connection has not answered its
-// check yet, instead of being dropped.
+// The document opens on Overview (drawn from the schema already loaded, no
+// request of its own) beside Query 1. Nothing runs by itself: Explore runs its
+// sample on a click. Each query tab (graph/queryTabs.ts) owns a run surface with
+// its own editor, runs, graph and load slot; hidden tabs stay mounted, so a tab
+// keeps its graph. Text that arrives from elsewhere opens its own tab, so no
+// draft is replaced: a sidebar preview (run), an Ask draft (not run), History's
+// Run again (run) and Open in new tab, a saved query or a template, and the
+// graph's "New query from here". Only History's "Load into editor" and Saved's
+// "Insert" go into an existing tab (the query tab shown last), as an edit the
+// editor can undo. Query 1 keeps the persisted draft the one editor had before
+// tabs; the other tabs last for the session. At most MAX_QUERY_TABS: past that,
+// a sentence says to close one, and nothing is dropped.
 //
-// As a dev tool there is no Connections landing: the connection details (what the
+// A sidebar click is a preview REQUEST (graph/previews.ts): this workbench takes
+// it by its nonce, once, whenever it mounts, so the click that summoned a cold
+// dev-tool webview is not lost. A request waits while this connection has not
+// answered its check yet, instead of being dropped.
+//
+// History and Saved are an inline side panel (SidePanel), never a drawer. As a
+// dev tool there is no Connections landing: the connection details (what the
 // node reports, Test connection) show inline in this document, under its header
-// (ConnectionDetailsPanel, never a drawer), toggled by a Details header action and
-// opened, with a test, by Test connection where the connection cannot be browsed.
-// The full app keeps its landing, so its workbench is unchanged.
+// (ConnectionDetailsPanel, never a drawer), toggled by a Details header action
+// and opened, with a test, by Test connection where the connection cannot be
+// browsed. The full app keeps its landing.
 // =============================================================================
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, ContentHeader, EmptyState } from 'shell';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Banner, Button, ContentHeader, EmptyState, ToggleGroup } from 'shell';
 import type { IExplorerEndpoint } from 'shared/explorer';
 import { announcer } from '../adapters/explorer';
+import { patternCheck } from '../cypher/classify';
 import { typePreview, labelPreview, isRefusal } from '../cypher/recipes';
-import { useGraphEndpoints, useGraphEnv, usePendingPreview } from '../env';
+import { useGraphEndpoints, useGraphEnv, usePendingPreview, useSchemaView } from '../env';
 import { DETAILS_CLOSED, connectionView, detailsPanelAfter, surfaceGate } from '../graph/connections';
 import type { DetailsPanelAction, IDetailsPanelState } from '../graph/connections';
 import { canWrite, engineText, parseDialect, targetText } from '../graph/dialect';
 import { previewFor } from '../graph/previews';
+import { FIRST_QUERY_TAB, OVERVIEW_TAB, activateTab, askTitle, clipTitle, closeTab, historyTitle, initialTabs, placeRequest, previewTitle } from '../graph/queryTabs';
+import type { IQueryTabsState, QueryTabOrigin, TabRequest } from '../graph/queryTabs';
+import { EXPLORE_CYPHER } from '../graph/templates';
 import { GraphIcon } from '../icons';
-import { styles } from '../styles';
-import AskBar from '../components/AskBar';
+import { styles as shared } from '../styles';
+import AskBar, { ASK_DRAFT_HEADLINE, askDraftText, askKeptText } from '../components/AskBar';
 import ConnectionDetailsPanel from '../components/ConnectionDetailsPanel';
 import HistoryPanel from '../components/HistoryPanel';
+import OverviewPanel from '../components/OverviewPanel';
+import QueryTabs, { panelElementId, tabElementId } from '../components/QueryTabs';
 import RunSurface from '../components/RunSurface';
+import SavedQueriesPanel from '../components/SavedQueriesPanel';
+import SidePanel from '../components/SidePanel';
 import { createLoadSlot } from '../graph/loadSlot';
+import type { ILoadSlot } from '../graph/loadSlot';
 
 /** Nothing is remembered here: a request is taken through the env, which clears it for every later mount. */
 const NONE_TAKEN: ReadonlySet<string> = new Set();
+
+/** What the side panel shows. */
+type SideView = 'history' | 'saved';
+
+const SIDE_OPTIONS: { id: SideView; label: string }[] = [
+	{ id: 'history', label: 'History' },
+	{ id: 'saved', label: 'Saved' },
+];
+
+const styles = {
+	notice: { padding: '8px 24px 0' } as CSSProperties,
+	body: { flex: 1, minHeight: 0, display: 'flex' } as CSSProperties,
+	panes: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } as CSSProperties,
+	pane: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } as CSSProperties,
+	hidden: { display: 'none' } as CSSProperties,
+	surface: { flex: 1, minHeight: 0 } as CSSProperties,
+	overview: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } as CSSProperties,
+	overviewActions: { display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 24px 0' } as CSSProperties,
+	overviewBody: { flex: 1, minHeight: 0, overflowY: 'auto' } as CSSProperties,
+	askNote: { marginTop: 4, fontSize: 12 } as CSSProperties,
+	askActions: { display: 'flex', gap: 6, marginTop: 6 } as CSSProperties,
+};
 
 /** Props. */
 export interface IWorkbenchViewProps {
@@ -78,6 +125,9 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	const { probes } = useGraphEndpoints();
 	const probe = probes[endpoint.key];
 	const dialect = useMemo(() => (probe?.ok ? parseDialect(probe.info) : null), [probe]);
+	const dialectNow = useRef(dialect);
+	dialectNow.current = dialect;
+	const schema = useSchemaView(endpoint.key);
 	const view = connectionView(endpoint, probe);
 	const writable = canWrite(dialect);
 	// A surface that has been on screen stays through a re-probe (see surfaceGate): it pauses instead of unmounting.
@@ -85,30 +135,136 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	if (view.openable) opened.current = true;
 	const gate = surfaceGate(view, opened.current);
 
-	const [historyOpen, setHistoryOpen] = useState(false);
 	// A dev-tool frame shows the connection details inline here (see detailsPanelAfter).
 	const inFrame = env.mount === 'frame';
 	const [details, setDetails] = useState<IDetailsPanelState>(DETAILS_CLOSED);
 	const panel = (action: DetailsPanelAction): void => setDetails((current) => detailsPanelAfter(current, action));
-	// One slot for the life of the document: the surface takes each request once (see loadSlot.ts).
-	const [slot] = useState(createLoadSlot);
-	const [loadSeq, setLoadSeq] = useState(0);
+	const idPrefix = `graph-wb${useId().replace(/:/g, '')}`;
+
+	// ── Tabs: the pure model, one load slot per tab, and what each tab's editor holds ──
+	const [tabs, setTabs] = useState<IQueryTabsState>(initialTabs);
+	const tabsNow = useRef(tabs);
+	const commitTabs = useCallback((next: IQueryTabsState) => {
+		tabsNow.current = next;
+		setTabs(next);
+	}, []);
+	// Each tab's own mailbox for its editor, for the life of the tab (see loadSlot.ts).
+	const slots = useRef(new Map<string, ILoadSlot>());
+	const slotOf = useCallback((id: string): ILoadSlot => {
+		let slot = slots.current.get(id);
+		if (!slot) {
+			slot = createLoadSlot();
+			slots.current.set(id, slot);
+		}
+		return slot;
+	}, []);
+	const [seqs, setSeqs] = useState<Readonly<Record<string, number>>>({});
+	const texts = useRef(new Map<string, string>());
+	// Why the last tab was not opened (the limit), until a tab opens or closes.
+	const [tabsNotice, setTabsNotice] = useState<string | null>(null);
+	// The banner on each tab Ask opened, until it is dismissed.
+	const [askNotes, setAskNotes] = useState<Readonly<Record<string, string>>>({});
+
 	const gateNow = useRef(gate);
 	gateNow.current = gate;
-	// A run is asked for only while the surface is on screen and can run it: nothing is queued to run by itself later.
-	const put = useCallback((text: string, run: boolean) => {
+	// Put text into the tab a request names (a new one, or the query tab shown last). A run is asked for only while the
+	// surfaces are on screen and can run it: nothing is queued to run by itself later.
+	const deliver = useCallback((request: TabRequest): string | null => {
+		const placed = placeRequest(tabsNow.current, request);
+		if ('refused' in placed) {
+			setTabsNotice(placed.refused);
+			announcer.announce(placed.refused);
+			return null;
+		}
+		setTabsNotice(null);
+		commitTabs(placed.state);
 		const now = gateNow.current;
-		const runNow = run && now.mounted && now.paused === null;
-		if (run && !runNow) announcer.announce(`The statement was put in the editor but not run. ${now.paused ?? 'This connection cannot be browsed yet.'}`);
-		setLoadSeq(slot.put({ text, run: runNow }));
-	}, [slot]);
+		const runNow = placed.put.run && now.mounted && now.paused === null;
+		if (placed.put.run && !runNow) announcer.announce(`The statement was put in the editor but not run. ${now.paused ?? 'This connection cannot be browsed yet.'}`);
+		const seq = slotOf(placed.target).put({ text: placed.put.text, run: runNow, insert: placed.put.insert });
+		setSeqs((current) => ({ ...current, [placed.target]: seq }));
+		return placed.target;
+	}, [commitTabs, slotOf]);
+
+	const activate = useCallback((id: string) => commitTabs(activateTab(tabsNow.current, id)), [commitTabs]);
+	const close = useCallback((id: string) => {
+		commitTabs(closeTab(tabsNow.current, id));
+		slots.current.delete(id);
+		texts.current.delete(id);
+		setSeqs(({ [id]: _gone, ...rest }) => rest);
+		setAskNotes(({ [id]: _gone, ...rest }) => rest);
+		setTabsNotice(null);
+	}, [commitTabs]);
+	const newQuery = useCallback(() => {
+		deliver({ kind: 'new', origin: 'query', text: '', run: false });
+	}, [deliver]);
+	const openText = useCallback((origin: QueryTabOrigin, title: string, cypher: string): void => {
+		if (deliver({ kind: 'new', origin, title: clipTitle(title), text: cypher, run: false })) announcer.announce(`${clipTitle(title)} opened in a new tab. It has not been run.`);
+	}, [deliver]);
+	const openNewQuery = useCallback((cypher: string, title: string) => openText('graph', title, cypher), [openText]);
+
+	// The 25-row preview of a label or type, in a tab of its own: run for a click, not run for "New query".
+	const openPreview = useCallback((kind: 'label' | 'type', name: string, run: boolean) => {
+		const current = dialectNow.current;
+		if (!current) {
+			announcer.announce('This connection has not answered yet, so the preview was not run.');
+			return;
+		}
+		const engine = { dialect: current.dialect, version: current.engineVersion };
+		const recipe = kind === 'type' ? typePreview(engine, name) : labelPreview(engine, name);
+		const title = run ? previewTitle(name) : `${clipTitle(name)} (new query)`;
+		if (isRefusal(recipe)) {
+			announcer.announce(recipe.refusal);
+			deliver({ kind: 'new', origin: 'preview', title, text: `// ${recipe.refusal}`, run: false });
+			return;
+		}
+		deliver({ kind: 'new', origin: 'preview', title, text: recipe.cypher, run });
+	}, [deliver]);
+
+	// Explore: show the Explore tab, or open it and run its sample (one click, safe on every engine).
+	const explore = useCallback(() => {
+		const existing = tabsNow.current.tabs.find((tab) => tab.origin === 'explore');
+		if (existing) {
+			activate(existing.id);
+			return;
+		}
+		deliver({ kind: 'new', origin: 'explore', title: 'Explore', text: EXPLORE_CYPHER, run: true });
+	}, [activate, deliver]);
+	const refreshSchema = useCallback(() => {
+		announcer.announce('Reading the schema again.');
+		void env.loadSchema(endpoint.key, { fresh: true });
+	}, [env, endpoint.key]);
+
+	// ── Ask (shown on demand from a tab's run bar; its draft opens a new tab) ──
+	const [askOpen, setAskOpen] = useState(false);
+	const [askFocus, setAskFocus] = useState(0);
+	const askFrom = useRef<string | null>(null);
+	const toggleAsk = useCallback(() => {
+		if (!askOpen) setAskFocus((n) => n + 1);
+		setAskOpen(!askOpen);
+	}, [askOpen]);
+	const onDraft = useCallback((cypher: string, question: string): boolean => {
+		const id = deliver({ kind: 'new', origin: 'ask', title: askTitle(question), text: cypher, run: false, ask: { question, from: askFrom.current ?? '' } });
+		if (id === null) return false;
+		setAskNotes((current) => ({ ...current, [id]: askDraftText(question, patternCheck(cypher)) }));
+		return true;
+	}, [deliver]);
+
+	// ── History and Saved (one inline side panel) ────────────────────────────
+	const [side, setSide] = useState<SideView | null>(null);
+	const toggleSide = useCallback((which: SideView) => setSide((current) => (current === which ? null : which)), []);
+	const currentQuery = useCallback(() => {
+		const id = tabsNow.current.lastQuery;
+		const tab = tabsNow.current.tabs.find((t) => t.id === id);
+		return tab ? { title: tab.title, text: texts.current.get(tab.id) ?? '' } : null;
+	}, []);
 
 	// No probe yet (opened from a stale link or right after a refresh): ask the node who it is.
 	useEffect(() => {
 		if (env.ready && !probe && endpoint.state === 'ready') void env.probe(endpoint.key);
 	}, [env, probe, endpoint.key, endpoint.state]);
 
-	// A click on a label or relationship type in the sidebar: show and run the 25-row preview. The request is TAKEN
+	// A click on a label or relationship type in the sidebar: the 25-row preview, in a new tab, run. The request is TAKEN
 	// (by nonce) only when it can be acted on; while the connection is still being checked it waits.
 	const pending = usePendingPreview();
 	useEffect(() => {
@@ -117,27 +273,19 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 		const waiting = !dialect && !probe && (endpoint.state === 'ready' || endpoint.state === 'probing');
 		if (waiting) return;
 		if (!env.previews.consume(request.nonce)) return;
-		if (!dialect) {
-			announcer.announce('This connection has not answered yet, so the preview was not run.');
-			return;
-		}
-		const engine = { dialect: dialect.dialect, version: dialect.engineVersion };
-		const recipe = request.action === 'label-preview' ? labelPreview(engine, request.name) : typePreview(engine, request.name);
-		if (isRefusal(recipe)) {
-			announcer.announce(recipe.refusal);
-			put(`// ${recipe.refusal}`, false);
-			return;
-		}
-		put(recipe.cypher, true);
-	}, [pending, env, endpoint.key, endpoint.state, dialect, probe, put]);
+		// A click previews and runs; any other sidebar action ("New query with this label") opens its text, not run.
+		const runs = request.action === 'label-preview' || request.action === 'type-preview';
+		openPreview(request.action === 'type-preview' ? 'type' : 'label', request.name, runs);
+	}, [pending, env, endpoint.key, endpoint.state, dialect, probe, openPreview]);
 
 	const openWrite = (): void => {
 		env.openDocument({ kind: 'write', endpoint });
 	};
-	const subtitle = dialect ? [engineText(dialect), targetText(dialect)].filter(Boolean).join(' \u00b7 ') : view.address;
+	const subtitle = dialect ? [engineText(dialect), targetText(dialect)].filter(Boolean).join(' · ') : view.address;
+	const failed = endpoint.state === 'unreachable' || endpoint.state === 'inaccessible';
 
 	return (
-		<div style={styles.root}>
+		<div style={shared.documentRoot}>
 			<ContentHeader
 				title={view.title}
 				subtitle={subtitle}
@@ -169,50 +317,153 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 				/>
 			)}
 			{gate.mounted ? (
-				<div style={{ flex: 1, minHeight: 0 }}>
-					<RunSurface
-						endpoint={endpoint}
-						mode="read"
-						paused={gate.paused}
-						loadSlot={slot}
-						loadSeq={loadSeq}
-						topSlot={<AskBar endpoint={endpoint} onPreview={(cypher) => put(cypher, false)} />}
-						onOpenHistory={() => setHistoryOpen(true)}
+				<>
+					<QueryTabs
+						tabs={[{ id: OVERVIEW_TAB, title: 'Overview', closable: false }, ...tabs.tabs.map((tab) => ({ id: tab.id, title: tab.title, closable: true }))]}
+						active={tabs.active}
+						idPrefix={idPrefix}
+						onActivate={activate}
+						onClose={close}
+						onNew={newQuery}
 					/>
-				</div>
+					{tabsNotice && (
+						<div style={styles.notice}>
+							<Banner variant="warning">{tabsNotice}</Banner>
+						</div>
+					)}
+					<div style={askOpen ? undefined : styles.hidden}>
+						<AskBar endpoint={endpoint} focusSeq={askFocus} onAsked={() => { askFrom.current = tabsNow.current.lastQuery; }} onDraft={onDraft} onClose={() => setAskOpen(false)} />
+					</div>
+					<div style={styles.body}>
+						<div style={styles.panes}>
+							<div role="tabpanel" id={panelElementId(idPrefix, OVERVIEW_TAB)} aria-labelledby={tabElementId(idPrefix, OVERVIEW_TAB)} style={tabs.active === OVERVIEW_TAB ? styles.overview : styles.hidden}>
+								<div style={styles.overviewActions}>
+									<Button variant="primary" onClick={explore} title="Open the Explore tab and run a sample of 25 relationships with their end nodes">
+										Explore
+									</Button>
+									<Button variant="ghost" onClick={newQuery}>
+										New query
+									</Button>
+									<Button variant="ghost" onClick={refreshSchema} title="Read this connection's schema again">
+										Refresh schema
+									</Button>
+								</div>
+								<div style={styles.overviewBody}>
+									<OverviewPanel endpoint={endpoint} dialect={dialect} onPreview={(kind, name) => openPreview(kind, name, true)} onNewQuery={openNewQuery} onExplore={explore} onRefreshSchema={refreshSchema} />
+								</div>
+							</div>
+							{tabs.tabs.map((tab) => {
+								const shown = tab.id === tabs.active;
+								const note = askNotes[tab.id];
+								const from = tab.ask ? tabs.tabs.find((t) => t.id === tab.ask?.from) ?? null : null;
+								return (
+									<div key={tab.id} role="tabpanel" id={panelElementId(idPrefix, tab.id)} aria-labelledby={tabElementId(idPrefix, tab.id)} style={shown ? styles.pane : styles.hidden}>
+										{note !== undefined && (
+											<div style={styles.notice}>
+												<Banner variant="info">
+													<strong>{ASK_DRAFT_HEADLINE}</strong> {note}
+													<div style={styles.askNote}>{from ? askKeptText(from.title) : 'Ask always opens a new tab, so no other tab changed.'}</div>
+													<div style={styles.askActions}>
+														{from && (
+															<Button variant="ghost" small onClick={() => activate(from.id)}>
+																{`Back to ${from.title}`}
+															</Button>
+														)}
+														<Button variant="ghost" small onClick={() => setAskNotes(({ [tab.id]: _gone, ...rest }) => rest)}>
+															Dismiss
+														</Button>
+													</div>
+												</Banner>
+											</div>
+										)}
+										<div style={styles.surface}>
+											<RunSurface
+												endpoint={endpoint}
+												mode="read"
+												paused={gate.paused}
+												loadSlot={slotOf(tab.id)}
+												loadSeq={seqs[tab.id] ?? 0}
+												tabId={tab.id}
+												draftKey={tab.id === FIRST_QUERY_TAB ? undefined : null}
+												defaultText={tab.id === FIRST_QUERY_TAB ? undefined : ''}
+												active={shown}
+												onTextChange={(text) => texts.current.set(tab.id, text)}
+												onOpenHistory={() => toggleSide('history')}
+												historyOpen={side === 'history'}
+												onOpenSaved={() => toggleSide('saved')}
+												savedOpen={side === 'saved'}
+												onAsk={toggleAsk}
+												askOpen={askOpen}
+												onNewQuery={openNewQuery}
+											/>
+										</div>
+									</div>
+								);
+							})}
+						</div>
+						{side && (
+							<SidePanel
+								title={side === 'history' ? 'History' : 'Saved queries'}
+								subtitle={view.title}
+								switcher={<ToggleGroup options={SIDE_OPTIONS} value={side} onChange={(id) => setSide(id)} aria-label="Show history or saved queries" />}
+								onClose={() => setSide(null)}
+							>
+								{side === 'history' ? (
+									<HistoryPanel
+										endpointKey={endpoint.key}
+										nodeName={view.title}
+										onLoad={(cypher) => {
+											if (deliver({ kind: 'replace', text: cypher })) announcer.announce('The statement is in the editor. It has not been run.');
+										}}
+										onRerun={(cypher) => {
+											deliver({ kind: 'new', origin: 'history', title: historyTitle(cypher), text: cypher, run: true });
+										}}
+										onOpenInNewTab={(cypher) => openText('history', historyTitle(cypher), cypher)}
+										announce={(text) => announcer.announce(text)}
+									/>
+								) : (
+									<SavedQueriesPanel
+										endpointKey={endpoint.key}
+										nodeName={view.title}
+										schema={schema}
+										dialect={dialect?.dialect ?? null}
+										current={currentQuery}
+										onOpen={(name, cypher, origin) => openText(origin, name, cypher)}
+										onInsert={(cypher) => {
+											if (deliver({ kind: 'insert', text: cypher })) announcer.announce('Inserted in the editor at the caret. It has not been run.');
+										}}
+										announce={(text) => announcer.announce(text)}
+									/>
+								)}
+							</SidePanel>
+						)}
+					</div>
+				</>
 			) : (
-				<EmptyState
-					icon={<GraphIcon />}
-					title={endpoint.state === 'ready' ? 'This connection cannot be browsed yet' : 'This connection is not available'}
-					description={view.blocked ?? 'The connection has not answered yet.'}
-					action={
-						inFrame ? (
-							<Button variant="primary" onClick={() => panel('test')}>
-								Test connection
-							</Button>
-						) : (
-							<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
-								Open Connections
-							</Button>
-						)
-					}
-				/>
+				<>
+					{failed && view.blocked && (
+						<div style={styles.notice}>
+							<Banner variant="error">{view.blocked}</Banner>
+						</div>
+					)}
+					<EmptyState
+						icon={<GraphIcon />}
+						title={endpoint.state === 'ready' ? 'This connection cannot be browsed yet' : 'This connection is not available'}
+						description={failed ? 'Nothing can be browsed until the node answers.' : (view.blocked ?? 'The connection has not answered yet.')}
+						action={
+							inFrame ? (
+								<Button variant="primary" onClick={() => panel('test')}>
+									Test connection
+								</Button>
+							) : (
+								<Button variant="primary" onClick={() => env.openDocument({ kind: 'connections' })}>
+									Open Connections
+								</Button>
+							)
+						}
+					/>
+				</>
 			)}
-			<HistoryPanel
-				endpointKey={endpoint.key}
-				nodeName={view.title}
-				open={historyOpen}
-				onClose={() => setHistoryOpen(false)}
-				onLoad={(cypher) => {
-					put(cypher, false);
-					setHistoryOpen(false);
-				}}
-				onRerun={(cypher) => {
-					put(cypher, true);
-					setHistoryOpen(false);
-				}}
-				announce={(text) => announcer.announce(text)}
-			/>
 		</div>
 	);
 };

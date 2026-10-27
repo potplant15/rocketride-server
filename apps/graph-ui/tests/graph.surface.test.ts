@@ -12,8 +12,9 @@ import { test } from 'node:test';
 import { entrySummary, historyEmptyText } from '../src/components/HistoryPanel';
 import { createLoadSlot } from '../src/graph/loadSlot';
 import { STILL_RUNNING_TEXT, affectedNotReported, historySummaryOf, limitPatch, runRefusal, settleRun, toHistoryEntry } from '../src/graph/runConfig';
+import type { IResultSummary } from '../src/graph/results';
 import type { GraphValue, ReadQueryResult } from '../src/graph/types';
-import { AGE_AFFECTED_NOT_REPORTED, resultMeta } from '../src/graph/wording';
+import { AGE_AFFECTED_NOT_REPORTED, NOTICE_HEADLINE_MAX, resultMeta, resultNotes, splitNotice } from '../src/graph/wording';
 import { node } from './support/builders';
 
 // A request left for the editor is taken from the host's slot once. De-duplicating it with a ref that starts at 0 on
@@ -115,3 +116,27 @@ test('History says "No entries match" when a search or Pinned only hides entries
 	assert.equal(historyEmptyText(0, false).title, 'Recording is off for this connection');
 });
 
+// -----------------------------------------------------------------------------
+// The result's warnings are one "Notes (N)" line, each a headline with its details
+// -----------------------------------------------------------------------------
+
+const summaryWith = (over: Partial<IResultSummary>): IResultSummary => ({ rowCount: 1, columnCount: 1, nodeCount: 0, relationshipCount: 0, pathCount: 0, danglingRelationships: 0, drawable: false, scalarOnly: true, malformed: 0, unsafeNumbers: 0, ...over });
+
+test('a result\'s warnings become notes: a short headline each, the full sentence in the details', () => {
+	assert.deepEqual(resultNotes(summaryWith({})), []);
+	const notes = resultNotes(summaryWith({ unsafeNumbers: 2, malformed: 1, danglingRelationships: 3 }));
+	assert.deepEqual(notes.map((n) => n.id), ['unsafe-numbers', 'malformed', 'dangling']);
+	assert.equal(notes[0].headline, '2 large integers may have been rounded');
+	assert.match(notes[0].details, /^2 integer values beyond 2\^53 arrived as plain JSON numbers/);
+	assert.equal(notes[1].headline, '1 malformed value shown as plain data');
+	assert.equal(notes[2].headline, '3 relationships not drawn: an end node was not returned');
+	assert.match(notes[2].details, /Return the nodes too, or expand a node\.$/);
+	assert.equal(resultNotes(summaryWith({ danglingRelationships: 1 }))[0].headline, '1 relationship not drawn: an end node was not returned');
+	for (const note of notes) assert.ok(note.headline.length <= NOTICE_HEADLINE_MAX, note.headline);
+});
+
+test('a long notice is split into its first sentence and the rest, for a headline with a Details disclosure', () => {
+	assert.deepEqual(splitNotice('Not sent: statement 2 looks like it changes data (CREATE). Query tabs only run reads. This is a text check.'), { headline: 'Not sent: statement 2 looks like it changes data (CREATE).', details: 'Query tabs only run reads. This is a text check.' });
+	assert.deepEqual(splitNotice('One sentence only.'), { headline: 'One sentence only.', details: '' });
+	assert.deepEqual(splitNotice('Not sent (CALL db.labels). Then more.'), { headline: 'Not sent (CALL db.labels).', details: 'Then more.' }, 'a dot inside a name does not end the sentence');
+});

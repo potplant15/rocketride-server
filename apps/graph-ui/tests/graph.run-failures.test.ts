@@ -180,9 +180,9 @@ test('writes are recognised with their finding; reads have none', () => {
 test('the browse editor refuses a batch holding a write and names which statement and what was seen', () => {
 	const batch = ['MATCH (n) RETURN n', 'MATCH (n) DETACH DELETE n', 'RETURN 1'].map((s) => prepareStatement(s, 1000, neo));
 	const refusal = refuseNonReads(batch, false);
-	assert.match(refusal ?? '', /^This editor only reads\. Statement 2 looks like it changes data or runs a command \(DETACH DELETE\)\./);
-	assert.match(refusal ?? '', /no write console/);
-	assert.match(refuseNonReads(batch, true) ?? '', /Use the write console for this connection\./);
+	assert.match(refusal ?? '', /^Not sent: statement 2 looks like it changes data or runs a command \(DETACH DELETE\)\. /);
+	assert.match(refusal ?? '', /Query tabs only run reads, and this connection has no write console\./);
+	assert.match(refuseNonReads(batch, true) ?? '', /Query tabs only run reads; use the write console for this connection\./);
 	assert.match(refusal ?? '', /This is a text check, not a database safeguard\.$/);
 	assert.equal(refuseNonReads(['RETURN 1', 'MATCH (n) RETURN n'].map((s) => prepareStatement(s, 1000, neo)), false), null);
 });
