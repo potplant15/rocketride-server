@@ -142,7 +142,10 @@ and column sorts all narrow what the database returns. A very large table is
 slow on deep pages, because the pager can jump to any page.
 
 **Search and filters.** The search box looks in the text columns and ignores
-case. A `%`, `_` or `\` you type matches itself. **+ Filter** adds a chip
+case; **contains** and **starts with** ignore case too; **equals** and **not
+equals** compare exactly, as the database does (on PostgreSQL `NOTE 2` does
+not match `note 2`; MySQL's usual collations ignore case). A `%`, `_` or `\`
+you type matches itself. **+ Filter** adds a chip
 above the grid: a column, an operator (equals, not equals, contains, starts
 with, `>`, `<`, `≥`, `≤`, is null, is not null) and a value. What you type is
 never pasted into the statement. On a number or yes/no column the value is

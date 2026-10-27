@@ -901,6 +901,7 @@ export const TableDataView: React.FC<TableDataViewProps> = ({ endpoint, table, e
 					onChipsChange={setChips}
 					sort={gridSort}
 					onSortChange={handleSortChange}
+					dialect={dialect}
 				/>
 				{countNote && (
 					<div style={styles.countNote}>

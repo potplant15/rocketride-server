@@ -101,6 +101,31 @@ export function escapeLike(value: string): string {
 }
 
 /**
+ * What the "+ Filter" form says about upper and lower case, per engine. It
+ * must match what the predicates send: the text operators and the search box
+ * go through {@link likePredicate} (ILIKE, or LOWER() on MySQL), while equals
+ * and not equals send a plain `=` / `<>`, which compares exactly on PostgreSQL
+ * and ClickHouse and by the column's collation on MySQL.
+ *
+ * @param dialect - The engine dialect.
+ * @returns The hint.
+ */
+export function textMatchHint(dialect: SqlDialect): string {
+	const insensitive = 'Search, contains and starts with ignore upper and lower case.';
+	switch (dialect) {
+		case 'postgres':
+			return `${insensitive} Equals and not equals compare exactly, as PostgreSQL does.`;
+		case 'mysql':
+			return `${insensitive} Equals and not equals compare as the column's collation does; MySQL's usual collations ignore case too.`;
+		case 'clickhouse':
+			return `${insensitive} Equals and not equals compare exactly.`;
+		default:
+			// An unknown dialect gets a plain LIKE, whose case rules are the database's.
+			return 'Text matches compare as the database does until its type is known.';
+	}
+}
+
+/**
  * A case-insensitive LIKE over one column, per engine. Postgres casts to text
  * (a plain LIKE on a uuid or enum column errors); MySQL lowers both sides
  * because its LIKE follows the column's collation; ClickHouse has ILIKE and
