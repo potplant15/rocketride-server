@@ -151,7 +151,9 @@ the search box apply together (AND). The grid's sorters show as chips too;
 removing one clears that sort. Any change goes back to page 1.
 
 **Counting rows.** The total in the pager is counted once per filter; paging
-and changing the sort or page size reuse it. On a table with no filter, the
+and changing the sort or page size reuse it. A write made elsewhere (a Query
+statement that may have changed rows, a History rerun, a designer Apply) makes
+the page count again; a read or a failed statement does not. On a table with no filter, the
 app first reads the engine's own row estimate. Below 100,000 rows it then
 counts exactly; from 100,000 rows up, the grid shows `About N rows (estimate)` with a **Count
 exactly** button, and the estimate can be well off (MySQL's often is, by 40
@@ -178,8 +180,8 @@ NULL key is not a link. A key that reached the browser as a number beyond
 ±9,007,199,254,740,991 was already rounded on the way, and could be another
 row's key, so it is not looked up: the link is off and says `This key is too
 large to look up exactly in the browser.` A key the node sends as text is
-exact and is followed as usual. A binary key is sent as text that is not the
-stored key, so its link is off too and says `This key is binary, which the
+exact and is followed as usual. A binary key (the same types as under [Changing rows](#changing-rows)) is
+sent as text that is not the stored key, so its link is off too and says `This key is binary, which the
 node sends as text, so it cannot be looked up here.`
 
 **Rows that reference this one** lists the tables whose foreign keys point at
@@ -245,10 +247,12 @@ sent: the app asks again, saying that each change will commit on its own and tha
 leaves earlier changes saved, and sends the statements one by one only if you
 agree; the first failure stops the rest.
 
-Each statement of an apply may take up to 5 minutes, the time the node keeps
-an idle transaction open. A statement still running after that stops the
-apply: the app stops waiting and rolls back, and the statement keeps its
-locks on the server until it ends.
+Inside the transaction, each statement may take up to 5 minutes (less if the
+node publishes a shorter deadline), the time the node keeps an idle
+transaction open. A statement still running after that stops the apply: the
+app stops waiting and rolls back, and the statement keeps its locks on the
+server until it ends. A statement committed on its own waits like a Query-page
+statement.
 
 An apply says what it cannot know. A failure counts as "nothing saved" only
 when the database or the node answered with a refusal. When an answer never
@@ -268,7 +272,8 @@ and the page and its row count are read again.
 Rows cannot be changed in a table without a primary key, on ClickHouse (no
 unique row keys, and its updates run as background mutations), on a
 connection that cannot run statements, in a table whose primary key is a
-binary column (the node sends binary as text), or while the connection (in the dev
+binary column (`binary`, `varbinary`, the blob types, `bytea`, `bit`, or
+`VARCHAR(n) BINARY`), or while the connection (in the dev
 tool, the sidebar) cannot be reached. The buttons are off, and the drawer
 says why. A key beyond ±9,007,199,254,740,991 that the browser received as a
 number may already have been rounded, so that row cannot be changed here.
@@ -301,8 +306,11 @@ the remaining statements. When the answer to a statement never arrives, the
 result says it may have run and takes it out of the plan, so it is not run
 twice by accident; when the commit's answer never arrives, the result says
 the plan may or may not have been saved. Either way the schema is read
-again. Each statement may take up to 5 minutes; one still running after that
-stops the apply (on PostgreSQL, the plan is rolled back).
+again. On PostgreSQL, each statement of the transaction may take up to 5 minutes; one
+still running after that stops the apply and the plan is rolled back. On MySQL
+and ClickHouse a statement waits like a Query-page statement, so a long
+`ALTER` is not cut off. The designer's Apply records its statements in
+[Query history](#query-history), like the grid's.
 
 After a successful apply, the schema is re-read when the node can do that,
 and the banner says `Applied HH:MM · schema re-read from the database.`

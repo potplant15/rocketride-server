@@ -84,7 +84,7 @@ describe('README claims: Apply', () => {
 	it('states the wait each statement of an apply gets, and that it is the node\'s idle-transaction time', () => {
 		assert.equal(APPLY_STATEMENT_WAIT_MS, 5 * 60_000);
 		assert.equal(APPLY_STATEMENT_WAIT_MS, NODE_TX_IDLE_MS);
-		assert.match(prose, /Each statement of an apply may take up to 5 minutes, the time the node keeps an idle transaction open\./);
+		assert.match(prose, /Inside the transaction, each statement may take up to 5 minutes \(less if the node publishes a shorter deadline\), the time the node keeps an idle transaction open\./);
 		assert.match(prose, /Where the node has no transaction tools \(an older node\), nothing is sent/);
 	});
 
