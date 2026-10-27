@@ -112,6 +112,29 @@ export function safetyLevelOf(record: SavedSqlConnection | null | undefined): Sa
 	return isSafetyLevel(record?.safety) ? record.safety : DEFAULT_SAFETY_LEVEL;
 }
 
+/** The owner's answer about a level, and the copy of the record it was asked against. */
+export interface AskedSafety {
+	/** The level the owner holds. */
+	level: SafetyLevel;
+	/** This realm's copy of the record when the answer arrived. */
+	against: SavedSqlConnection | null;
+}
+
+/**
+ * The level in force for a document: the owner's answer while this realm's
+ * copy of the record is the one it was asked against, the copy's own level
+ * otherwise. Any newer copy (a new record object), even one holding the same
+ * value, retires the answer: a second writer may have changed the level back
+ * while the copy lagged.
+ *
+ * @param record - This realm's copy of the record, or null.
+ * @param asked - The owner's answer, or null.
+ * @returns The level.
+ */
+export function enforcedSafety(record: SavedSqlConnection | null, asked: AskedSafety | null): SafetyLevel {
+	return asked !== null && asked.against === record ? asked.level : safetyLevelOf(record);
+}
+
 /** Fields shared by both connection modes. */
 interface SavedConnectionBase {
 	/** Stable id (list identity, temp-pipeline naming). */

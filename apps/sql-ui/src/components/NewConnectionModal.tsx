@@ -55,6 +55,8 @@ import {
 import { useSqlEnv } from '../sqlEnv';
 import type { SqlEndpoint, SavedSqlConnection } from '../connect';
 import { safetyLevelOf } from '../connect/savedConnections';
+import { editorSafetyChoice } from '../sql/safety';
+import SafetyDowngradeDialog from './SafetyDowngradeDialog';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { DatabaseIcon } from '../icons';
 
@@ -282,8 +284,14 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 	const [name, setName] = useState(editing?.name ?? '');
 	const [error, setError] = useState('');
 	const [saving, setSaving] = useState(false);
-	// Carried onto the record by both save paths, which rebuild it.
-	const [safety, setSafety] = useState<SafetyLevel>(safetyLevelOf(editing));
+	// Carried onto the record by both save paths, which rebuild it. Only the
+	// user's PICK is state: until they pick, the live stored level is shown and
+	// saved, since the Query page can change it while this form is open.
+	const [pickedSafety, setPickedSafety] = useState<SafetyLevel | null>(null);
+	const safetyChoice = editorSafetyChoice(editing === null ? null : safetyLevelOf(editing), pickedSafety);
+	const safety = safetyChoice.level;
+	// A save waiting for the answer to "lower the level?".
+	const [lowering, setLowering] = useState<(() => void) | null>(null);
 	const safetyGroup = useId();
 
 	// ── Pipeline path: discovery ─────────────────────────────────────────────
@@ -407,13 +415,27 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 		}
 	}, [provider, env, name, safety, editing, onClose, onSaved, providerTitle]);
 
+	/**
+	 * Run a save, asking first when it would lower the stored level (the same
+	 * question the Query page asks).
+	 *
+	 * @param proceed - The save.
+	 */
+	const confirmSafetyThen = useCallback((proceed: () => void): void => {
+		if (safetyChoice.asks) {
+			setLowering(() => proceed);
+			return;
+		}
+		proceed();
+	}, [safetyChoice.asks]);
+
 	/** Footer Save — routes to the active path. */
 	const handleSave = useCallback(() => {
 		setError('');
-		if (path === 'pipeline') void savePipeline();
+		if (path === 'pipeline') confirmSafetyThen(() => { void savePipeline(); });
 		// Direct: drive the RJSF submit; saveDirect runs on validation pass.
 		else formRef.current?.submit();
-	}, [path, savePipeline]);
+	}, [path, savePipeline, confirmSafetyThen]);
 
 	// No list-readiness gate here: the save runs where the list is owned, and
 	// waits there for the list to be read for the signed-in identity, so it
@@ -524,7 +546,7 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 								schema={service.Pipe as IServiceSchema}
 								formData={config}
 								onChange={setConfig}
-								onSubmit={(formData) => { void saveDirect(formData); }}
+								onSubmit={(formData) => confirmSafetyThen(() => { void saveDirect(formData); })}
 								envKeys={envKeys}
 								disabled={saving}
 							/>
@@ -544,7 +566,7 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 							value={option.id}
 							checked={safety === option.id}
 							disabled={saving}
-							onChange={() => setSafety(option.id)}
+							onChange={() => setPickedSafety(option.id)}
 						/>
 						<span style={styles.safetyText}>
 							<span>{option.label}</span>
@@ -556,6 +578,23 @@ const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClos
 					Saved with this connection, for your account. The real gate is the node&apos;s allow_execute switch; this setting only adds questions. The Query page can also change it, without this form.
 				</span>
 			</fieldset>
+
+			{/* Saving a level lower than the stored one asks first; Cancel saves nothing. */}
+			{lowering !== null && editing !== null && (
+				<SafetyDowngradeDialog
+					level={safety}
+					connection={editing.name}
+					onConfirm={() => {
+						const proceed = lowering;
+						setLowering(null);
+						proceed();
+					}}
+					onCancel={() => {
+						setLowering(null);
+						setPickedSafety(null);
+					}}
+				/>
+			)}
 		</>
 	);
 

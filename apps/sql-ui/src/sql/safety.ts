@@ -59,6 +59,7 @@
 
 import type { IPatternFinding } from 'shared/explorer/runner/types';
 import type { SqlDialect } from '../connect';
+import { DEFAULT_SAFETY_LEVEL } from '../connect/savedConnections';
 import type { SafetyLevel } from '../connect/savedConnections';
 import { leadingVerb } from './batch';
 import { CTE_WRITE_WORDS, classifyStatement, patternCheck } from './classify';
@@ -218,6 +219,24 @@ const SAFETY_RANK: Record<SafetyLevel, number> = { off: 0, risky: 1, every: 2 };
  */
 export function isSafetyDowngrade(from: SafetyLevel, to: SafetyLevel): boolean {
 	return SAFETY_RANK[to] < SAFETY_RANK[from];
+}
+
+/**
+ * The level the connection editor shows and saves, and whether saving it asks.
+ *
+ * The editor rebuilds the whole record on Save, and the level can change
+ * while it is open (the Query page sets it in place). So until the user picks
+ * a level, the editor shows and saves the LIVE stored one, never the one it
+ * opened with; a level the user picked is kept, and one lower than the stored
+ * level asks first, as the Query page does.
+ *
+ * @param stored - The stored level, or null for a new connection.
+ * @param picked - The level the user picked in the editor, or null.
+ * @returns The level, and whether saving it asks first.
+ */
+export function editorSafetyChoice(stored: SafetyLevel | null, picked: SafetyLevel | null): { level: SafetyLevel; asks: boolean } {
+	const level = picked ?? stored ?? DEFAULT_SAFETY_LEVEL;
+	return { level, asks: stored !== null && picked !== null && isSafetyDowngrade(stored, picked) };
 }
 
 /**

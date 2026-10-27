@@ -126,8 +126,8 @@ describe('the level round-trips through a dev tool\'s save', () => {
 });
 
 describe('the connection editor carries the level', () => {
-	it('starts from the edited record\'s level, or the default for a new one', () => {
-		assert.match(editor, /const \[safety, setSafety\] = useState<SafetyLevel>\(safetyLevelOf\(editing\)\);/);
+	it('shows the edited record\'s live level, or the default for a new one, until the user picks one', () => {
+		assert.match(editor, /const safetyChoice = editorSafetyChoice\(editing === null \? null : safetyLevelOf\(editing\), pickedSafety\);/);
 	});
 
 	it('puts the level on the record of both save paths, which rebuild it from the form', () => {

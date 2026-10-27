@@ -78,8 +78,8 @@ import { liveBufferText, selectRunTargets } from '../sql/targets';
 import { classifyStatement } from '../sql/classify';
 import { isSafetyDowngrade, needsConfirmation, parseRowEstimate, rowEstimateStatement, toWriteConfirmation } from '../sql/safety';
 import type { RowEstimate } from '../sql/safety';
-import { SAFETY_LEVELS, safetyLevelOf } from '../connect/savedConnections';
-import type { SafetyLevel } from '../connect/savedConnections';
+import { SAFETY_LEVELS, enforcedSafety, safetyLevelOf } from '../connect/savedConnections';
+import type { AskedSafety, SafetyLevel } from '../connect/savedConnections';
 import { useConnectionRecord } from '../connectionRecord';
 import { ALL_ROWS_WARNING, applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, gridCopies, leadingVerb, mayHaveChangedRows, runSummary, settleStatement } from '../sql/batch';
 import type { StatementRun } from '../sql/batch';
@@ -358,13 +358,14 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 	// same per-user record in both mounts. Until the record is known it reads
 	// as the default, which asks.
 	const { record: connectionRecord, status: connectionStatus } = useConnectionRecord(endpoint.connId ?? null);
-	const recordSafety = safetyLevelOf(connectionRecord);
 	// The owner's answer, asked once when this realm's copy of the record is
-	// slow to show a saved level (see commitSafety). It gives way as soon as
-	// the copy changes.
-	const [askedSafety, setAskedSafety] = useState<SafetyLevel | null>(null);
-	useEffect(() => { setAskedSafety(null); }, [recordSafety]);
-	const safety = askedSafety ?? recordSafety;
+	// slow to show a saved level (see commitSafety). It holds only for the copy
+	// it was asked against: any newer copy retires it, even one with the same
+	// value, since a second writer may have changed the level back meanwhile.
+	const [askedSafety, setAskedSafety] = useState<AskedSafety | null>(null);
+	const connectionRecordRef = useRef(connectionRecord);
+	connectionRecordRef.current = connectionRecord;
+	const safety = enforcedSafety(connectionRecord, askedSafety);
 	// The runner copies its hooks once per batch; they read the level here,
 	// so each statement is checked at the level set when it is reached.
 	const safetyRef = useRef(safety);
@@ -427,7 +428,7 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 				// rather than fall back to showing the old level.
 				safetySyncTimerRef.current = setTimeout(() => {
 					void env.getConnection(connId).then(
-						(record) => setAskedSafety(record === null ? null : safetyLevelOf(record)),
+						(record) => setAskedSafety(record === null ? null : { level: safetyLevelOf(record), against: connectionRecordRef.current }),
 						() => undefined,
 					).finally(() => setPendingSafety(null));
 				}, SAFETY_SYNC_GRACE_MS);
