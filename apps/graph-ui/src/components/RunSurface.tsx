@@ -59,20 +59,21 @@
 //
 // Everything engine-facing comes from the GraphEnv (env.ts): the session (the
 // store's own in the full app, a remote one over controller ops in a dev-tool
-// frame), the write count, the data versions, history and the drafts/captions
-// prefs (session-only in a dev-tool mount). The runner, the graph session, path
-// search and the editor stay HERE in every mount.
+// frame), the write count, the data versions, history, the drafts prefs
+// (session-only in a dev-tool mount) and the connection's style, which holds the
+// captions. The runner, the graph session, path search and the editor stay HERE
+// in every mount.
 // =============================================================================
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { Banner, Button, EmptyState, StatusBadge, ToggleGroup } from 'shell';
+import { Banner, Button, EmptyState, StatusBadge, ToggleGroup, isInVSCode } from 'shell';
 import { ExplorerToolError, clock, createGeneration, formatBatchOutcome, formatPriorStatements, formatRunLabel, useStatementRunner } from 'shared/explorer';
 import type { IExplorerEndpoint, IRunTarget, IStatementRunBase } from 'shared/explorer';
 import StatementStrip from 'shared/explorer/components/StatementStrip';
-import { CAPTIONS_PREF_KEY, DRAFTS_PREF_KEY, TOOL, announcer } from '../adapters/explorer';
-import { useDataVersion, useGraphEndpoints, useGraphEnv, useSchemaLabels, useSchemaView } from '../env';
+import { DRAFTS_PREF_KEY, TOOL, announcer } from '../adapters/explorer';
+import { useConnectionStyle, useDataVersion, useGraphEndpoints, useGraphEnv, useSchemaLabels, useSchemaView } from '../env';
 import { describeSnapshot, targetsFromEditor } from '../cypher/targets';
 import type { IEditorSnapshot } from '../cypher/targets';
 import { DEFAULT_ROW_LIMIT, ROW_LIMIT_CHOICES } from '../graph/budgets';
@@ -80,6 +81,7 @@ import { canWrite as dialectCanWrite, parseDialect, rowLimitChip } from '../grap
 import { describeFailureOf, describeWriteFailure } from '../graph/failures';
 import type { IFailureNotice } from '../graph/failures';
 import { isAbandonedWrite } from '../graph/dataVersion';
+import { locateFailure } from '../graph/errorPosition';
 import { createGraphSession } from '../graph/graphSession';
 import type { IGraphSession } from '../graph/graphSession';
 import { describeWrites } from '../graph/writeConfirm';
@@ -316,7 +318,8 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const [view, setView] = useState<IEditorSnapshot | null>(null);
 	const latestText = useRef(text);
 	latestText.current = text;
-	const completion = useMemo(() => ({ schema: schemaView, dialect: dialect?.dialect ?? null }), [schemaView, dialect]);
+	// The write console is also offered the write clauses.
+	const completion = useMemo(() => ({ schema: schemaView, dialect: dialect?.dialect ?? null, ...(mode === 'write' ? { writes: true } : {}) }), [schemaView, dialect, mode]);
 
 	// The host hears every text, the first one included (what "Save current query" saves).
 	const textListener = useRef(onTextChange);
@@ -468,7 +471,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	latest.current = { dialect, writable, session, announce, blocked, gate };
 	// `endpoint.key` is the whole dependency on purpose: one graph session per connection.
 	const graphSession = useMemo<IGraphSession>(() => createGraphSession({
-		engine: () => (latest.current.dialect ? { dialect: latest.current.dialect.dialect, version: latest.current.dialect.engineVersion } : null),
+		engine: () => (latest.current.dialect ? { dialect: latest.current.dialect.dialect, version: latest.current.dialect.engineVersion, shortestPath: latest.current.dialect.capabilities.shortest_path === true } : null),
 		invoke: (recipe) => {
 			const current = latest.current.session;
 			if (!current) throw new ExplorerToolError({ kind: 'unavailable', tool: TOOL.readQuery, message: 'This connection is not available.' });
@@ -499,29 +502,22 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		if (version !== drawnAt.current) graphSession.markStale();
 	}, [version, graphSession]);
 
-	// ── Captions per connection (persisted, view state only) ─────────────────
-	const [captions, setCaptions] = useState<ReadonlyMap<string, string>>(() => {
-		const bag = prefs.getPref(CAPTIONS_PREF_KEY);
-		const own = bag && typeof bag === 'object' ? (bag as Record<string, unknown>)[endpoint.key] : undefined;
-		return new Map(own && typeof own === 'object' ? Object.entries(own as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string') : []);
-	});
+	// ── Captions: kept with the connection's style (env.userData, a label's `caption`) ──
+	// The graph view shows and edits them there; the session reads them for the names it says out loud.
+	const styleView = useConnectionStyle(endpoint.key);
+	const captions = useMemo<ReadonlyMap<string, string>>(() => {
+		const out = new Map<string, string>();
+		for (const [label, style] of Object.entries(styleView.style.labels)) if (style.caption) out.set(label, style.caption);
+		return out;
+	}, [styleView]);
 	const captionsRef = useRef(captions);
 	captionsRef.current = captions;
-	const setCaption = useCallback((label: string, choice: string) => {
-		setCaptions((previous) => {
-			const next = new Map(previous);
-			if (choice === '') next.delete(label);
-			else next.set(label, choice);
-			const bag = prefs.getPref(CAPTIONS_PREF_KEY);
-			const base = bag && typeof bag === 'object' ? (bag as Record<string, unknown>) : {};
-			prefs.setPref(CAPTIONS_PREF_KEY, { ...base, [endpoint.key]: Object.fromEntries(next) });
-			return next;
-		});
-	}, [prefs, endpoint.key]);
 
 	// ── Running ──────────────────────────────────────────────────────────────
 	// How the last batch was taken: the whole editor (Run all), part of it, or text from elsewhere (a rerun).
 	const lastBatch = useRef<'all' | 'editor' | 'other'>('other');
+	// The editor text the last batch was taken from (null when it came from elsewhere): a failure is placed in it.
+	const batchBuffer = useRef<string | null>(null);
 	// Why the last press sent nothing, shown until the next one starts (a gate refusal: until the gate frees).
 	const [startRefusal, setStartRefusal] = useState<string | null>(null);
 	const gateBusy = useSyncExternalStore(gate ? gate.subscribe : NO_GATE.subscribe, gate ? gate.busy : NO_GATE.busy, gate ? gate.busy : NO_GATE.busy);
@@ -558,6 +554,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		const handle = editor.current;
 		const targets = handle ? targetsFromEditor(handle, all) : targetsFromEditor({ snapshot: () => ({ text: latestText.current, start: 0, end: 0, caret: latestText.current.length }) }, all);
 		lastBatch.current = all ? 'all' : 'editor';
+		batchBuffer.current = handle ? handle.snapshot().text : latestText.current;
 		startRun(targets, true);
 	}, [startRun]);
 
@@ -567,6 +564,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		const handle = editor.current;
 		const fromEditor = lastBatch.current === 'all' && handle !== null;
 		const targets: IRunTarget[] = fromEditor ? targetsFromEditor(handle, true) : runner.runs.map((r) => ({ text: r.cypher }));
+		batchBuffer.current = fromEditor ? handle.snapshot().text : null;
 		startRun(targets.slice(index), fromEditor);
 	}, [runner.runs, startRun]);
 
@@ -574,6 +572,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 	const rerun = useCallback(() => {
 		if (!displayed) return;
 		lastBatch.current = 'other';
+		batchBuffer.current = null;
 		startRun([{ text: displayed.cypher }], false);
 	}, [displayed, startRun]);
 
@@ -593,9 +592,27 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 		changeText(next);
 		if (request.run && !request.insert) {
 			lastBatch.current = 'other';
+			batchBuffer.current = null;
 			startRun([{ text: next }], false);
 		}
 	}, [loadSlot, loadSeq]); // eslint-disable-line react-hooks/exhaustive-deps
+
+	// ── Where the database's error text puts the failure (graph/errorPosition.ts) ──
+	// Placed only while the editor still holds the text the batch was taken from; the editor drops the mark on the next
+	// edit, and a new run starts without one.
+	const location = useMemo(() => {
+		const failure = runner.failure;
+		const buffer = batchBuffer.current;
+		if (!failure || buffer === null || buffer !== text) return null;
+		const failed = runner.runs[failure.index];
+		if (!failed || failed.start === undefined || failed.end === undefined) return null;
+		return locateFailure(buffer, { start: failed.start, end: failed.end }, failure.notice.verbatim, dialect?.dialect ?? null);
+	}, [runner.failure, runner.runs, text, dialect]);
+	const markers = useMemo(() => {
+		if (!location || !runner.failure) return undefined;
+		const said = runner.failure.notice.verbatim.split('\n')[0] || runner.failure.notice.headline;
+		return [{ start: location.start, end: location.end, message: said, severity: 'error' as const }];
+	}, [location, runner.failure]);
 
 	// ── Full screen (in the document) ────────────────────────────────────────
 	const [maximizeWanted, setMaximizeWanted] = useState(false);
@@ -706,7 +723,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 			{barHost !== undefined && active && barHost !== null && createPortal(runBar, barHost)}
 			<div style={styles.editorRegion(split.collapsed && barHost !== undefined)}>
 				<div id={editorId} style={styles.editorBox(editorHeight, split.collapsed)}>
-					<QueryEditor ref={editor} value={text} onChange={changeText} onRun={() => run(false)} onRunAll={() => run(true)} onCursorChange={syncCursor} label={mode === 'read' ? 'Cypher query' : 'Cypher statements to execute'} completion={completion} />
+					<QueryEditor ref={editor} value={text} onChange={changeText} onRun={() => run(false)} onRunAll={() => run(true)} onCursorChange={syncCursor} label={mode === 'read' ? 'Cypher query' : 'Cypher statements to execute'} completion={completion} markers={markers} warnWrites={mode === 'read'} />
 				</div>
 				{barHost === undefined && runBar}
 			</div>
@@ -717,7 +734,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 					{blocked && <NoticeBanner key={blocked} variant="warning" text={blocked} />}
 					{startRefusal && <NoticeBanner key={startRefusal} variant="warning" text={startRefusal} />}
 					{runner.refusal && <NoticeBanner key={runner.refusal} variant="warning" text={runner.refusal} />}
-					{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} onRunFrom={mode === 'read' ? runFrom : undefined} />}
+					{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} total={runner.runs.length} position={location ? { line: location.line, column: location.column } : null} onRunFrom={mode === 'read' ? runFrom : undefined} />}
 					{runner.abandonNotice && <NoticeBanner key={runner.abandonNotice} variant="warning" text={runner.abandonNotice} />}
 					{strip && <StatementStrip runs={runner.runs} selected={runner.selectedRun} onSelect={(i) => runner.setSelectedRun(i)} labelOf={(r) => formatRunLabel(r)} ariaLabel="Statements in the last run" />}
 					{strip && !runner.running && <div style={styles.willRun}>{formatBatchOutcome(runner.runs, GRAPH_BATCH_WORDS)}</div>}
@@ -747,7 +764,6 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 										session={graphSession}
 										schemaLabels={schemaLabels}
 										captions={captions}
-										onCaption={setCaption}
 										onInspect={(id) => graphSession.inspect({ kind: 'node', id })}
 										seedKey={`${endpoint.key}:${resultKey.current}`}
 										announce={announce}
@@ -757,9 +773,10 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 										onNewQuery={onNewQuery}
 										maximized={maximized}
 										onToggleMaximized={toggleMaximized}
+										exportMode={isInVSCode() ? 'copy' : 'download'}
 									/>
 								) : tab === 'table' ? (
-									<ResultTable result={result} tableKey={`${endpoint.key}-${tabId}-${resultKey.current}`} onRowOpen={setOpenRow} meta={<>{metaText}{truncation && <StatusBadge variant="warning">{truncation}</StatusBadge>}</>} />
+									<ResultTable result={result} tableKey={`${endpoint.key}-${tabId}-${resultKey.current}`} onRowOpen={setOpenRow} announce={announce} meta={<>{metaText}{truncation && <StatusBadge variant="warning">{truncation}</StatusBadge>}</>} />
 								) : (
 									<RawView result={result} announce={announce} />
 								)}

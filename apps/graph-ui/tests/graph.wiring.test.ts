@@ -67,9 +67,11 @@ test('the inspector is an inline aside that closes through the session, and its 
 	assert.match(inspector, /session\.inspect\(null\)/);
 	assert.match(inspector, /const target: IInspectTarget \| null = state\.inspect/);
 	const surface = code(read('components', 'RunSurface.tsx'));
-	assert.match(surface, /useSyncExternalStore\(graphSession\.subscribe, graphSession\.getState, graphSession\.getState\)/);
 	assert.doesNotMatch(surface, /InspectorPanel/, 'the inspector is mounted by the graph view, beside the canvas');
-	assert.match(code(read('components', 'GraphView.tsx')), /<InspectorPanel /);
+	const view = code(read('components', 'GraphView.tsx'));
+	assert.match(view, /<InspectorPanel /);
+	// The graph view, which renders the inspector, follows the session's published state (the surface no longer needs to).
+	assert.match(view, /useSyncExternalStore\(session\.subscribe, session\.getState, session\.getState\)/);
 });
 
 // Nothing in a document may be a modal: rocket-ui keeps every document mounted, and a modal or drawer left open in a
@@ -214,6 +216,25 @@ test('the tab shown after a confirmed close takes the focus, and a flagged Ask d
 	assert.ok(/\{note\.check !== null && \(\s*<>\s*(\{\}\s*)?<StatusBadge variant="warning">Check before running<\/StatusBadge>/.test(workbench), 'a visible cue beside Details');
 	// A run bar that wraps under the tabs stays right-aligned.
 	assert.ok(/barHost: \{[^}]*marginLeft: 'auto'/.test(workbench));
+});
+
+// The seams the other packages left for the surface: the node's shortestPath flag (P3), the failure's place and the
+// editor's write warnings and completion (P4), the graph's export mode (P2), and every preview kind (P5).
+test('the surface and the workbench hand the other parts what they need, and only where it is safe', () => {
+	const surface = code(read('components', 'RunSurface.tsx'));
+	assert.ok(/shortestPath: latest\.current\.dialect\.capabilities\.shortest_path === true/.test(surface), 'the node\'s shortestPath flag reaches the path search');
+	assert.ok(/warnWrites=\{mode === 'read'\}/.test(surface), 'write warnings in the read workbench only');
+	assert.ok(/\.\.\.\(mode === 'write' \? \{ writes: true \} : \{\}\)/.test(surface), 'write clauses offered in the write console only');
+	assert.ok(/if \(!failure \|\| buffer === null \|\| buffer !== text\) return null;/.test(surface), 'a failure is placed only in the text its batch was taken from');
+	assert.ok(/locateFailure\(buffer, \{ start: failed\.start, end: failed\.end \}, failure\.notice\.verbatim, dialect\?\.dialect \?\? null\)/.test(surface));
+	assert.ok(/markers=\{markers\}/.test(surface) && /total=\{runner\.runs\.length\}/.test(surface), 'the editor marks it and the banner names it');
+	assert.ok(/exportMode=\{isInVSCode\(\) \? 'copy' : 'download'\}/.test(surface), 'VS Code copies instead of downloading');
+	// Captions are part of the connection's style (P5's store): the surface neither reads nor writes graph.captions.
+	assert.doesNotMatch(surface, /CAPTIONS_PREF_KEY|graph\.captions|onCaption=/, 'no caption prefs of its own');
+	assert.ok(/const styleView = useConnectionStyle\(endpoint\.key\);/.test(surface) && /style\.caption/.test(surface), 'the session\'s captions come from the style');
+	const workbench = code(read('views', 'WorkbenchView.tsx'));
+	assert.ok(/const \{ recipe, run \} = previewStatement\(engine, request\);/.test(workbench), 'every preview kind is decided by previewStatement: a "New query" request is never run');
+	assert.doesNotMatch(workbench, /request\.action === 'type-preview' \?/, 'no two-way guess at the kind');
 });
 
 // F3: rocket-ui keeps hidden documents mounted, so a modal drawer left open in a background document would trap Tab and

@@ -68,12 +68,13 @@ import { Banner, Button, ConfirmDialog, ContentHeader, EmptyState, StatusBadge, 
 import type { IExplorerEndpoint } from 'shared/explorer';
 import { announcer } from '../adapters/explorer';
 import { patternCheck } from '../cypher/classify';
-import { typePreview, labelPreview, isRefusal } from '../cypher/recipes';
+import { isRefusal } from '../cypher/recipes';
 import { useGraphEndpoints, useGraphEnv, usePendingPreview, useSchemaView } from '../env';
 import { DETAILS_CLOSED, connectionView, detailsPanelAfter, surfaceGate } from '../graph/connections';
 import type { DetailsPanelAction, IDetailsPanelState } from '../graph/connections';
 import { canWrite, engineText, parseDialect, targetText } from '../graph/dialect';
-import { previewFor } from '../graph/previews';
+import { previewFor, previewStatement } from '../graph/previews';
+import type { IGraphPreview } from '../graph/previews';
 import { FIRST_QUERY_TAB, OVERVIEW_TAB, activateTab, askTitle, clipTitle, closeTab, historyTitle, initialTabs, placeRequest, previewTitle } from '../graph/queryTabs';
 import type { IQueryTabsState, QueryTabOrigin, TabRequest } from '../graph/queryTabs';
 import { EXPLORE_CYPHER } from '../graph/templates';
@@ -233,15 +234,17 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 	// The graph's and the Overview's "New query": with no text, an empty tab like + New query.
 	const openNewQuery = useCallback((cypher: string, title: string) => (cypher.trim() === '' ? newQuery() : openText('graph', title, cypher)), [newQuery, openText]);
 
-	// The 25-row preview of a label or type, in a tab of its own: run for a click, not run for "New query".
-	const openPreview = useCallback((kind: 'label' | 'type', name: string, run: boolean) => {
+	// The 25-row statement of a label or type, in a tab of its own: run for a preview, not run for "New query"
+	// (graph/previews.ts previewStatement says which, for every kind of request).
+	const openPreview = useCallback((request: Pick<IGraphPreview, 'action' | 'name'>) => {
 		const current = dialectNow.current;
 		if (!current) {
 			announcer.announce('This connection cannot be browsed now, so the preview was not run.');
 			return;
 		}
-		const engine = { dialect: current.dialect, version: current.engineVersion };
-		const recipe = kind === 'type' ? typePreview(engine, name) : labelPreview(engine, name);
+		const engine = { dialect: current.dialect, version: current.engineVersion, shortestPath: current.capabilities.shortest_path === true };
+		const { recipe, run } = previewStatement(engine, request);
+		const name = request.name;
 		const title = run ? previewTitle(name) : `${clipTitle(name)} (new query)`;
 		if (isRefusal(recipe)) {
 			announcer.announce(recipe.refusal);
@@ -316,9 +319,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 		const waiting = !dialect && !probe && (endpoint.state === 'ready' || endpoint.state === 'probing');
 		if (waiting) return;
 		if (!env.previews.consume(request.nonce)) return;
-		// A click previews and runs; any other sidebar action ("New query with this label") opens its text, not run.
-		const runs = request.action === 'label-preview' || request.action === 'type-preview';
-		openPreview(request.action === 'type-preview' ? 'type' : 'label', request.name, runs);
+		openPreview(request);
 	}, [pending, env, endpoint.key, endpoint.state, dialect, probe, openPreview]);
 
 	const openWrite = (): void => {
@@ -408,7 +409,7 @@ export const WorkbenchView: React.FC<IWorkbenchViewProps> = ({ endpoint }) => {
 						<div style={styles.panes}>
 							<div role="tabpanel" id={panelElementId(idPrefix, OVERVIEW_TAB)} aria-labelledby={tabElementId(idPrefix, OVERVIEW_TAB)} style={tabs.active === OVERVIEW_TAB ? styles.overview : styles.hidden}>
 								<div style={styles.overviewBody}>
-									<OverviewPanel endpoint={endpoint} dialect={dialect} onPreview={(kind, name) => openPreview(kind, name, true)} onNewQuery={openNewQuery} onExplore={explore} onRefreshSchema={refreshSchema} />
+									<OverviewPanel endpoint={endpoint} dialect={dialect} onPreview={(kind, name) => openPreview({ action: kind === 'type' ? 'type-preview' : 'label-preview', name })} onNewQuery={openNewQuery} onExplore={explore} onRefreshSchema={refreshSchema} />
 								</div>
 							</div>
 							{tabs.tabs.map((tab) => {

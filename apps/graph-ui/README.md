@@ -150,7 +150,8 @@ edited that tab's text, Explore opens a new one and runs the sample there.
   an empty tab. Text that comes from elsewhere opens a tab of its own, so the
   text in your other tabs is never replaced:
   - a label or relationship type clicked in the sidebar: its 25-row preview,
-    run;
+    run; the sidebar's **New query with this label** (or type): the same
+    statement, not run;
   - an Ask draft, History's **Open in new tab**, a saved query, a starter
     template, and the graph's **New query from here**: not run;
   - History's **Run again**: run.
@@ -682,9 +683,9 @@ What is different there:
     history is still loading (usually under a second), is lost if the account
     changes again before the load finishes. It is never added to another
     account's history.
-- Saved queries and label styles (the colours, sizes and badges given to
-  labels and relationship types) are kept in two more files in your user
-  folder on the server, `rocketride.graph.saved.json` and
+- Saved queries and label styles (the colours, sizes, captions and badges
+  given to labels and relationship types) are kept in two more files in your
+  user folder on the server, `rocketride.graph.saved.json` and
   `rocketride.graph.styles.json`, not in the history file, each with one
   section per account. The sidebar reads and writes them, about a second after
   a change; documents read and change them through the sidebar, for the
@@ -704,9 +705,10 @@ What is different there:
     switch to another account they are dropped, colours the sidebar was about
     to give the previous account's labels included, and that account never
     sees them.
-- Query tabs belong to their document. Query 1's draft, caption choices and
-  the editor height last for the session only, and the other tabs' text until
-  the tab or the document is closed.
+- Query tabs belong to their document. Query 1's draft and the editor height
+  last for the session only, and the other tabs' text until the tab or the
+  document is closed. Caption choices are part of the label styles, so they
+  are kept in `rocketride.graph.styles.json` (above).
 - Results grid layouts (sort, column widths) are kept in memory: in
   rocket-ui until the page reloads, in VS Code until the document's panel
   closes. They are never written into the host's own preferences.
