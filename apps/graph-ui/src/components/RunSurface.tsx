@@ -47,7 +47,6 @@ import { Banner, Button, EmptyState, StatusBadge, TabControl, ToggleGroup } from
 import type { ViewMenu } from 'shell';
 import { ExplorerToolError, clock, createGeneration, formatBatchOutcome, formatPriorStatements, formatRunLabel, useStatementRunner } from 'shared/explorer';
 import type { IExplorerEndpoint, IRunTarget, IStatementRunBase } from 'shared/explorer';
-import FailureBanner from 'shared/explorer/components/FailureBanner';
 import RowInspector from 'shared/explorer/components/RowInspector';
 import StatementStrip from 'shared/explorer/components/StatementStrip';
 import { CAPTIONS_PREF_KEY, DRAFTS_PREF_KEY, TOOL, announcer } from '../adapters/explorer';
@@ -70,6 +69,7 @@ import type { ILoadSlot } from '../graph/loadSlot';
 import { inspectorTextOfRow } from '../graph/rowInspect';
 import type { ReadQueryResult } from '../graph/types';
 import { STOP_WAITING_NOTE, num, resultAnnouncement, resultMeta, truncationText } from '../graph/wording';
+import { GraphFailureBanner } from './GraphFailureBanner';
 import { GraphView } from './GraphView';
 import InspectorPanel from './InspectorPanel';
 import QueryEditor from './QueryEditor';
@@ -422,7 +422,7 @@ export const RunSurface: React.FC<IRunSurfaceProps> = ({ endpoint, mode, paused 
 			<div style={styles.notices}>
 				{blocked && <Banner variant="warning">{blocked}</Banner>}
 				{runner.refusal && <Banner variant="warning">{runner.refusal}</Banner>}
-				{runner.failure && <FailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} />}
+				{runner.failure && <GraphFailureBanner failure={runner.failure} genericText="The node's message was not returned. The pipeline node's log has it." extra={runner.failure.notice.hint ? <div style={{ marginTop: 4 }}>{runner.failure.notice.hint}</div> : null} />}
 				{runner.abandonNotice && <Banner variant="warning">{runner.abandonNotice}</Banner>}
 				{strip && <StatementStrip runs={runner.runs} selected={runner.selectedRun} onSelect={(i) => runner.setSelectedRun(i)} labelOf={(r) => formatRunLabel(r)} ariaLabel="Statements in the last run" />}
 				{strip && !runner.running && <div style={styles.willRun}>{formatBatchOutcome(runner.runs, GRAPH_BATCH_WORDS)}</div>}

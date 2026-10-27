@@ -40,6 +40,9 @@
 //     graph.historyList       one connection's history (bulk: an op result)
 //     graph.historyEdit       every history mutation, recording a run included
 //     graph.writeAbandoned    a write the user stopped waiting for
+//     graph.schemaView        one connection's full schema view (bulk: an op
+//                             result; a frame re-reads it when the `schemas`
+//                             summary says a load completed)
 //
 //   STATE (controller -> frames; retained, each snapshot under 64 KiB)
 //     endpoints     the endpoint store's snapshot (capped; see below)
@@ -69,6 +72,7 @@ import { jsonByteLength, MAX_RETAINED_STATE_BYTES } from 'shared/explorer/devtoo
 import { frameOpTimeoutMs, toolCallBudgetMs } from 'shared/explorer/devtool/timeouts';
 import { isWorkbenchUri, isWriteUri, workbenchUri, writeUri } from '../graph/addresses';
 import type { IGraphPreview } from '../graph/previews';
+import type { ISchemaView } from '../graph/schema';
 import type { ISchemaEntry } from '../graph/schemaStore';
 import type { ReadQueryResult } from '../graph/types';
 
@@ -90,6 +94,7 @@ export const OP = {
 	historyList: 'graph.historyList',
 	historyEdit: 'graph.historyEdit',
 	writeAbandoned: 'graph.writeAbandoned',
+	schemaView: 'graph.schemaView',
 } as const;
 
 /** One connection's history as a frame shows it. */
@@ -120,6 +125,7 @@ export interface GraphOps extends ToolOpMap {
 	'graph.historyList': ToolOpSpec<IDeadline & { key: string }, Reply<IGraphHistoryView>>;
 	'graph.historyEdit': ToolOpSpec<IDeadline & { key: string; edit: HistoryEdit }, Reply<null>>;
 	'graph.writeAbandoned': ToolOpSpec<IDeadline & { key: string }, Reply<null>>;
+	'graph.schemaView': ToolOpSpec<IDeadline & { key: string }, Reply<ISchemaView | null>>;
 }
 
 // =============================================================================
@@ -219,7 +225,8 @@ export function frameTimeoutFor(op: keyof GraphOps & string, info: Record<string
 		case OP.ask:
 			return frameOpTimeoutMs(toolCallBudgetMs(DEFAULT_TOOL_TIMEOUTS.get_query));
 		default:
-			// refreshEndpoints and loadSchema START work whose results arrive as state; the rest are answered from memory.
+			// refreshEndpoints and loadSchema START work whose results arrive as state; the rest (history, the schema view,
+			// marks) are answered from memory.
 			return frameOpTimeoutMs(CONTROLLER_LOCAL_OP_MS);
 	}
 }

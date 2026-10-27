@@ -55,6 +55,7 @@ import { handled, keyAction } from '../graph/keynav';
 import { relationshipsOf } from '../graph/model';
 import type { IGraphModel } from '../graph/model';
 import type { GraphId } from '../graph/types';
+import type { BadgeMode, LabelSize } from '../graph/userData';
 import { STATIC_LAYOUT_ABOVE } from '../graph/budgets';
 import { labelsVisibleAt, sameShallow, stabilise, zoomLevel } from './stable';
 import { ensureCanvasStyle, useReducedMotion, useThemeMode } from './environment';
@@ -70,6 +71,28 @@ import type { IExpandHint, LayoutStatus } from './useGraphLayout';
 // =============================================================================
 // TYPES
 // =============================================================================
+
+/** What a context menu was asked for on. */
+export type CanvasMenuTarget = { kind: 'node'; id: GraphId } | { kind: 'relationship'; id: GraphId } | { kind: 'pane' };
+
+/** How the canvas places nodes: the force layout, top-down levels, or levels as columns (paths). */
+export type LayoutMode = 'force' | 'tree' | 'left-right';
+
+/** What the view can ask of a mounted canvas. */
+export interface IGraphCanvasHandle {
+	centerOn(id: GraphId): void;
+	fit(): void;
+	relayout(): void;
+	/** The drawing as an image, or null when it cannot be made. */
+	exportImage(format: 'svg' | 'png'): Promise<Blob | null>;
+}
+
+/** How one label's nodes are drawn (from the connection's style). */
+export interface INodeLook {
+	badge: string;
+	size: LabelSize;
+	badgeMode: BadgeMode;
+}
 
 /** Props of the graph view. */
 export interface IGraphCanvasProps {
@@ -105,6 +128,26 @@ export interface IGraphCanvasProps {
 	announce(text: string): void;
 	/** Told when the layout falls back or recovers, so the app can show a notice. */
 	onLayoutStatus?(status: LayoutStatus): void;
+	/** The selected relationship, drawn selected. */
+	selectedRelationshipId?: GraphId | null;
+	/** A relationship was clicked. */
+	onSelectRelationship?(id: GraphId): void;
+	/** A node was clicked: `only` for a plain click, `toggle` with Shift, Ctrl or Cmd. */
+	onNodeClick?(id: GraphId, mode: 'only' | 'toggle'): void;
+	/** A context menu was asked for, at client coordinates. */
+	onContextMenu?(target: CanvasMenuTarget, at: { x: number; y: number }): void;
+	/** Nodes matching a search (the rest are dimmed), or null for no search. */
+	matchIds?: ReadonlySet<GraphId> | null;
+	/** Elements to keep at full strength (the rest are dimmed), or null. */
+	focusIds?: { nodes: ReadonlySet<GraphId>; relationships: ReadonlySet<GraphId> } | null;
+	/** How each label's nodes are drawn, by label. */
+	looks?: ReadonlyMap<string, INodeLook>;
+	/** A colour per relationship type. */
+	typeColors?: ReadonlyMap<string, string>;
+	layoutMode?: LayoutMode;
+	/** Whether a re-layout keeps the nodes the user dragged where they are. */
+	keepPinned?: boolean;
+	handleRef?: React.Ref<IGraphCanvasHandle>;
 }
 
 // =============================================================================

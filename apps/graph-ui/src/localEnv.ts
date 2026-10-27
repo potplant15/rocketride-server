@@ -40,7 +40,10 @@ import { loadConnectionSchema } from './adapters/actions';
 import { countWrite } from './graph/dataVersion';
 import type { IDataVersions } from './graph/dataVersion';
 import type { IPreviewStore } from './graph/previews';
+import type { ISchemaView } from './graph/schema';
 import type { ISchemaEntry, ISchemaStore } from './graph/schemaStore';
+import { SESSION_USER_DATA_NOTE, createMemoryUserData } from './graph/userData';
+import type { IGraphUserData } from './graph/userData';
 import type { IGraphEndpointsState, IGraphHistoryView } from './devtool/protocol';
 import type { DocTarget, GraphMount, IGraphEnv, IGraphHistory, IKeyed, IReadable } from './env';
 
@@ -67,6 +70,8 @@ export interface ILocalGraphEnvOptions {
 	historyPrivacyNote: string;
 	/** Override discovery (the controller gates it on identity and activation). */
 	refresh?: IGraphEnv['refresh'];
+	/** Styles and saved queries (default: kept in memory for the session, one store per set of stores). */
+	userData?: IGraphUserData;
 }
 
 /**
@@ -98,6 +103,36 @@ function labelsOf(entry: ISchemaEntry): readonly string[] {
 	const names = entry.view.labels.map((label) => label.name);
 	labelCache.set(entry.view, names);
 	return names;
+}
+
+/** The session-only user data of each set of stores (an env is rebuilt on every connection change; the stores are not). */
+const memoryUserData = new WeakMap<IGraphStores, IGraphUserData>();
+
+/**
+ * The session-only user data of a set of stores (one per set, so a rebuilt env keeps it).
+ *
+ * @param stores - The realm's stores.
+ * @returns The user data.
+ */
+function sessionUserData(stores: IGraphStores): IGraphUserData {
+	let userData = memoryUserData.get(stores);
+	if (!userData) {
+		userData = createMemoryUserData(SESSION_USER_DATA_NOTE);
+		memoryUserData.set(stores, userData);
+	}
+	return userData;
+}
+
+/**
+ * The schema view a connection's views may show: null until a load of it has completed (nothing is known yet), else
+ * the newest view, which after a failed load is the last good one (or the empty `unknown` view when there never was
+ * one, so a failure can be told apart from "not read yet").
+ *
+ * @param entry - The connection's schema entry.
+ * @returns The view, or null.
+ */
+export function schemaViewOf(entry: ISchemaEntry): ISchemaView | null {
+	return entry.loadedAt === 0 ? null : entry.view;
 }
 
 /** Endpoint snapshots with `omitted: 0`, per store snapshot. */
@@ -160,6 +195,7 @@ export function createLocalGraphEnv(opts: ILocalGraphEnvOptions): IGraphEnv {
 		subscribe: stores.endpoints.subscribe,
 	};
 	const schemaLabels: IKeyed<readonly string[]> = { get: (key) => labelsOf(stores.schemas.get(key)), subscribe: stores.schemas.subscribe };
+	const schemaView: IKeyed<ISchemaView | null> = { get: (key) => schemaViewOf(stores.schemas.get(key)), subscribe: stores.schemas.subscribe };
 	const dataVersions: IKeyed<number> = { get: (key) => stores.dataVersions.get(key), subscribe: stores.dataVersions.subscribe };
 	return {
 		mount: opts.mount,
@@ -169,6 +205,7 @@ export function createLocalGraphEnv(opts: ILocalGraphEnvOptions): IGraphEnv {
 		probe: (key) => (client ? stores.endpoints.probe(client, key) : Promise.resolve(null)),
 		schemaLabels,
 		schemas: stores.schemas,
+		schemaView,
 		loadSchema: (key, o) => {
 			const endpoint = stores.endpoints.getState().endpoints.find((e) => e.key === key);
 			if (!client || !endpoint) return Promise.resolve();
@@ -191,5 +228,6 @@ export function createLocalGraphEnv(opts: ILocalGraphEnvOptions): IGraphEnv {
 		openDocument: opts.openDocument,
 		prefs: opts.prefs,
 		historyPrivacyNote: opts.historyPrivacyNote,
+		userData: opts.userData ?? sessionUserData(stores),
 	};
 }

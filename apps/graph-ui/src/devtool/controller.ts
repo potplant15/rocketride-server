@@ -80,8 +80,9 @@ import { countWrite, createDataVersions } from '../graph/dataVersion';
 import { canWrite, parseDialect } from '../graph/dialect';
 import { createPreviewStore } from '../graph/previews';
 import { createSchemaStore } from '../graph/schemaStore';
+import { SESSION_USER_DATA_NOTE, createMemoryUserData } from '../graph/userData';
 import type { ReadQueryResult } from '../graph/types';
-import { createLocalGraphEnv } from '../localEnv';
+import { createLocalGraphEnv, schemaViewOf } from '../localEnv';
 import type { IGraphStores } from '../localEnv';
 import { adoptParkedHistory, ownerNowOf, parkHistory, settleOwed } from './owedHistory';
 import type { IOwedHistory, IVouch } from './owedHistory';
@@ -300,6 +301,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 			stores.dataVersions.bump(keyOf(params, OP.writeAbandoned));
 			return replyOk(null);
 		},
+		[OP.schemaView]: (params) => replyOk(sized(toWire(schemaViewOf(stores.schemas.get(keyOf(params, OP.schemaView)))), OP.schemaView)),
 	};
 
 	// ── The channel first, then the ONE op server (attachController, R6) ────────────────────────
@@ -464,6 +466,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 		else documents.open(docKeyFor(target.kind, target.endpoint.key), target.kind === 'write' ? `${target.endpoint.nodeName || 'Graph'} (write)` : target.endpoint.nodeName || 'Graph');
 	};
 	const sidebarPrefs = memoryPrefs();
+	const userData = createMemoryUserData(SESSION_USER_DATA_NOTE);
 	const activeConnection: IReadable<string | null> = { get: active.get, subscribe: active.subscribe };
 	let lastEnv: { ready: boolean; env: IGraphEnv } | null = null;
 
@@ -491,6 +494,7 @@ export function createGraphController(opts: IGraphControllerOptions): IGraphCont
 				openDocument,
 				prefs: sidebarPrefs,
 				historyPrivacyNote: DEVTOOL_HISTORY_PRIVACY_NOTE,
+				userData,
 				refresh: (o) => {
 					// A refresh asked for in the sidebar; an automatic one (quiet) is not the user activating the tool.
 					if (!o?.quiet) activation.open('user');

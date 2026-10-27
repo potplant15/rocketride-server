@@ -108,6 +108,17 @@ export interface IGraphViewProps {
 	/** Text identifying this result, for the layout seed. */
 	seedKey: string;
 	announce(text: string): void;
+	/** The connection (its style and schema). */
+	endpointKey?: string;
+	/** What the result is (rows, time), shown in the status line. */
+	meta?: React.ReactNode;
+	/** Run the query again (the status line's out-of-date action). */
+	onRerun?(): void;
+	/** Open a new query tab with this text, not run. */
+	onNewQuery?(cypher: string, title: string): void;
+	/** Whether the result area fills the document. */
+	maximized?: boolean;
+	onToggleMaximized?(): void;
 }
 
 /**

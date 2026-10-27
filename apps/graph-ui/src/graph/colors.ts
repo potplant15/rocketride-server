@@ -31,6 +31,10 @@
 //     colours in order (blue, green, yellow, purple, orange, red).
 //   - Every further label, and any label not in the schema (the schema is a
 //     snapshot), takes a colour from a stable hash of its name.
+//   - Under a connection's stored style (graph/userData.ts, `labelColors`), a
+//     label keeps the slot it was given when first seen, and a new label takes
+//     the lowest slot still free (`nextAssignments`), so adding a label never
+//     moves the colour of another. A person's own choice comes before both.
 //
 // Colour alone is never the only carrier of meaning: every node has an outline,
 // carries its label in its spoken name and its inspector, and the legend names
@@ -38,6 +42,8 @@
 // below the 3:1 contrast WCAG asks of graphics against the page, so the outline
 // is not decoration; the tests measure it against every shipped theme.
 // =============================================================================
+
+import type { IConnectionStyle } from './userData';
 
 // =============================================================================
 // TYPES AND TOKENS
@@ -110,6 +116,65 @@ export function assignLabelColors(labels: Iterable<string>): Map<string, ILabelC
 	distinct.forEach((label, index) => {
 		out.set(label, index < CHART_COLOR_VARS.length ? { label, fill: `var(${CHART_COLOR_VARS[index]})`, slot: index } : { label, fill: hashColor(label), slot: null });
 	});
+	return out;
+}
+
+/**
+ * The colour slots to give labels seen for the first time: labels already in `assigned` keep theirs (they are not
+ * returned), and the new ones, sorted by code point, take the lowest slots nobody holds. Once all six are held, a
+ * further label gets no slot (it is drawn in its hashed colour), so no two assigned labels share a chart colour.
+ *
+ * @param assigned - The slots given so far (label to index into {@link CHART_COLOR_VARS}).
+ * @param labels - The labels seen now (any order, duplicates allowed).
+ * @returns Only the NEW entries (empty when nothing changes).
+ */
+export function nextAssignments(assigned: Readonly<Record<string, number>>, labels: Iterable<string>): Record<string, number> {
+	const held = new Set<number>();
+	for (const label of Object.keys(assigned)) held.add(assigned[label]);
+	const fresh = Array.from(new Set(labels))
+		.filter((label) => label !== '' && !Object.prototype.hasOwnProperty.call(assigned, label))
+		.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+	const out: Record<string, number> = {};
+	let slot = 0;
+	for (const label of fresh) {
+		while (slot < CHART_COLOR_VARS.length && held.has(slot)) slot += 1;
+		if (slot >= CHART_COLOR_VARS.length) break;
+		out[label] = slot;
+		held.add(slot);
+	}
+	return out;
+}
+
+/**
+ * Whether a value is a chart colour slot.
+ *
+ * @param slot - Anything.
+ * @returns True for an integer index into {@link CHART_COLOR_VARS}.
+ */
+function isSlot(slot: unknown): slot is number {
+	return typeof slot === 'number' && Number.isInteger(slot) && slot >= 0 && slot < CHART_COLOR_VARS.length;
+}
+
+/**
+ * The colours of a connection's labels under its style: the person's own slot first, then the slot the label was
+ * given when first seen, then the slot it WOULD be given now ({@link nextAssignments}, so a label not yet stored is
+ * drawn as it will be once it is), and past six labels the hashed colour. With nothing assigned, this is
+ * {@link assignLabelColors}.
+ *
+ * @param style - The connection's style (graph/userData.ts).
+ * @param labels - The labels to colour (any order, duplicates allowed).
+ * @returns A colour per distinct label.
+ */
+export function labelColors(style: IConnectionStyle, labels: Iterable<string>): Map<string, ILabelColor> {
+	const distinct = Array.from(new Set(labels)).filter((label) => label !== '');
+	const pending = nextAssignments(style.assigned, distinct);
+	const out = new Map<string, ILabelColor>();
+	for (const label of distinct.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+		const own = Object.prototype.hasOwnProperty.call(style.labels, label) ? style.labels[label]?.slot : undefined;
+		const given = Object.prototype.hasOwnProperty.call(style.assigned, label) ? style.assigned[label] : pending[label];
+		const slot = isSlot(own) ? own : isSlot(given) ? given : null;
+		out.set(label, slot === null ? { label, fill: hashColor(label), slot: null } : { label, fill: `var(${CHART_COLOR_VARS[slot]})`, slot });
+	}
 	return out;
 }
 

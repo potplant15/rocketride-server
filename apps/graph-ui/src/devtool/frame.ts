@@ -69,6 +69,8 @@ import { TOOL } from '../adapters/explorer';
 import { DEVTOOL_HISTORY_PRIVACY_NOTE, memoryPrefs } from '../env';
 import type { DocTarget, IGraphEnv, IGraphHistory, IKeyed, IReadable } from '../env';
 import { asPreview } from '../graph/previews';
+import type { ISchemaView } from '../graph/schema';
+import { SESSION_USER_DATA_NOTE, createMemoryUserData } from '../graph/userData';
 import { controllerNotReadyError, isNotSent } from './frameText';
 import type { IGraphPreview } from '../graph/previews';
 import { EVENT, NO_ENDPOINTS, OP, STATE, docKeyFor, field, frameTimeoutFor, routeDocKey, toWire } from './protocol';
@@ -429,6 +431,8 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 		return labels;
 	}
 	const prefs = memoryPrefs();
+	const userData = createMemoryUserData(SESSION_USER_DATA_NOTE);
+	const noSchemaView: IKeyed<ISchemaView | null> = { get: () => null, subscribe: () => () => undefined };
 	const envs = new Map<boolean, IGraphEnv>();
 
 	const openDocument = (target: DocTarget): void => {
@@ -466,6 +470,7 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 				probe: (key) => caller.callReply(OP.probe, { key }, { timeoutMs: frameTimeoutFor(OP.probe) }).then((value) => value as IProbeResult | null, () => null),
 				schemaLabels: keyed(labelsSource, [] as readonly string[]),
 				schemas: null,
+				schemaView: noSchemaView,
 				loadSchema: (key, o) => caller.callReply(OP.loadSchema, o?.fresh ? { key, fresh: true } : { key }, { timeoutMs: frameTimeoutFor(OP.loadSchema) }).then(() => undefined, report),
 				session: (endpoint) => (ready ? remoteSession(caller, endpoint, () => infoOf(endpoint.key)) : null),
 				dataVersions: keyed(versions, 0),
@@ -489,6 +494,7 @@ export function createGraphFrame(opts: IGraphFrameOptions): IGraphFrame {
 				openDocument,
 				prefs,
 				historyPrivacyNote: DEVTOOL_HISTORY_PRIVACY_NOTE,
+				userData,
 			};
 			envs.set(ready, env);
 			return env;

@@ -51,7 +51,9 @@ import type { CSSProperties } from 'react';
 import type * as MonacoNS from 'monaco-editor';
 import { MonacoEditor, loadMonaco } from 'shared/components/monaco';
 import type { Monaco } from 'shared/components/monaco';
+import type { GraphDialect } from '../cypher/quote';
 import type { IEditorSnapshot, ISelection } from '../cypher/targets';
+import type { ISchemaView } from '../graph/schema';
 
 // =============================================================================
 // TYPES
@@ -86,6 +88,10 @@ export interface IQueryEditorProps {
 	onCursorChange?(): void;
 	/** Accessible name of the editor. */
 	label: string;
+	/** What suggestions are made from (the connection's schema and engine); null or absent: none. */
+	completion?: { schema: ISchemaView | null; dialect: GraphDialect | null } | null;
+	/** Marks in the text, by buffer offset (a failed statement's position). */
+	markers?: readonly { start: number; end: number; message: string; severity: 'error' | 'warning' }[];
 }
 
 // =============================================================================

@@ -119,6 +119,10 @@ export interface IGraphState {
 	 * from the nodes: node and relationship ids are separate namespaces, and FalkorDB numbers both from 0.
 	 */
 	staleRelationshipIds: ReadonlySet<GraphId>;
+	/** The selected relationship (its own id space, apart from the nodes), or null. */
+	selectedRelationship: GraphId | null;
+	/** A found path in order, while it is shown; null otherwise. */
+	path: { nodes: readonly GraphId[]; relationships: readonly GraphId[] } | null;
 }
 
 /** What the session needs from its caller. */
@@ -145,6 +149,10 @@ export interface IGraphSession {
 	load(result: ReadQueryResult | null): void;
 	focus(id: GraphId | null): void;
 	toggleSelect(id: GraphId): void;
+	/** Select a node: `only` replaces the selection and inspects it (a click); `toggle` adds or removes it (Shift-click). */
+	select(id: GraphId, mode: 'only' | 'toggle'): void;
+	/** Select a relationship and inspect it; null clears it. */
+	selectRelationship(id: GraphId | null): void;
 	clearSelection(): void;
 	inspect(target: IInspectTarget | null): void;
 	refreshInspected(): Promise<void>;
@@ -153,6 +161,12 @@ export interface IGraphSession {
 	dismiss(id: GraphId): void;
 	connect(): Promise<void>;
 	findPath(): Promise<void>;
+	/** Add a node's neighbours over one relationship type. */
+	expandByType(id: GraphId, type: string): Promise<void>;
+	/** The query a "New query from here" opens for an element, or null when there is none. */
+	queryTextFor(target: IInspectTarget): string | null;
+	/** Stop showing the found path. */
+	clearPath(): void;
 	/**
 	 * Stop waiting for whatever is running (a path search, an expansion, Connect, a refresh). The node may still be
 	 * working on it; its late answer is dropped.
@@ -166,7 +180,7 @@ export interface IGraphSession {
 	dispose(): void;
 }
 
-const EMPTY: IGraphState = { model: EMPTY_MODEL, entities: null, selected: new Set(), focusedId: null, inspect: null, busy: null, notice: null, hint: null, highlight: new Set(), progress: null, stale: false, staleIds: new Set(), staleRelationshipIds: new Set() };
+const EMPTY: IGraphState = { model: EMPTY_MODEL, entities: null, selected: new Set(), focusedId: null, inspect: null, busy: null, notice: null, hint: null, highlight: new Set(), progress: null, stale: false, staleIds: new Set(), staleRelationshipIds: new Set(), selectedRelationship: null, path: null };
 
 // =============================================================================
 // FACTORY
@@ -263,6 +277,15 @@ export function createGraphSession(deps: IGraphSessionDeps): IGraphSession {
 		}
 	};
 
+	const toggleSelect = (id: GraphId): void => {
+		const next = new Set(state.selected);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		set({ selected: next });
+		const node = state.model.nodes.get(id);
+		if (node) deps.announce(`${captionFor(node)} ${next.has(id) ? 'selected' : 'deselected'}. ${next.size} ${next.size === 1 ? 'node' : 'nodes'} selected.`);
+	};
+
 	return {
 		getState: () => state,
 		subscribe(listener) {
@@ -290,13 +313,25 @@ export function createGraphSession(deps: IGraphSessionDeps): IGraphSession {
 
 		focus: (id) => set({ focusedId: id }),
 
-		toggleSelect(id) {
-			const next = new Set(state.selected);
-			if (next.has(id)) next.delete(id);
-			else next.add(id);
-			set({ selected: next });
+		toggleSelect,
+
+		select(id, mode) {
+			if (mode === 'toggle') {
+				toggleSelect(id);
+				return;
+			}
 			const node = state.model.nodes.get(id);
-			if (node) deps.announce(`${captionFor(node)} ${next.has(id) ? 'selected' : 'deselected'}. ${next.size} ${next.size === 1 ? 'node' : 'nodes'} selected.`);
+			if (!node) return;
+			set({ selected: new Set([id]), selectedRelationship: null, inspect: { kind: 'node', id } });
+			deps.announce(`${captionFor(node)} selected.`);
+		},
+
+		selectRelationship(id) {
+			if (id === null) {
+				set({ selectedRelationship: null, inspect: state.inspect?.kind === 'relationship' ? null : state.inspect });
+				return;
+			}
+			set({ selectedRelationship: id, inspect: { kind: 'relationship', id } });
 		},
 
 		clearSelection() {
@@ -484,6 +519,17 @@ export function createGraphSession(deps: IGraphSessionDeps): IGraphSession {
 					break;
 				}
 			}
+		},
+
+		async expandByType() {
+			say('Expanding by relationship type is not available yet.', 'warning');
+		},
+
+		queryTextFor: () => null,
+
+		clearPath() {
+			if (state.path === null) return;
+			set({ path: null, highlight: new Set() });
 		},
 
 		stopWaiting() {

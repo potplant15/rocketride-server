@@ -24,11 +24,12 @@ import { createFrameCaller } from 'shared/explorer/devtool/frame';
 import { createDevToolHarness } from 'shared/explorer/devtool/testing';
 import { WRITE_REFUSED_TEXT } from '../src/devtool/controller';
 import type { IGraphFrame } from '../src/devtool/frame';
-import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, GRAPH_APP_ID, OP, SCHEMAS_STATE_BYTES, STATE, VERSIONS_STATE_BYTES, endpointsSnapshot, frameTimeoutFor, schemasSnapshot, versionsSnapshot } from '../src/devtool/protocol';
+import { CONTROLLER_LOCAL_OP_MS, ENDPOINTS_STATE_BYTES, EVENT, GRAPH_APP_ID, OP, SCHEMAS_STATE_BYTES, STATE, VERSIONS_STATE_BYTES, endpointsSnapshot, frameTimeoutFor, schemasSnapshot, toWire, versionsSnapshot } from '../src/devtool/protocol';
+import { parseSchema } from '../src/graph/schema';
 import type { GraphOps } from '../src/devtool/protocol';
 import { createDataVersions } from '../src/graph/dataVersion';
 import { createSchemaStore } from '../src/graph/schemaStore';
-import { NEO4J_DIALECT, NEO4J_GRAPH, NEO4J_WRITABLE, graphRow, mountController, mountFrame, readOnlyNode, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
+import { NEO4J_DIALECT, NEO4J_GRAPH, NEO4J_SCHEMA, NEO4J_WRITABLE, graphRow, mountController, mountFrame, readOnlyNode, settle, shellProtocol, signInVsCode, until, vscodeRealm } from './support/devtool';
 
 /** A signed-in VS Code realm, its controller and one frame, with the first discovery done. */
 async function connected(docKey: string | undefined, behave: (call: IToolCall) => unknown = readOnlyNode, over: Parameters<typeof mountController>[1] = {}) {
@@ -115,6 +116,20 @@ describe('T3 - every Graph op round-trips JSON-safe, and failures come back as e
 		const pending = sessionOf(run.frame, run.endpoint).invoke('read_query', { cypher: 'MATCH (n) RETURN n', params: {}, limit: 25 }, { generation: ticket as never });
 		current = false;
 		await assert.rejects(pending, (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
+		run.frame.dispose();
+		run.controller.dispose();
+	});
+
+	it('graph.schemaView answers the controller\'s full schema view over the JSON wire, and null for a connection never read', async () => {
+		const run = await connected(undefined);
+		assert.equal(await run.frame.caller.callReply(OP.schemaView, { key: run.key }, { timeoutMs: frameTimeoutFor(OP.schemaView) }), null, 'not read yet');
+		await run.frame.env(true).loadSchema(run.key);
+		await until(() => run.frame.env(true).schemaLabels.get(run.key).length > 0, 'the schema labels');
+		const view = await run.frame.caller.callReply(OP.schemaView, { key: run.key }, { timeoutMs: frameTimeoutFor(OP.schemaView) });
+		assert.deepEqual(view, toWire(parseSchema(NEO4J_SCHEMA)));
+		assert.ok((view?.labels.length ?? 0) > 0 && (view?.relationshipTypes.length ?? 0) > 0, 'the premise: a view with labels and types');
+		assert.equal(frameTimeoutFor(OP.schemaView), frameTimeoutFor(OP.historyList), 'answered from memory');
+		assert.deepEqual(run.h.violations, []);
 		run.frame.dispose();
 		run.controller.dispose();
 	});
