@@ -60,6 +60,7 @@ import { DEFAULT_HISTORY_LIMITS } from '../history/trim';
 import { getDocs, nextQueryDoc } from '../docs';
 import type { QueryDocPayload } from '../docs';
 import { useSqlPageNav } from '../pageNav';
+import { outcomeBadge } from '../history/outcomeBadge';
 import { SaveQueryButton } from './SavedQueriesPanel';
 import GatedButton from './GatedButton';
 import { announce } from '../a11y/announce';
@@ -260,28 +261,6 @@ const styles = {
  */
 function clock(at: number): string {
 	return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-/**
- * The outcome badge's text and severity.
- *
- * @param entry - The entry to describe.
- * @returns The badge variant and its label.
- */
-function outcomeBadge(entry: HistoryEntry): { variant: 'success' | 'info' | 'error' | 'muted'; label: string } {
-	switch (entry.outcome) {
-		case 'rows': return {
-			variant: 'success',
-			// A bare row count cannot say whether it is the whole answer or
-			// the ceiling cutting it off, so it never appears without one.
-			label: entry.limit !== undefined
-				? `${entry.rows ?? 0} rows (limit ${entry.limit})`
-				: `${entry.rows ?? 0} rows returned`,
-		};
-		case 'affected': return { variant: 'info', label: `${entry.affected ?? 0} affected` };
-		case 'error': return { variant: 'error', label: 'error' };
-		default: return { variant: 'muted', label: 'abandoned' };
-	}
 }
 
 /**
