@@ -26,7 +26,7 @@ Object.assign(createRequire(__filename)('shell') as Record<string, unknown>, {
 	Card: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 });
 
-import { ExportMenu } from '../src/components/ExportMenu';
+import { ExportMenu, handleMenuKey } from '../src/components/ExportMenu';
 import { GraphFailureBanner } from '../src/components/GraphFailureBanner';
 import { OverviewPanel } from '../src/components/OverviewPanel';
 import { GraphEnvProvider } from '../src/env';
@@ -132,4 +132,17 @@ test('the Overview before a load, and for an empty graph', () => {
 	const empty = renderToStaticMarkup(<GraphEnvProvider value={envWith(parseSchema({ schema: { version: 2, labels: [], relationship_types: [], sampled: true, truncated: false, refreshed_at: '2026-10-04T15:00:00Z', source: 'refresh', stale: false, error: null, capable: true } }))}><OverviewPanel endpoint={endpoint} dialect={parseDialect(fixture('dialect_falkordb'))} onPreview={noop} onNewQuery={noop} onExplore={noop} onRefreshSchema={noop} /></GraphEnvProvider>);
 	assert.match(empty, /This graph is empty/);
 	assert.match(empty, />Explore</);
+});
+
+test('Escape in the export menu is claimed, closes it and returns focus to the Export button; other keys only move', () => {
+	const calls: string[] = [];
+	const actions = { close: () => calls.push('close'), focusButton: () => calls.push('focus'), move: () => calls.push('move') };
+	let prevented = 0;
+	handleMenuKey({ key: 'Escape', preventDefault: () => { prevented += 1; } }, actions);
+	assert.equal(prevented, 1, 'preventDefault, so the Escape does not also act above the portal');
+	assert.deepEqual(calls, ['close', 'focus']);
+	calls.length = 0;
+	handleMenuKey({ key: 'ArrowDown', preventDefault: () => { prevented += 1; } }, actions);
+	assert.equal(prevented, 1, 'a key the menu does not claim is left alone here (moveFocus decides its own)');
+	assert.deepEqual(calls, ['move']);
 });
