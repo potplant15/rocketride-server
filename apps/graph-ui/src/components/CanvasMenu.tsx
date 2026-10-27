@@ -89,7 +89,7 @@ export const CanvasMenu: React.FC<ICanvasMenuProps> = ({ label, items, x, y, bou
 			return;
 		}
 		setAt(clampMenuPosition({ x, y }, bounds, { width: el.offsetWidth, height: el.offsetHeight }));
-	}, [x, y, bounds, page]);
+	}, [x, y, bounds?.width, bounds?.height, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	// Focus follows the current item (and the first item when the menu opens).
 	useEffect(() => {
@@ -140,7 +140,19 @@ export const CanvasMenu: React.FC<ICanvasMenuProps> = ({ label, items, x, y, bou
 	};
 
 	return (
-		<div ref={root} role="menu" aria-label={label} style={{ ...styles.menu, left: at.x, top: at.y }} onKeyDown={onKeyDown}>
+		<div
+			ref={root}
+			role="menu"
+			aria-label={label}
+			style={{ ...styles.menu, left: at.x, top: at.y }}
+			onKeyDown={onKeyDown}
+			onBlur={(event) => {
+				// Focus left the menu for somewhere else (a click in another part of the page): it goes away without taking focus back.
+				const next = event.relatedTarget as HTMLElement | null;
+				if (next && (root.current?.contains(next) || next.closest?.('[data-menu-trigger]'))) return;
+				onClose(false);
+			}}
+		>
 			{shown.map((item, index) => (
 				<React.Fragment key={item.id}>
 					{item.separatorBefore && <div role="separator" style={styles.separator} />}

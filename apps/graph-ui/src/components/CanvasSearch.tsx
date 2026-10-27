@@ -80,7 +80,7 @@ export const CanvasSearch: React.FC<ICanvasSearchProps> = ({ value, onChange, co
 	return (
 		<span style={styles.wrap}>
 			<input ref={inputRef} type="search" style={styles.input} placeholder="Search on canvas (name, label, any property)" aria-label="Search the drawn nodes" aria-keyshortcuts="/" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={onKeyDown} />
-			{count !== null && <span style={styles.status} role="status">{searchStatusText(count, current)}</span>}
+			<span style={styles.status} role="status">{count !== null ? searchStatusText(count, current) : ''}</span>
 		</span>
 	);
 };

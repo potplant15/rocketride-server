@@ -49,6 +49,7 @@ import type { IGraphSession, IGraphState, IInspectTarget } from '../graph/graphS
 import { STALE_ELEMENT_TEXT, STALE_RELATIONSHIP_TEXT } from '../graph/identity';
 import { inspectNode, inspectPath, inspectRelationship } from '../graph/inspector';
 import { relationshipsOf } from '../graph/model';
+import type { ISchemaView } from '../graph/schema';
 import { STOP_WAITING_NOTE } from '../graph/wording';
 import { CopyBlocked, copyText } from './ResultViews';
 
@@ -64,6 +65,10 @@ export interface IInspectorPanelProps {
 	onFindPathFrom?(id: string): void;
 	/** Changes when the panel was opened by request: focus moves to the heading then. */
 	focusToken: number;
+	/** The connection's schema, for the sampled type of a null property. */
+	schema?: ISchemaView | null;
+	/** The panel was closed from inside (Escape or Close): put focus back where the person was. */
+	onClosed?(): void;
 }
 
 /** A label or type, as a small pill. Its text is the primary text colour: the shell's chip draws its text in the info colour, which is 3.5:1 on this panel in RocketRide Light. */
@@ -94,7 +99,7 @@ function LabelChip({ label }: { label: string }): React.ReactElement {
  * @param props - See {@link IInspectorPanelProps}.
  * @returns The column, or nothing when nothing is inspected and no path is shown.
  */
-export const InspectorPanel: React.FC<IInspectorPanelProps> = ({ state, session, captions, announce, onNewQuery, onFindPathFrom, focusToken }) => {
+export const InspectorPanel: React.FC<IInspectorPanelProps> = ({ state, session, captions, announce, onNewQuery, onFindPathFrom, focusToken, schema, onClosed }) => {
 	const target: IInspectTarget | null = state.inspect;
 	const model = state.model;
 	const heading = useRef<HTMLHeadingElement>(null);
@@ -107,11 +112,13 @@ export const InspectorPanel: React.FC<IInspectorPanelProps> = ({ state, session,
 		if (!target) return null;
 		if (target.kind === 'node') {
 			const node = model.nodes.get(target.id);
-			return node ? { model: inspectNode(node, captionOf(node, captions.get(node.labels[0] ?? ''))), node } : null;
+			const sampled = new Map<string, readonly string[]>();
+			for (const p of schema?.labels.find((l) => l.name === node?.labels[0])?.properties ?? []) sampled.set(p.name, p.types);
+			return node ? { model: inspectNode(node, captionOf(node, captions.get(node.labels[0] ?? '')), sampled), node } : null;
 		}
 		const rel = model.relationships.get(target.id);
 		return rel ? { model: inspectRelationship(rel, (id) => { const n = model.nodes.get(id); return n ? captionOf(n, captions.get(n.labels[0] ?? '')) : id; }), node: null } : null;
-	}, [target, model, captions]);
+	}, [target, model, captions, schema]);
 
 	const pathView = useMemo(() => (state.path && !view ? inspectPath(model, state.path, (n) => captionOf(n, captions.get(n.labels[0] ?? ''))) : null), [state.path, view, model, captions]);
 
@@ -136,6 +143,7 @@ export const InspectorPanel: React.FC<IInspectorPanelProps> = ({ state, session,
 	const close = (): void => {
 		if (view) session.inspect(null);
 		else session.clearPath();
+		onClosed?.();
 	};
 	const onKeyDown = (event: React.KeyboardEvent<HTMLElement>): void => {
 		if (event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -232,6 +240,7 @@ export const InspectorPanel: React.FC<IInspectorPanelProps> = ({ state, session,
 				{m.fields.map((field, i) => (
 					<LabelValue key={`${i}-${field.label}`} label={field.label} mono>
 						<span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{field.value}</span>
+						<span style={{ display: 'block', fontSize: 11, color: 'var(--rr-text-secondary)' }}>{field.type}</span>
 					</LabelValue>
 				))}
 			</Section>

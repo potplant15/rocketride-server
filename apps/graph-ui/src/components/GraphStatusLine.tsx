@@ -75,7 +75,7 @@ export const GraphStatusLine: React.FC<IGraphStatusLineProps> = ({ items, meta, 
 		return next;
 	});
 	return (
-		<div style={styles.root} aria-label="Graph status">
+		<div style={styles.root} role="group" aria-label="Graph status">
 			{items.filter((item) => item.details !== null && open.has(item.kind)).map((item) => (
 				<pre key={item.kind} style={styles.details}>{item.details}</pre>
 			))}

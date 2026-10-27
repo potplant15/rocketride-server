@@ -393,7 +393,10 @@ column to the right of the canvas. It is part of the page, not a drawer: it has
 no overlay, takes no focus when a click opens it (the canvas keeps panning and
 the keys keep working), and Escape closes it while focus is inside it. Enter,
 Inspect and the menu's Inspect are explicit requests, and they move focus to its
-heading. A node shows its labels, id, properties and the relationships drawn for
+heading. A node shows its labels, id, properties (each with the kind of value that
+was received: string, integer, float, boolean, list, map and so on; a whole number
+is "integer" because JSON does not tell 1 from 1.0, and a null shows the schema's
+sampled type as a sample) and the relationships drawn for
 it ("N drawn"; the database's own count of relationships is not known to the
 app); a relationship shows its type, ends and properties, with Select start and
 Select end; a found path lists its steps with Clear path and Copy JSON.

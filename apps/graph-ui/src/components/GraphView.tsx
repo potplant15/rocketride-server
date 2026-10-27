@@ -200,6 +200,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const handle = useRef<IGraphCanvasHandle | null>(null);
 	const searchInput = useRef<HTMLInputElement>(null);
 	const triggers = useRef<Record<ToolMenu, HTMLSpanElement | null>>({ layout: null, export: null });
+	const keysAnchor = useRef<HTMLSpanElement>(null);
 
 	// An informational notice leaves by itself; a warning or an error stays until the next action.
 	const [expiredNotice, setExpiredNotice] = useState<unknown>(null);
@@ -225,6 +226,13 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 
 	const matches = useMemo(() => searchNodes(nodes, query, (n) => captionOf(n, captions.get(n.labels[0] ?? ''))), [nodes, query, captions]);
 	const matchIds = useMemo(() => (matches === null ? null : new Set(matches)), [matches]);
+	// The list of matches changes under the search after an expand, a collapse or a dismiss: start again from the first, and never read past the end.
+	const matchKey = matches === null ? null : matches.join('\u0000');
+	useEffect(() => {
+		setCurrent(0);
+	}, [matchKey]);
+	const at = matches === null ? 0 : Math.min(current, Math.max(0, matches.length - 1));
+	const pathFocus = useMemo(() => (state.path ? { nodes: new Set(state.path.nodes), relationships: new Set(state.path.relationships) } : null), [state.path]);
 
 	const budget = canvasBudgetText(state.model);
 	const focused = state.focusedId !== null ? state.model.nodes.get(state.focusedId) : undefined;
@@ -298,6 +306,13 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 	const say = async (text: string, ok: boolean): Promise<void> => announce(ok ? text : 'Copying was not allowed by the browser.');
 
 	const runExport = async (what: 'png' | 'svg' | 'json' | 'copy-svg' | 'copy-json'): Promise<void> => {
+		try {
+			await exportNow(what);
+		} catch {
+			announce('The image could not be made.');
+		}
+	};
+	const exportNow = async (what: 'png' | 'svg' | 'json' | 'copy-svg' | 'copy-json'): Promise<void> => {
 		if (what === 'json') {
 			download(new Blob([exportGraphJson()], { type: 'application/json' }), 'graph.json');
 			return;
@@ -414,7 +429,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 			? [
 					{ id: 'copy-svg', label: 'Copy SVG' },
 					{ id: 'copy-json', label: 'Copy the drawn graph as JSON' },
-					{ id: 'png', label: 'PNG image', disabled: true, reason: 'PNG needs a file download, which this host does not allow. Copy SVG instead.' },
+					{ id: 'png', label: 'PNG image (needs a download; use Copy SVG)', disabled: true, reason: 'PNG needs a file download, which this host does not allow. Copy SVG instead.' },
 				]
 			: [
 					{ id: 'png', label: 'PNG image' },
@@ -434,7 +449,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 			searchInput.current?.select();
 			return;
 		}
-		if (event.key === 'Escape' && pickFrom !== null && !isTyping(event.target)) {
+		if (event.key === 'Escape' && pickFrom !== null && !isTyping(event.target) && !(event.target as HTMLElement).closest?.('[role="menu"]')) {
 			event.preventDefault();
 			setPickFrom(null);
 		}
@@ -464,13 +479,13 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 
 	const stepSearch = (delta: 1 | -1): void => {
 		if (!matches || matches.length === 0) return;
-		const next = (current + delta + matches.length) % matches.length;
+		const next = (at + delta + matches.length) % matches.length;
 		setCurrent(next);
 		handle.current?.centerOn(matches[next]);
 	};
 	const chooseMatch = (): void => {
 		if (!matches || matches.length === 0) return;
-		const id = matches[Math.min(current, matches.length - 1)];
+		const id = matches[at];
 		session.select(id, 'only');
 		handle.current?.centerOn(id);
 	};
@@ -538,7 +553,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 								setCurrent(0);
 							}}
 							count={matches === null ? null : matches.length}
-							current={current}
+							current={at}
 							onStep={stepSearch}
 							onChoose={chooseMatch}
 							onLeave={() => restoreFocus()}
@@ -547,7 +562,9 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 						<Button variant="ghost" small title="Fit to screen (F)" onClick={() => handle.current?.fit()}>Fit</Button>
 						{toolMenuTrigger('export', 'Export', exportItems)}
 						{onToggleMaximized && <Button variant="ghost" small pressed={maximized === true} title={maximized ? 'Exit full screen (Esc)' : 'Full screen'} onClick={onToggleMaximized}>{maximized ? 'Exit full screen' : 'Full screen'}</Button>}
-						<Button variant="ghost" small ariaExpanded={helpOpen} title="Keyboard shortcuts (?)" onClick={() => { setHelpOpen(!helpOpen); setHelpToken((n) => n + 1); }}>Keys</Button>
+						<span ref={keysAnchor}>
+							<Button variant="ghost" small ariaExpanded={helpOpen} title="Keyboard shortcuts (?)" onClick={() => { setHelpOpen(!helpOpen); setHelpToken((n) => n + 1); }}>Keys</Button>
+						</span>
 					</span>
 				</div>
 
@@ -568,7 +585,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 								highlighted={state.highlight}
 								selectedRelationshipId={state.selectedRelationship}
 								matchIds={matchIds}
-								focusIds={state.path ? { nodes: new Set(state.path.nodes), relationships: new Set(state.path.relationships) } : null}
+								focusIds={pathFocus}
 								looks={looks}
 								typeColors={typeColors}
 								layoutMode={layoutMode}
@@ -613,6 +630,7 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 					nodes={nodes}
 					onSelectLabel={(label) => {
 						session.clearSelection();
+						// TODO(selectMany): one session call instead of a notification per node, once the session has selectMany.
 						for (const id of nodeIdsOfLabel(state.model, label)) session.toggleSelect(id);
 					}}
 					onCaption={onCaption}
@@ -624,8 +642,8 @@ export const GraphView: React.FC<IGraphViewProps> = ({ session, schemaLabels, ca
 
 			{(showInspector || helpOpen) && (
 				<div style={styles.side}>
-					{showInspector && <InspectorPanel state={state} session={session} captions={captions} announce={announce} onNewQuery={onNewQuery} onFindPathFrom={startPath} focusToken={inspectToken} />}
-					{helpOpen && <KeysPanel focusToken={helpToken} onClose={() => setHelpOpen(false)} />}
+					{showInspector && <InspectorPanel state={state} session={session} captions={captions} announce={announce} onNewQuery={onNewQuery} onFindPathFrom={startPath} focusToken={inspectToken} schema={schema} onClosed={() => restoreFocus()} />}
+					{helpOpen && <KeysPanel focusToken={helpToken} onClose={() => { setHelpOpen(false); keysAnchor.current?.querySelector('button')?.focus(); }} />}
 				</div>
 			)}
 		</div>

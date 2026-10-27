@@ -33,7 +33,7 @@
 // Colour is never the only carrier of meaning: every row names its label or type.
 // =============================================================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Button } from 'shell';
 import { captionChoices } from '../graph/captions';
@@ -88,6 +88,7 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 	const [collapsed, setCollapsed] = useState(false);
 	const [editing, setEditing] = useState<Editing | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const root = useRef<HTMLElement>(null);
 
 	const usedBy = useMemo(() => {
 		const out = new Map<number, string>();
@@ -106,6 +107,13 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 		if (next.size !== undefined && next.size !== 'M') out.size = next.size;
 		if (next.badge !== undefined && next.badge !== 'initials') out.badge = next.badge;
 		return Object.keys(out).length === 0 ? null : out;
+	};
+
+	/** Close the editor and put focus back on the Style button it was opened from (its own controls are about to unmount). */
+	const closeEditor = (): void => {
+		const was = editing;
+		setEditing(null);
+		if (was) root.current?.querySelector<HTMLElement>(`[data-style-for="${was.kind}:${CSS.escape(was.name)}"] button`)?.focus();
 	};
 
 	const editor = (() => {
@@ -129,7 +137,7 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 						apply({ kind: 'label', label, style: null });
 						onCaption(label, '');
 					}}
-					onDone={() => setEditing(null)}
+					onDone={closeEditor}
 					error={error}
 				/>
 			);
@@ -146,14 +154,14 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 				usedBy={new Map()}
 				onChange={(next) => apply({ kind: 'type', type, style: next.slot === undefined ? null : { slot: next.slot } })}
 				onReset={() => apply({ kind: 'type', type, style: null })}
-				onDone={() => setEditing(null)}
+				onDone={closeEditor}
 				error={error}
 			/>
 		);
 	})();
 
 	return (
-		<section aria-label="Legend" style={styles.root}>
+		<section ref={root} aria-label="Legend" style={styles.root}>
 			<div style={styles.head}>
 				<h3 style={styles.title}>Legend</h3>
 				<Button variant="ghost" small ariaExpanded={!collapsed} title={collapsed ? 'Show the legend' : 'Collapse the legend'} onClick={() => setCollapsed(!collapsed)}>{collapsed ? 'Show' : 'Collapse'}</Button>
@@ -163,12 +171,16 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 					<div style={styles.group} role="group" aria-label="Labels">
 						<span style={styles.groupName}>Labels</span>
 						{labels.map((entry) => (
-							<span key={entry.label || '(none)'} style={{ display: 'inline-flex', alignItems: 'center' }}>
+							<span key={entry.label === '' ? '\u0000none' : `l:${entry.label}`} style={{ display: 'inline-flex', alignItems: 'center' }}>
 								<Button variant="ghost" small title={`Select the ${entry.count} drawn ${entry.count === 1 ? 'node' : 'nodes'} with this label`} onClick={() => onSelectLabel(entry.label)}>
 									<span style={styles.swatch(entry.fill)} aria-hidden="true" />
 									{`${entry.name} (${entry.count})`}
 								</Button>
-								{entry.label !== '' && <Button variant="ghost" small ariaExpanded={editing?.kind === 'label' && editing.name === entry.label} title={`Style ${entry.name}`} onClick={() => setEditing({ kind: 'label', name: entry.label })}>{`Style: ${entry.name}`}</Button>}
+								{entry.label !== '' && (
+									<span data-style-for={`label:${entry.label}`}>
+										<Button variant="ghost" small ariaExpanded={editing?.kind === 'label' && editing.name === entry.label} title={`Style ${entry.name}`} onClick={() => setEditing({ kind: 'label', name: entry.label })}>{`Style: ${entry.name}`}</Button>
+									</span>
+								)}
 							</span>
 						))}
 					</div>
@@ -181,7 +193,9 @@ export const LegendPanel: React.FC<ILegendPanelProps> = ({ labels, types, colors
 										<span style={styles.line(entry.fill ?? 'var(--rr-text-secondary)')} aria-hidden="true" />
 										{`${entry.type} (${entry.count})`}
 									</span>
-									<Button variant="ghost" small ariaExpanded={editing?.kind === 'type' && editing.name === entry.type} title={`Style ${entry.type}`} onClick={() => setEditing({ kind: 'type', name: entry.type })}>{`Style: ${entry.type}`}</Button>
+									<span data-style-for={`type:${entry.type}`}>
+										<Button variant="ghost" small ariaExpanded={editing?.kind === 'type' && editing.name === entry.type} title={`Style ${entry.type}`} onClick={() => setEditing({ kind: 'type', name: entry.type })}>{`Style: ${entry.type}`}</Button>
+									</span>
 								</span>
 							))}
 						</div>
