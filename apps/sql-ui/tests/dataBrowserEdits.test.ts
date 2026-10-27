@@ -85,7 +85,10 @@ describe('the grid marks staged rows from the pristine rows, never from the grid
 	});
 
 	it('a tint plus a mark that does not rely on colour, and the formatters re-run when the staged changes move', () => {
-		assert.match(VIEW, /el\.style\.background = 'var\(--rr-bg-list-active\)'/);
+		// A light tint the text stays readable on (live bug 9: the list-selection
+		// blue, made for white text, hid the values).
+		assert.match(VIEW, /el\.style\.background = 'color-mix\(in srgb, var\(--rr-color-info\) 12%, transparent\)'/);
+		assert.doesNotMatch(VIEW, /--rr-bg-list-active/);
 		assert.match(VIEW, /el\.append\('✎ ', dataCellEl\(mark\.value\)\)/);
 		assert.match(VIEW, /if \(first\) el\.append\('Deleted · '\)/);
 		assert.match(VIEW, /el\.setAttribute\('aria-description', `Edited, was \$\{was\}`\)/);

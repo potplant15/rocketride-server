@@ -234,7 +234,8 @@ function pendingCellEl(mark: PendingCell | null, value: unknown, first: boolean)
 	if (mark === null) return dataCellEl(value);
 	const el = document.createElement('span');
 	el.style.display = 'block';
-	el.style.background = 'var(--rr-bg-list-active)';
+	// A light tint the value stays readable on, in either theme.
+	el.style.background = 'color-mix(in srgb, var(--rr-color-info) 12%, transparent)';
 	if (mark.kind === 'deleted') {
 		el.style.textDecoration = 'line-through';
 		el.title = 'Deleted (not saved until Apply)';
