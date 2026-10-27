@@ -429,7 +429,8 @@ export const SavedQueriesPanel: React.FC<SavedQueriesPanelProps> = ({ endpoint, 
 				onClose={onClose}
 				modeless
 				width={440}
-				persistKey="sqlSavedQueriesWidth"
+				// The width rides the same preferences: kept only while they can be read.
+				persistKey={readState.status === 'failed' ? undefined : 'sqlSavedQueriesWidth'}
 				avatar={<span style={styles.avatar}><DatabaseIcon /></span>}
 				title="Saved queries"
 				subtitle={`${endpoint.nodeName} · this connection`}

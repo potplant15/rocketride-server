@@ -625,10 +625,21 @@ reached the app — the node's own wrapper included, not just the sentence
 the banner quotes — and such a message can carry a value from the
 statement. Both stay in the preferences file until the entry is deleted,
 the list is cleared, or the bounds below trim it. It is not a server audit
-log, and not a place for secrets. History belongs to the account that ran
-it: when you sign out, or another account signs in, the app forgets the
-history it was holding before it shows or saves anything for the next
-account, so one account's statements never reach another's file.
+log, and not a place for secrets.
+
+History belongs to the account that ran it. When you sign out, or another
+account signs in, the app forgets the history it was holding before it shows
+anything for the next account. As a dev tool, each account has its own
+section of the history file. In the app, the shell reads your workspace
+preferences once per page and keeps them until the page reloads, so after
+another account signs in without a reload the app shows that account no
+history, records none of its statements, and saves nothing to the workspace
+preferences (no history, saved query, grid layout or drawer width) until the
+page is reloaded. The History drawer says `Signed in as a different account:
+reload the page to see your history.` A setting the shell itself saves in
+that time, such as a theme change, still writes the preferences it holds,
+the first account's history among them, into the signed-in account's file,
+so reload the page before working as another account.
 
 The list is bounded, because the preferences file is read and written on
 every app switch: 100 entries per connection including pinned ones, 8 KB per
@@ -659,12 +670,15 @@ history, the dev tool reads that file before it shows or changes anything,
 never writes a file it could not read (saved queries are then kept for that
 session only), and two windows that change saved queries at the same time
 each write the file from what they read, so the last one to save wins.
-Saved queries belong to the account that saved them: signing out, or
-another account signing in, forgets them at once, and one account's saved
-queries are never shown to or written for another. In the app, which reads
-your workspace preferences once per page, another account signing in
-without a reload sees no saved queries and can save none until the page is
-reloaded.
+Saved queries belong to the account that saved them, and signing out, or
+another account signing in, stops showing them at once. As a dev tool, each
+account has its own section of the file, so one account's saved queries are
+never shown to or written for another. In the app, which reads your
+workspace preferences once per page, another account signing in without a
+reload sees no saved queries and can save none until the page is reloaded;
+the drawer says `Signed in as a different account: reload the page to see
+your saved queries.` What the shell itself may still save in that time is
+under [Query history](#query-history).
 
 Change saved queries in one window at a time: if two windows change them,
 the one that saves last overwrites the other's change.

@@ -334,6 +334,9 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 	const entries = history.useHistory(endpoint);
 	const isRecording = history.useRecording(endpoint);
 	const privacyNotice = history.usePrivacyNotice();
+	// Why history can be neither shown nor changed now (the full app, after
+	// another account signed in without a reload), or null.
+	const refusal = history.useRefusal();
 	// Row titles skip leading comments by this connection's comment rules.
 	const dialect = useSchema(endpoint.key).dialect;
 
@@ -411,6 +414,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 	 * @returns The list content.
 	 */
 	const renderList = (): React.ReactNode => {
+		if (refusal !== null) return <EmptyState icon={<DatabaseIcon />} title="History unavailable" description={refusal} />;
 		if (entries.length === 0) {
 			return (
 				<EmptyState
@@ -544,7 +548,8 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 				onClose={onClose}
 				modeless
 				width={440}
-				persistKey="sqlHistoryWidth"
+				// The width rides the same preferences: kept only while history can be.
+				persistKey={refusal === null ? 'sqlHistoryWidth' : undefined}
 				avatar={<span style={styles.avatar}><DatabaseIcon /></span>}
 				title="History"
 				subtitle={`${endpoint.nodeName} · this connection`}
@@ -557,7 +562,8 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 							variant="ghost"
 							small
 							pressed={isRecording}
-							title="Record the statements you run on this connection"
+							disabled={refusal !== null}
+							title={refusal ?? 'Record the statements you run on this connection'}
 							onClick={() => {
 								history.setRecording(endpoint, !isRecording);
 								announce(isRecording ? 'Recording off for this connection' : 'Recording on for this connection');

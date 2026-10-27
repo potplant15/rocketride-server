@@ -390,7 +390,7 @@ describe('saved queries: what a view says while it reads (review M1, M2)', () =>
 		assert.deepEqual(view.readStateOf(ENDPOINT), { status: 'ready' });
 		owner = FP_B;
 		assert.equal(view.readStateOf(ENDPOINT).status, 'failed');
-		assert.match((view.readStateOf(ENDPOINT) as { message: string }).message, /Reload the page/);
+		assert.equal((view.readStateOf(ENDPOINT) as { message: string }).message, 'Signed in as a different account: reload the page to see your saved queries.');
 	});
 
 	it('the drawer says Loading, or the failure with Retry, instead of "No saved queries yet"', async () => {

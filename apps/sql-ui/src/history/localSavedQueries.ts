@@ -36,8 +36,10 @@
 // still hold the first account's bag (and a write would land in the next
 // account's file). So the first account seen is the only one served: any
 // other is served nothing and saves nothing, with a sentence saying to
-// reload, until the page reloads (or the first account is back). One view
-// per engine core (localEnv.ts), so the pin outlives an env rebuild.
+// reload, until the page reloads (or the first account is back). The pin is
+// the page's (workspacePin.ts), shared with history and every other
+// preference the full app keeps, so it outlives an env rebuild and the app
+// being switched away and back.
 //
 // Dev-tool frames never import this module (localEnv.ts is the full app's).
 // =============================================================================
@@ -47,6 +49,8 @@ import { ExplorerToolError } from 'shared/explorer/errors';
 import type { IPrefsAccessor } from 'shared/explorer/history/types';
 import { APP_SAVED_QUERIES_NOTICE, SAVED_QUERIES_PREF, editSavedQueriesIn, readSavedQueriesBag } from './savedQueries';
 import type { SavedQueriesBag, SavedQueriesReadState, SavedQuery, SavedQueryEdit, SqlSavedQueriesApi } from './savedQueries';
+import { ANOTHER_ACCOUNT_SAVED, createWorkspacePin } from './workspacePin';
+import type { WorkspacePin } from './workspacePin';
 import type { SqlEndpoint } from '../connect';
 
 /** Shared empty list, so an unknown connection keeps a stable snapshot. */
@@ -55,7 +59,7 @@ const NO_QUERIES: SavedQuery[] = [];
 /** The read states (shared, so snapshots stay stable). */
 const READY: SavedQueriesReadState = { status: 'ready' };
 const NOBODY: SavedQueriesReadState = { status: 'failed', message: 'Not signed in to a RocketRide server.' };
-const ANOTHER: SavedQueriesReadState = { status: 'failed', message: 'Another account signed in after this page read its saved queries. Reload the page to see this account\'s saved queries.' };
+const ANOTHER: SavedQueriesReadState = { status: 'failed', message: ANOTHER_ACCOUNT_SAVED };
 
 /** The full app's saved queries, with reads outside React (tests, diagnostics). */
 export interface LocalSavedQueries extends SqlSavedQueriesApi {
@@ -70,9 +74,10 @@ export interface LocalSavedQueries extends SqlSavedQueriesApi {
  *
  * @param prefs - The shell's workspace preferences (a stable accessor over `usePrefs`).
  * @param ownerNow - Who is signed in now (the identity fingerprint), or null.
+ * @param pin - Whose preferences these are (the full app passes the page's; default: a pin of its own).
  * @returns The views' API.
  */
-export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => string | null): LocalSavedQueries {
+export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => string | null, pin: WorkspacePin = createWorkspacePin()): LocalSavedQueries {
 	const listeners = new Set<() => void>();
 	const subscribe = (listener: () => void): (() => void) => {
 		listeners.add(listener);
@@ -80,8 +85,6 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 	};
 	/** The last bag parsed, with what it was parsed from (a new object with the same text is the same bag). */
 	let cache: { owner: string; raw: unknown; text: string; bag: SavedQueriesBag } | null = null;
-	/** The account these preferences were first read for (see the header). */
-	let pinned: string | null = null;
 
 	/**
 	 * The account signed in now, when it is the one these preferences belong to.
@@ -90,9 +93,7 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 	 */
 	const owned = (): string | null => {
 		const owner = ownerNow();
-		if (owner === null) return null;
-		pinned ??= owner;
-		return owner === pinned ? owner : null;
+		return owner !== null && pin.access(owner) === 'owner' ? owner : null;
 	};
 
 	/**
@@ -112,13 +113,6 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 	};
 
 	/**
-	 * Apply one change for the signed-in account.
-	 *
-	 * @param endpoint - The connection.
-	 * @param change - The change.
-	 * @param verb - What it does, for the refusal ('saved', 'renamed', 'deleted').
-	 */
-	/**
 	 * Where reading stands: the preferences answer at once, so only who is
 	 * signed in can make it fail.
 	 *
@@ -129,11 +123,18 @@ export function createLocalSavedQueries(prefs: IPrefsAccessor, ownerNow: () => s
 		return owned() === null ? ANOTHER : READY;
 	};
 
+	/**
+	 * Apply one change for the signed-in account.
+	 *
+	 * @param endpoint - The connection.
+	 * @param change - The change.
+	 * @param verb - What it does, for the refusal ('saved', 'renamed', 'deleted').
+	 */
 	const edit = async (endpoint: SqlEndpoint, change: SavedQueryEdit, verb: string): Promise<void> => {
 		if (ownerNow() === null) throw new ExplorerToolError({ kind: 'unavailable', tool: 'savedQueryEdit', message: `Not signed in to a RocketRide server, so nothing was ${verb}.` });
 		// Checked right before the write: nothing awaits between it and the write.
 		if (owned() === null) {
-			throw new ExplorerToolError({ kind: 'stale', tool: 'savedQueryEdit', message: `Another account signed in after this page read its saved queries, so nothing was ${verb}. Reload the page to see and change this account's saved queries.` });
+			throw new ExplorerToolError({ kind: 'stale', tool: 'savedQueryEdit', message: `Signed in as a different account, so nothing was ${verb}. Reload the page to see and change your saved queries.` });
 		}
 		editSavedQueriesIn(prefs, endpoint.key, change);
 		listeners.forEach((listener) => listener());
