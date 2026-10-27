@@ -213,11 +213,16 @@ A value that belongs to a foreign key is a link. It runs `SELECT * FROM
 <referenced> WHERE <key> = $1 LIMIT 2` (every column of a composite key, with
 the values sent separately) and opens that row in a drawer on top, with a back arrow and a Back
 button. If nothing matches, the drawer says so; if more than one row matches,
-it shows the first and says that too. A NULL key is not a link.
+it shows the first and says that too. A NULL key is not a link. A key that
+reached the browser as a number past 2^53 (9,007,199,254,740,992) was already
+rounded on the way, and could be another row's key, so it is not looked up:
+the link is off and says `This key is too large to look up exactly in the
+browser.` A key the node sends as text is exact and is followed as usual.
 
 **Rows that reference this one** lists the tables whose foreign keys point at
 the row's table. **Show rows** opens that table's data with a chip already set
-to this row's key. Foreign-key columns also say where they point in the
+to this row's key, and is off, with the same reason, for a key too large to
+hold exactly. Foreign-key columns also say where they point in the
 column's header tooltip, for example `BIGINT → customers.id`.
 
 With no sort of your own, the app orders by the primary key so paging is

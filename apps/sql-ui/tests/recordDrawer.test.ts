@@ -35,12 +35,16 @@ import assert from 'node:assert/strict';
 import type { SqlSchemaResponse } from '../src/connect';
 import { buildRelationGraph } from '../src/schema/relations';
 import {
+	KEY_TOO_LARGE,
 	childRowsPreset,
 	fallbackDef,
+	isRoundedKey,
+	linkRefusal,
 	recordFields,
 	recordJson,
 	referencedRowStatement,
 	referencingEdges,
+	showRowsRefusal,
 } from '../src/sql/record';
 
 const SCHEMA: SqlSchemaResponse = {
@@ -170,6 +174,74 @@ describe('rows that reference this one', () => {
 	it('presets nothing when a key value is NULL', () => {
 		const edge = GRAPH.edges.find((e) => e.table === 'orders')!;
 		assert.equal(childRowsPreset(edge, { id: null }), null);
+	});
+});
+
+// =============================================================================
+// KEYS PAST 2^53 (DA-R1 I3)
+// =============================================================================
+//
+// The node sends a Python int as a full-digit JSON number, and JSON.parse
+// rounds one past 2^53 to the nearest double: 1234567890123456789 arrives as
+// 1234567890123456800, another row's key. Looking that up would report "No
+// row" for a row that exists (or open the wrong one), so a key that arrived
+// as such a number is never looked up or preset. A key that arrived as text
+// is exact and is followed as usual.
+// =============================================================================
+
+describe('keys too large for the browser to hold exactly', () => {
+	const edge = GRAPH.edges.find((e) => e.table === 'orders')!;
+	const wire = JSON.parse('{"id": 1234567890123456791, "customer_id": 1234567890123456789, "total": 1}') as Record<string, unknown>;
+
+	it('knows a rounded key: an integer number past 2^53, and only that', () => {
+		assert.equal(wire.customer_id, 1234567890123456800, 'what JSON.parse made of it');
+		assert.equal(isRoundedKey(wire.customer_id), true);
+		assert.equal(isRoundedKey(2 ** 53), true, '2^53 and 2^53 + 1 arrive as the same number');
+		assert.equal(isRoundedKey(-(2 ** 53)), true);
+		assert.equal(isRoundedKey(Number.MAX_SAFE_INTEGER), false);
+		assert.equal(isRoundedKey('1234567890123456789'), false, 'text is exact');
+		assert.equal(isRoundedKey(4), false);
+		assert.equal(isRoundedKey(1.5), false);
+		assert.equal(isRoundedKey(null), false);
+	});
+
+	it('does not look the referenced row up, and says why', () => {
+		assert.equal(referencedRowStatement('postgres', edge, wire), null);
+		assert.equal(linkRefusal(edge, wire), KEY_TOO_LARGE);
+		assert.equal(KEY_TOO_LARGE, 'This key is too large to look up exactly in the browser.');
+	});
+
+	it('looks up a key that arrived as text, exactly as sent', () => {
+		const exact = { id: '1234567890123456791', customer_id: '1234567890123456789' };
+		assert.equal(linkRefusal(edge, exact), null);
+		assert.deepEqual(referencedRowStatement('postgres', edge, exact)?.params, ['1234567890123456789']);
+	});
+
+	it('refuses a composite key when any part was rounded', () => {
+		const composite = GRAPH.edges.find((e) => e.table === 'shipments')!;
+		const row = { tenant_id: 3, order_no: 2 ** 60 };
+		assert.equal(referencedRowStatement('postgres', composite, row), null);
+		assert.equal(linkRefusal(composite, row), KEY_TOO_LARGE);
+	});
+
+	it('presets no "Show rows" chip from a rounded key, and says why', () => {
+		const parent = JSON.parse('{"id": 1234567890123456789, "name": "Alice"}') as Record<string, unknown>;
+		assert.equal(childRowsPreset(edge, parent), null);
+		assert.equal(showRowsRefusal(edge, parent), KEY_TOO_LARGE);
+		assert.deepEqual(childRowsPreset(edge, { id: '1234567890123456789' }), [{ column: 'customer_id', op: 'eq', value: '1234567890123456789' }]);
+		assert.equal(showRowsRefusal(edge, { id: '1234567890123456789' }), null);
+		assert.equal(showRowsRefusal(edge, { id: null }), null, 'a NULL key is no key, not a refusal');
+	});
+});
+
+describe('keys too large: the README says what the drawer does', () => {
+	it('names the bound and the reason', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const prose = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+		assert.match(prose, /A key that reached the browser as a number past 2\^53 \(9,007,199,254,740,992\) was already rounded on the way/);
+		assert.ok(prose.includes(`the link is off and says \`${KEY_TOO_LARGE}\``));
+		assert.equal((2 ** 53).toLocaleString('en-US'), '9,007,199,254,740,992');
 	});
 });
 

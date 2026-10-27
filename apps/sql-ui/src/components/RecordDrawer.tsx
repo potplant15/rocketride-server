@@ -35,7 +35,7 @@
 // tables, and Show rows opens a child's Data page with filter chips preset.
 // =============================================================================
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { inspectorText } from 'shared/explorer/components/RowInspector';
 import { Banner, Button, DetailPanel, LabelValue, Section, StatusBadge } from 'shell';
@@ -43,7 +43,8 @@ import { announce } from '../a11y/announce';
 import type { SqlDialect, SqlSchemaTable } from '../connect';
 import type { RelationEdge, RelationGraph } from '../schema/relations';
 import type { FilterChip } from '../sql/filters';
-import { childRowsPreset, fallbackDef, hasKeyValues, recordFields, recordJson, referencedRowStatement, referencingEdges } from '../sql/record';
+import { childRowsPreset, fallbackDef, hasKeyValues, linkRefusal, recordFields, recordJson, referencedRowStatement, referencingEdges, showRowsRefusal } from '../sql/record';
+import GatedButton from './GatedButton';
 
 /** What a row of SQL values loses on the way to the browser. */
 const NOTE = 'Very large numbers and decimals may be shown rounded.';
@@ -112,6 +113,13 @@ const styles = {
 		textDecoration: 'underline',
 		cursor: 'pointer',
 		textAlign: 'left',
+	} as CSSProperties,
+
+	/** A link that cannot be followed: still a link, focusable, plainly off. */
+	linkOff: {
+		color: 'var(--rr-text-secondary)',
+		textDecoration: 'underline dotted',
+		cursor: 'not-allowed',
 	} as CSSProperties,
 
 	type: {
@@ -190,6 +198,9 @@ interface LevelProps {
 const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, closeLabel, onClose, ambiguous, onFollow, graph, onShowRows, status }) => {
 	const fields = recordFields(def, row, graph, table);
 	const children = referencingEdges(graph, table);
+	// One id per drawer level; each refused link and button points at its reason.
+	const baseId = useId();
+	const reasonId = (key: string): string => `${baseId}-${encodeURIComponent(key)}`;
 	return (
 		<DetailPanel
 			open
@@ -217,10 +228,23 @@ const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, cl
 					const text = inspectorText(field.value);
 					// The first key the column belongs to; a NULL key has nothing to open.
 					const link = field.links.find((edge) => hasKeyValues(edge, row));
+					// A key the browser holds rounded is not looked up: it may be another row's.
+					const linkOff = link ? linkRefusal(link, row) : null;
 					return (
 						<LabelValue key={field.column} label={field.column} mono>
 							<div style={styles.valueRow}>
-								{link && onFollow ? (
+								{link && onFollow && linkOff ? (
+									<button
+										type="button"
+										style={{ ...styles.link, ...styles.value, ...styles.linkOff }}
+										aria-disabled="true"
+										aria-describedby={reasonId(field.column)}
+										title={linkOff}
+										onClick={() => undefined}
+									>
+										{text}
+									</button>
+								) : link && onFollow ? (
 									<button
 										type="button"
 										style={{ ...styles.link, ...styles.value }}
@@ -236,6 +260,7 @@ const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, cl
 								<Button variant="ghost" small title={`Copy ${field.column}`} onClick={() => copy(text, field.column)}>Copy</Button>
 							</div>
 							<div style={styles.type}>{field.type}{field.links.length > 0 ? ` → ${field.links.map((e) => e.refTable).join(', ')}` : ''}</div>
+							{link && onFollow && linkOff && <div id={reasonId(field.column)} style={styles.type}>{linkOff}</div>}
 						</LabelValue>
 					);
 				})}
@@ -244,14 +269,26 @@ const Level: React.FC<LevelProps> = ({ def, table, row, title, subtitle, nav, cl
 				<Section label="Rows that reference this one">
 					{children.map((edge) => {
 						const chips = childRowsPreset(edge, row);
+						// A key the browser holds rounded would filter on another row's key.
+						const showOff = showRowsRefusal(edge, row);
 						return (
-							<div key={edge.id} style={styles.child}>
-								<span>{edge.table}.{edge.columns.join(', ')}</span>
-								{onShowRows && (
-									<Button variant="secondary" small disabled={!chips} onClick={() => chips && onShowRows(edge.table, chips)}>
-										Show rows
-									</Button>
-								)}
+							<div key={edge.id}>
+								<div style={styles.child}>
+									<span>{edge.table}.{edge.columns.join(', ')}</span>
+									{onShowRows && (
+										<GatedButton
+											variant="secondary"
+											small
+											disabled={!chips}
+											onClick={() => chips && onShowRows(edge.table, chips)}
+											gateReason={showOff}
+											reasonId={reasonId(`show:${edge.id}`)}
+										>
+											Show rows
+										</GatedButton>
+									)}
+								</div>
+								{onShowRows && showOff && <div id={reasonId(`show:${edge.id}`)} style={styles.type}>{showOff}</div>}
 							</div>
 						);
 					})}

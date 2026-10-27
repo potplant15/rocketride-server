@@ -29,6 +29,11 @@
 // each column it renders, so a row's own keys are not a column list. A
 // foreign-key link looks the referenced row up with bound values; "Show rows"
 // presets filter chips on the child table.
+//
+// A key that arrived as a number past 2^53 is never looked up or preset. The
+// node sends an integer as a full-digit JSON number, and JSON.parse rounds
+// one that long to the nearest double, which may be another row's key: the
+// lookup would say "No row" for a row that exists, or open the wrong one.
 // =============================================================================
 
 import type { SqlDialect, SqlSchemaTable } from '../connect';
@@ -105,6 +110,45 @@ export interface BoundStatement {
 	params: unknown[];
 }
 
+/** Why a key is not looked up: it arrived as a number the browser had already rounded. */
+export const KEY_TOO_LARGE = 'This key is too large to look up exactly in the browser.';
+
+/**
+ * Whether a key value was rounded on its way in: an integer held as a number
+ * beyond ±2^53, which is where doubles stop holding every integer. A value
+ * that arrived as text is exact.
+ *
+ * @param value - The value as the row holds it.
+ * @returns True when the number in hand may not be the key the database holds.
+ */
+export function isRoundedKey(value: unknown): boolean {
+	return typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value);
+}
+
+/**
+ * Why a referencing row's key cannot be followed, or null when it can (or
+ * when it is NULL, which shows no link at all).
+ *
+ * @param edge - The foreign key.
+ * @param row - The referencing row.
+ * @returns {@link KEY_TOO_LARGE}, or null.
+ */
+export function linkRefusal(edge: RelationEdge, row: Record<string, unknown>): string | null {
+	return edge.columns.some((column) => isRoundedKey(row[column])) ? KEY_TOO_LARGE : null;
+}
+
+/**
+ * Why "Show rows" cannot preset the child table's filter from this row, or
+ * null when it can (or when the key is NULL, which leaves it off as before).
+ *
+ * @param edge - The inbound foreign key.
+ * @param row - The referenced (parent) row.
+ * @returns {@link KEY_TOO_LARGE}, or null.
+ */
+export function showRowsRefusal(edge: RelationEdge, row: Record<string, unknown>): string | null {
+	return edge.refColumns.some((column) => isRoundedKey(row[column])) ? KEY_TOO_LARGE : null;
+}
+
 /**
  * Whether a row's value(s) for a key can be followed: every key column holds
  * a value (a NULL key points at nothing).
@@ -120,7 +164,8 @@ export function hasKeyValues(edge: RelationEdge, row: Record<string, unknown>): 
 /**
  * The statement a foreign-key link runs: the referenced row, looked up by the
  * key's value(s). LIMIT 2 so a key that is not unique can say so. Returns
- * null when any key value is NULL: a NULL key points at nothing.
+ * null when any key value is NULL (a NULL key points at nothing) or was
+ * rounded on its way in ({@link linkRefusal}).
  *
  * @param dialect - The engine dialect.
  * @param edge - The foreign key.
@@ -128,7 +173,7 @@ export function hasKeyValues(edge: RelationEdge, row: Record<string, unknown>): 
  * @returns The statement, or null when there is nothing to look up.
  */
 export function referencedRowStatement(dialect: SqlDialect, edge: RelationEdge, row: Record<string, unknown>): BoundStatement | null {
-	if (!hasKeyValues(edge, row)) return null;
+	if (!hasKeyValues(edge, row) || linkRefusal(edge, row) !== null) return null;
 	const params: unknown[] = [];
 	const conditions: string[] = [];
 	for (let i = 0; i < edge.columns.length; i++) {
@@ -152,7 +197,8 @@ export function referencingEdges(graph: RelationGraph, table: string): RelationE
 
 /**
  * The chips "Show rows" presets on the child table: its key column(s) equal
- * this row's referenced value(s). Null when a value is NULL.
+ * this row's referenced value(s). Null when a value is NULL, or was rounded
+ * on its way in ({@link showRowsRefusal}).
  *
  * @param edge - The inbound foreign key.
  * @param row - The referenced (parent) row.
@@ -162,7 +208,7 @@ export function childRowsPreset(edge: RelationEdge, row: Record<string, unknown>
 	const chips: FilterChip[] = [];
 	for (let i = 0; i < edge.columns.length; i++) {
 		const value = row[edge.refColumns[i]!];
-		if (value === null || value === undefined) return null;
+		if (value === null || value === undefined || isRoundedKey(value)) return null;
 		chips.push({ column: edge.columns[i]!, op: 'eq', value: String(value) });
 	}
 	return chips;
