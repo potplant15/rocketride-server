@@ -208,6 +208,23 @@ export interface SqlSchemaResponse {
 	stale?: boolean;
 }
 
+/**
+ * What the node's `get_sql` tool answers (db_instance_base.get_sql): SQL its
+ * LLM wrote for a question, NOT executed. `valid: true` carries `sql`; a
+ * `valid: false` answer carries the node's `error` (unsafe SQL, with that
+ * `sql`, or the database's EXPLAIN error) or the model's prose `answer`.
+ */
+export interface SqlGetSqlResult {
+	/** Whether `sql` is a query the node accepted (a SELECT the database could EXPLAIN). */
+	valid: boolean;
+	/** The SQL, when the node wrote one. */
+	sql?: string;
+	/** Why the node did not accept it, in the node's words. */
+	error?: string;
+	/** The model's answer in words, when the question was not one for the database. */
+	answer?: string;
+}
+
 // =============================================================================
 // SESSION
 // =============================================================================
@@ -317,4 +334,14 @@ export interface SqlSession {
 	 * @returns The dialect identifier.
 	 */
 	dialect(): Promise<SqlDialect>;
+	/**
+	 * Ask the node to write SQL for a question (`get_sql`). Nothing is
+	 * executed: the node's LLM writes the query and the node checks it with
+	 * EXPLAIN. Needs an LLM connected to the node; without one the call fails
+	 * with the node's MissingLlmError text.
+	 *
+	 * @param question - The question, in plain words.
+	 * @returns The node's answer (every `valid: false` shape is data).
+	 */
+	getSql(question: string): Promise<SqlGetSqlResult>;
 }

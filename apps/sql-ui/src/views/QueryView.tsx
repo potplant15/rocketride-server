@@ -67,6 +67,8 @@ import { createGeneration } from 'shared/explorer/generation';
 import { lineRange, clock } from 'shared/explorer/runner/format';
 import { useStatementRunner } from 'shared/explorer/runner/useStatementRunner';
 import HistoryPanel from '../components/HistoryPanel';
+import { SaveQueryButton, SavedQueriesButton } from '../components/SavedQueriesPanel';
+import AskBar from '../components/AskBar';
 import ExplainPanel from '../components/ExplainPanel';
 import { announce } from '../a11y/announce';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
@@ -852,6 +854,8 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 								if (next === 'All') announce(ALL_ROWS_WARNING);
 							}}
 						/>
+						<SaveQueryButton endpoint={endpoint} sql={sql} />
+						<SavedQueriesButton endpoint={endpoint} />
 						<Button
 							variant="ghost"
 							pressed={historyOpen}
@@ -902,6 +906,9 @@ export const QueryView: React.FC<QueryViewProps> = ({ endpoint, label, initialSq
 			/>
 
 			<div style={styles.body}>
+				{/* A question becomes SQL in a new query; nothing runs. */}
+				<AskBar endpoint={endpoint} />
+
 				{/* The node refuses to execute anything — schema browsing still works. */}
 				{allowExecuteOff && (
 					<div id={gateNoteId}>

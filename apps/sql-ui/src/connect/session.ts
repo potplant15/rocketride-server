@@ -67,6 +67,7 @@ import type {
 	SqlSchemaResponse,
 	SqlSession,
 	SqlDialect,
+	SqlGetSqlResult,
 } from './types';
 
 // =============================================================================
@@ -449,6 +450,11 @@ class SqlToolSession implements SqlSession {
 	async dialect(): Promise<SqlDialect> {
 		const result = await this.session.invoke<{ dialect?: string }>('dialect', {});
 		return toDialect(result?.dialect);
+	}
+
+	/** @inheritdoc */
+	async getSql(question: string): Promise<SqlGetSqlResult> {
+		return this.session.invoke<SqlGetSqlResult>('get_sql', { question });
 	}
 }
 

@@ -59,6 +59,7 @@ import { DEFAULT_HISTORY_LIMITS } from '../history/trim';
 import { getDocs, nextQueryDoc } from '../docs';
 import type { QueryDocPayload } from '../docs';
 import { useSqlPageNav } from '../pageNav';
+import { SaveQueryButton } from './SavedQueriesPanel';
 import { announce } from '../a11y/announce';
 import { DatabaseIcon } from '../icons';
 
@@ -510,6 +511,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = (props) => {
 									Delete
 								</Button>
 								<Button variant="ghost" small onClick={() => openInNewQuery(entry)}>Open in new query</Button>
+								{!entry.truncated && <SaveQueryButton endpoint={endpoint} sql={entry.sql} small />}
 							</div>
 						</div>
 					)}

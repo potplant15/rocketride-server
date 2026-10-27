@@ -69,6 +69,7 @@ export function postgres(params: { tool: string }): unknown {
 		case 'begin': return { session_id: 'tx_sentinel_1' };
 		case 'commit':
 		case 'rollback': return { ok: true };
+		case 'get_sql': return { sql: 'SELECT * FROM orders', valid: true };
 		default: return { dialect: 'postgres' };
 	}
 }

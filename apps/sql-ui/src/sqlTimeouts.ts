@@ -43,7 +43,7 @@
 
 import { DEFAULT_RETRY_WINDOW_MS } from 'shared/explorer/connect/session';
 import { GET_TASKS_TIMEOUT_MS, frameOpTimeoutMs, toolCallBudgetMs } from 'shared/explorer/devtool/timeouts';
-import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, MAX_APPLY_STATEMENTS, REFRESH_SCHEMA_WAIT_MS } from './connect/tools';
+import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, MAX_APPLY_STATEMENTS, REFRESH_SCHEMA_WAIT_MS, GET_SQL_WAIT_MS } from './connect/tools';
 
 // =============================================================================
 // CONTROLLER (engine requests)
@@ -89,6 +89,15 @@ export const VALIDATE_TIMEOUT_MS = 30_000;
 
 /** Bus timeout of `client.getEnvironmentKeys`. */
 export const ENV_KEYS_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a saved-queries op waits for the account's saved-queries file to
+ * be read: the dev-tool library's whole load (shared/explorer/devtool/prefs:
+ * three attempts of a stat and a read, each FS_TIMEOUT_MS, with 1 s and then
+ * 3 s between them). Spelled out because frames import this module and must
+ * not import that one (it reaches the bus client); a test pins the numbers.
+ */
+export const SAVED_QUERIES_LOAD_WAIT_MS = 3 * 2 * FS_TIMEOUT_MS + 1_000 + 3_000;
 
 // =============================================================================
 // FRAME (op timeouts)
@@ -138,4 +147,12 @@ export const SQL_OP_TIMEOUT_MS = {
 	'sql.history': frameOpTimeoutMs(LIST_WAIT_MS),
 	'sql.historyRecord': frameOpTimeoutMs(LIST_WAIT_MS),
 	'sql.historyEdit': frameOpTimeoutMs(LIST_WAIT_MS),
+	// Saved-query ops wait for the saved list (the connection's key), then for
+	// the account's saved-queries file to be read; a change is written later,
+	// debounced.
+	'sql.savedQueries': frameOpTimeoutMs(LIST_WAIT_MS + SAVED_QUERIES_LOAD_WAIT_MS),
+	'sql.savedQueryEdit': frameOpTimeoutMs(LIST_WAIT_MS + SAVED_QUERIES_LOAD_WAIT_MS),
+	// Resolve, then one get_sql (its one retry after a TASK_STOPPED refusal
+	// stays inside the same wait).
+	'sql.getSql': frameOpTimeoutMs(RESOLVE_BUDGET_MS + toolCallBudgetMs(GET_SQL_WAIT_MS)),
 } as const;

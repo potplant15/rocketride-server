@@ -57,9 +57,10 @@ import type { ToolOpMap, ToolOpSpec, ToolStateMap, ToolEventMap } from 'shell';
 import type { IDeadline } from 'shared/explorer/devtool/deadline';
 import type { JsonValue, Reply } from 'shared/explorer/devtool/reply';
 import type { IIdentityState } from 'shared/explorer/devtool/frameIdentity';
-import type { SqlApplyResult, SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SavedConnectionsStatus, SqlDialect } from './connect';
+import type { SqlApplyResult, SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SavedSqlConnection, SavedConnectionsStatus, SqlDialect, SqlGetSqlResult } from './connect';
 import type { HistoryEdit, HistoryStorage } from './history/api';
 import type { HistoryEntry } from './history/types';
+import type { SavedQueriesStorage, SavedQuery, SavedQueryEdit } from './history/savedQueries';
 
 /**
  * Who a mutation was made for: the identity fingerprint the calling frame
@@ -129,6 +130,14 @@ export interface SqlOps extends ToolOpMap {
 	'sql.historyRecord': ToolOpSpec<IDeadline & IOwnedCall & { connId: string; entry: HistoryEntry }, Reply<null>>;
 	/** Edit one connection's history: delete, pin, note, clear, or the recording switch. */
 	'sql.historyEdit': ToolOpSpec<IDeadline & IOwnedCall & { connId: string; edit: HistoryEdit }, Reply<null>>;
+	// ── Saved queries (the controller owns them; frames read and edit through these) ──
+	/** One connection's saved queries, newest first, and where they are kept (an op result, never retained state); only for the frame's own account. */
+	'sql.savedQueries': ToolOpSpec<IDeadline & IOwnedCall & { connId: string }, Reply<SavedQueriesRead>>;
+	/** Save, rename or delete one saved query; refused, changing nothing, past a cap. */
+	'sql.savedQueryEdit': ToolOpSpec<IDeadline & IOwnedCall & { connId: string; edit: SavedQueryEdit }, Reply<null>>;
+	// ── Ask ──────────────────────────────────────────────────────────────────
+	/** Ask the node to write SQL for a question (`get_sql`): nothing is executed. */
+	'sql.getSql': ToolOpSpec<IDeadline & { connId: string; question: string }, Reply<SqlGetSqlResult>>;
 }
 
 /** The saved-connection list as the controller publishes it. */
@@ -163,6 +172,27 @@ export interface HistoryState {
 	keys: Record<string, { rev: number; recording: boolean }>;
 }
 
+/** One connection's saved queries as `sql.savedQueries` answers them. */
+export interface SavedQueriesRead {
+	/** Where the controller keeps them (the panel's privacy line says so). */
+	storage: SavedQueriesStorage;
+	/** The queries, newest first. */
+	queries: SavedQuery[];
+}
+
+/**
+ * What frames need to follow saved queries without holding them: where they
+ * are kept, and one revision that moves on every change (another document's
+ * save, an account change, the file read). The queries themselves are an op
+ * result (`sql.savedQueries`), so the topic stays a few bytes.
+ */
+export interface SavedQueriesState {
+	/** Where the controller keeps saved queries. */
+	storage: SavedQueriesStorage;
+	/** Moves on every change. */
+	rev: number;
+}
+
 /** The sql tool's state topics (controller → documents). Fixed topics; never one per document. */
 export interface SqlStateMap extends ToolStateMap {
 	/** The saved-connection list, replicated to every document realm. */
@@ -171,6 +201,8 @@ export interface SqlStateMap extends ToolStateMap {
 	history: HistoryState;
 	/** Who the controller vouches for (the fingerprint only; R9). */
 	identity: IIdentityState;
+	/** Saved-query revision and storage (the queries travel as op results). */
+	savedQueries: SavedQueriesState;
 }
 
 /** The sql tool's events: idempotent hints only. */

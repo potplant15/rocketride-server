@@ -55,19 +55,21 @@ import { applyReplicaConnections, deleteSavedConnection, endpointForConnection, 
 import type { PipelineBoundConnection, SavedSqlConnection } from '../src/connect';
 import { lookupConnection } from '../src/connectionRecord';
 import { MAX_WATCHED_HISTORY_KEYS, attachSqlController, checkApplyInput, checkExecuteInput, checkSchemaInput } from '../src/sqlController';
-import type { ConnectionsState, HistoryState, SqlOps } from '../src/ops';
+import type { ConnectionsState, HistoryState, SqlOps, SavedQueriesState } from '../src/ops';
 import { attachSqlFrame, connectionDocState, directReleaseKey, frameGates, routeDocKey, sqlChannel } from '../src/sqlFrame';
 import { SESSION_GRIDS, createRemoteSqlEnv } from '../src/sqlEnv';
 import { setActiveConnection } from '../src/navigation';
 import { SUMMON_EVENT, SUMMON_SETTLE_MS } from 'shared/explorer/devtool/summon';
 import { createFrameCaller } from 'shared/explorer/devtool/frame';
-import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS, applyBatchTimeoutMs } from '../src/sqlTimeouts';
-import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, MAX_APPLY_STATEMENTS, NODE_TX_IDLE_MS, REFRESH_SCHEMA_WAIT_MS } from '../src/connect/tools';
+import { RESOLVE_BUDGET_MS, SQL_OP_TIMEOUT_MS, applyBatchTimeoutMs, LIST_WAIT_MS, SAVED_QUERIES_LOAD_WAIT_MS } from '../src/sqlTimeouts';
+import { APPLY_STATEMENT_WAIT_MS, BEGIN_WAIT_MS, DIALECT_WAIT_MS, END_TX_WAIT_MS, GET_SCHEMA_WAIT_MS, MAX_APPLY_STATEMENTS, NODE_TX_IDLE_MS, REFRESH_SCHEMA_WAIT_MS, GET_SQL_WAIT_MS } from '../src/connect/tools';
 import { SAVED_PATH, USER, engineScript, scriptedClientRealm, until } from './realm';
 import { taskRow } from './support';
 import { DIRECT, PIPELINE, manualTimers, postgres, rig, toolRequests } from './devtoolRig';
 import { createLocalSqlEnv } from '../src/localEnv';
 import type { SqlCore } from '../src/sqlCore';
+import { PREFS_FS_TIMEOUT_MS } from 'shared/explorer/devtool/prefs';
+import { SAVED_QUERIES_PATH } from '../src/history/savedQueries';
 
 const SRC = path.resolve(__dirname, '..', 'src');
 
@@ -246,6 +248,16 @@ describe('T3 — every op round-trips JSON-safe; failures come back as equal Exp
 			assert.deepEqual(toolRequests(r.engine, 'commit').length, 1);
 			assert.deepEqual(results.discover, [{ key: 'p1:s1:db_1', projectId: 'p1', pipelineName: 'Pipeline A', source: 's1', nodeId: 'db_1', nodeName: 'Orders DB', provider: 'db_postgres', running: true }]);
 			assert.deepEqual(results.envKeys, ['ROCKETRIDE_DB_PASSWORD']);
+			// Saved queries: an owned save, then the owned read (the list is an op result).
+			const query = { id: 'sq1', name: 'Orders', sql: 'SELECT * FROM orders', at: 1 };
+			await r.frame.caller.callReply('sql.savedQueryEdit', { connId: 'c-pipe', edit: { action: 'add', query }, owner }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.savedQueryEdit'] });
+			results.savedQueries = await r.frame.caller.callReply('sql.savedQueries', { connId: 'c-pipe', owner }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.savedQueries'] });
+			assert.deepEqual(results.savedQueries, { storage: 'file', queries: [query] });
+			// Ask: the node writes SQL and it comes back as data, nothing executed.
+			const executes = toolRequests(r.engine, 'execute').length;
+			results.getSql = await session.getSql('orders from the last 7 days');
+			assert.deepEqual(results.getSql, { sql: 'SELECT * FROM orders', valid: true });
+			assert.equal(toolRequests(r.engine, 'execute').length, executes);
 			for (const [name, value] of Object.entries(results)) assertJsonSafe(value, name);
 			const ops = new Set(r.frameCalls.map((call) => call.op));
 			for (const op of Object.keys(SQL_OP_TIMEOUT_MS)) assert.ok(ops.has(op), `${op} was called`);
@@ -392,6 +404,42 @@ describe('T4 — the frame\'s timeouts and the controller\'s bus timeouts match 
 			r.dispose();
 		}
 	});
+
+	it('saved-query ops wait for the saved list and the account\'s whole file read, and every request for that file names its timeout', async () => {
+		const clock = manualNow(Date.now());
+		const r = await rig({ now: clock.now });
+		try {
+			const endpoint = await r.env.resolveEndpoint(PIPELINE);
+			await r.env.savedQueries.save(endpoint, { id: 'sq1', name: 'Orders', sql: 'SELECT 1', at: 1 });
+			await r.frame.caller.callReply('sql.savedQueries', { connId: 'c-pipe', owner: r.frame.owner() }, { timeoutMs: SQL_OP_TIMEOUT_MS['sql.savedQueries'] });
+			const saved = r.frameCalls.filter((call) => call.op === 'sql.savedQueries' || call.op === 'sql.savedQueryEdit');
+			assert.deepEqual([...new Set(saved.map((call) => call.op))].sort(), ['sql.savedQueries', 'sql.savedQueryEdit']);
+			for (const call of saved) assert.equal(call.timeoutMs, SQL_OP_TIMEOUT_MS[call.op as keyof typeof SQL_OP_TIMEOUT_MS], `${call.op} frame timeout`);
+			assert.equal(SQL_OP_TIMEOUT_MS['sql.savedQueries'], LIST_WAIT_MS + SAVED_QUERIES_LOAD_WAIT_MS + FRAME_OP_MARGIN_MS);
+			assert.equal(SQL_OP_TIMEOUT_MS['sql.savedQueryEdit'], LIST_WAIT_MS + SAVED_QUERIES_LOAD_WAIT_MS + FRAME_OP_MARGIN_MS);
+			const fileRequests = r.engine.requests.filter((q) => (q.params as { path?: string } | null)?.path === SAVED_QUERIES_PATH);
+			// No file yet: the stat says so and nothing is read.
+			assert.equal(fileRequests[0]?.op, 'client.fsStat');
+			for (const q of fileRequests) assert.equal(q.timeoutMs, PREFS_FS_TIMEOUT_MS, q.op);
+		} finally {
+			r.dispose();
+		}
+	});
+
+	it('Ask\'s get_sql waits 120 s (+ SDK slack + bus margin) on the bus, and the frame waits for a resolve and that one call', async () => {
+		const clock = manualNow(Date.now());
+		const r = await rig({ now: clock.now });
+		try {
+			await r.env.getSession(await r.env.resolveEndpoint(PIPELINE)).getSql('orders this week');
+			assert.equal(GET_SQL_WAIT_MS, 120_000);
+			assert.equal(toolRequests(r.engine, 'get_sql').at(-1)?.timeoutMs, GET_SQL_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS);
+			const call = r.frameCalls.find((c) => c.op === 'sql.getSql');
+			assert.equal(call?.timeoutMs, SQL_OP_TIMEOUT_MS['sql.getSql']);
+			assert.equal(SQL_OP_TIMEOUT_MS['sql.getSql'], RESOLVE_BUDGET_MS + GET_SQL_WAIT_MS + SDK_TIMEOUT_SLACK_MS + BUS_TOOL_MARGIN_MS + FRAME_OP_MARGIN_MS);
+		} finally {
+			r.dispose();
+		}
+	});
 });
 
 // =============================================================================
@@ -516,6 +564,25 @@ describe('T6 — the sidebar mount posts nothing but retained state and opens no
 			assert.equal(r.mount.core.activation.reason(), 'lazyMount');
 			r.mount.bridge.openConnectionEditor(null);
 			assert.deepEqual(r.docs.opened[1], ['edit:*new*', 'New Connection']);
+		} finally {
+			r.dispose();
+		}
+	});
+
+	it('the rows\' status words are read in the sidebar\'s own realm: following them posts nothing, and no topic carries them', async () => {
+		const r = await rig({ docKey: '', activate: false });
+		try {
+			const before = r.spy.posts.length;
+			const sources: unknown[] = [];
+			const off = r.mount.bridge.subscribeStatus((source) => { sources.push(source); });
+			await until(() => r.engine.ops().includes('client.getTasks'), 'the first discovery');
+			await until(() => (sources.at(-1) as { discovered: unknown[] | null }).discovered !== null, 'status from that discovery');
+			off();
+			const after = r.spy.posts.slice(before) as Array<{ __rrtool?: string; topic?: string }>;
+			assert.deepEqual(after.filter((post) => post.__rrtool !== 'state'), [], 'no event, call or reply');
+			const topics = new Set(r.spy.posts.filter((post) => (post as { __rrtool?: string }).__rrtool === 'state').map((post) => (post as { topic: string }).topic));
+			assert.deepEqual([...topics].sort(), ['connections', CONTROLLER_STATE_TOPIC, 'history', 'identity', 'savedQueries'].sort());
+			assert.deepEqual(r.docs.opened, []);
 		} finally {
 			r.dispose();
 		}
@@ -1070,7 +1137,7 @@ describe('T11 — no bulk result is retained state; each topic stays within 64 K
 		try {
 			await r.env.getSession(await r.env.resolveEndpoint(PIPELINE)).execute('SELECT * FROM orders');
 			const states = r.spy.posts.filter((post) => (post as { __rrtool?: string }).__rrtool === 'state').map((post) => (post as { topic: string }).topic);
-			assert.deepEqual([...new Set(states)].sort(), ['connections', CONTROLLER_STATE_TOPIC, 'history', 'identity'].sort());
+			assert.deepEqual([...new Set(states)].sort(), ['connections', CONTROLLER_STATE_TOPIC, 'history', 'identity', 'savedQueries'].sort());
 			assert.deepEqual([...new Set(states)].filter((topic) => topic.startsWith(RESERVED_STATE_PREFIX) && topic !== CONTROLLER_STATE_TOPIC), []);
 			assert.equal(JSON.stringify(r.spy.posts.filter((post) => (post as { __rrtool?: string }).__rrtool === 'state')).includes('"rows"'), false);
 			assert.doesNotMatch(source('sqlController.ts'), /publishState\(\s*['`"]devtool:/);
@@ -1196,6 +1263,26 @@ describe('T11 — no bulk result is retained state; each topic stays within 64 K
 		assert.match(controller, /shrink: shrinkSqlState,/);
 		assert.match(controller, /const handlers: RequiredControllerHandlers<SqlOps> = \{/);
 		assert.match(controller, /publishIdentityState\(guarded, core\.identity\)/, 'identity counts toward the total budget');
+	});
+
+	it('the saved-queries topic is a revision and a word, never the queries: a full bag leaves it a few bytes and the map within budget', async () => {
+		const r = await rig();
+		try {
+			const endpoint = await r.env.resolveEndpoint(PIPELINE);
+			for (let i = 0; i < 50; i += 1) await r.env.savedQueries.save(endpoint, { id: `sq${i}`, name: `Query ${i}`, sql: `SELECT ${i} AS marker_${i}, '${'x'.repeat(4_000)}'`, at: i });
+			await settle();
+			const last = retained(r.spy.posts);
+			const topic = last.get('savedQueries') as SavedQueriesState;
+			assert.equal(topic.storage, 'file');
+			assert.ok(topic.rev >= 50, 'the revision moved with every save');
+			assert.ok(jsonByteLength(topic) < 64, `${jsonByteLength(topic)} bytes`);
+			assert.equal(JSON.stringify(r.spy.posts.filter((post) => (post as { __rrtool?: string }).__rrtool === 'state')).includes('marker_'), false, 'no query text is retained state');
+			let total = 0;
+			for (const snapshot of last.values()) total += jsonByteLength(snapshot);
+			assert.ok(total <= MAX_RETAINED_TOTAL_BYTES, `the whole map: ${total} bytes`);
+		} finally {
+			r.dispose();
+		}
 	});
 });
 
