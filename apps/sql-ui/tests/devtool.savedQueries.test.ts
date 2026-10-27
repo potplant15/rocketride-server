@@ -681,5 +681,6 @@ describe('saved queries: the README says what the code does', () => {
 		assert.match(prose, new RegExp(`A connection keeps up to ${MAX_SAVED_QUERIES} saved queries; a saved query holds up to ${MAX_SAVED_SQL_CHARS.toLocaleString('en-US')} characters of statement and ${MAX_SAVED_NAME_CHARS} of name; and all saved queries together stay within ${MAX_SAVED_BAG_CHARS / 1024} KB\\.`));
 		assert.match(prose, /\*\*Open\*\* puts the statement into a new query and runs nothing/);
 		assert.match(prose, /another account signing in without a reload sees no saved queries and can save none until the page is reloaded/);
+		assert.match(prose, /Change saved queries in one window at a time: if two windows change them, the one that saves last overwrites the other's change\./);
 	});
 });

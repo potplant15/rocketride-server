@@ -508,6 +508,9 @@ your workspace preferences once per page, another account signing in
 without a reload sees no saved queries and can save none until the page is
 reloaded.
 
+Change saved queries in one window at a time: if two windows change them,
+the one that saves last overwrites the other's change.
+
 Saving refuses rather than drops. A connection keeps up to 50 saved
 queries; a saved query holds up to 16,384 characters of statement and 120 of
 name; and all saved queries together stay within 256 KB. A save past one of
